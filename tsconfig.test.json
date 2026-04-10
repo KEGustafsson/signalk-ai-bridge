@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": ".tmp-tests",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "types": []
+  },
+  "include": [
+    "src/test-node-shims.d.ts",
+    "src/api.ts",
+    "src/policy.ts",
+    "src/audit.ts",
+    "src/contracts.ts",
+    "src/types.ts",
+    "src/signalkPaths.ts",
+    "src/api.test.ts",
+    "src/policy.test.ts",
+    "src/audit.test.ts",
+    "src/signalk.integration.test.ts",
+    "src/bridgeRuntime.ts",
+    "src/bridgeRuntime.test.ts",
+    "src/policySync.ts",
+    "src/policySync.test.ts",
+    "src/policyChannel.ts",
+    "src/policyChannel.test.ts"
+  ]
+}
