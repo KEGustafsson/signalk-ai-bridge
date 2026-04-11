@@ -2,9 +2,10 @@
   "name": "signalk-ai-bridge",
   "version": "0.1.0",
   "private": true,
-  "description": "Signal K AI Bridge embedded webapp",
+  "description": "Signal K AI Bridge plugin with embedded webapp panel",
   "type": "module",
   "keywords": [
+    "signalk-node-server-plugin",
     "signalk-embeddable-webapp"
   ],
   "signalk": {

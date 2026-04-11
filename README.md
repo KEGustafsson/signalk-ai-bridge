@@ -1,13 +1,13 @@
 # signalk-ai-bridge
 
-Signal K AI Bridge configured as an **embedded webapp** for Signal K Admin UI.
+Signal K AI Bridge configured as a **Signal K plugin** with an embedded Admin UI webapp panel.
 
 ## Plan implementation (current)
 
 ### ✅ Embedded webapp integration
 
 - `src/index.ts` exports `AppPanel` as the embedded panel entry for host integration.
-- Package is marked with `signalk-embeddable-webapp` keyword.
+- Package is marked as both a Signal K plugin and embeddable webapp (`signalk-node-server-plugin`, `signalk-embeddable-webapp`).
 - App metadata includes display name and icon.
 
 ### ✅ Read-only operator tools
@@ -52,7 +52,7 @@ Signal K AI Bridge configured as an **embedded webapp** for Signal K Admin UI.
 
 - TypeScript strict checks + Node-based unit tests + mocked integration harness test + smoke baseline
 - GitHub Actions CI pipeline for lint, typecheck, test, npm audit, and Trivy filesystem scan
-- Hardened Docker Compose template for Gemma + bridge isolation
+- Hardened Docker Compose template for external Gemma service only (plugin runs inside Signal K)
 
 ## Development
 
@@ -79,7 +79,8 @@ npm run build
 
 ## Compose template
 
-Use `docker-compose.gemma.yml` as a starting point for local/private deployment and hardening.
+Use `docker-compose.gemma.yml` as a starting point for running only the external `ai/gemma` service.
+The `signalk-ai-bridge` component is expected to run as a Signal K plugin inside the Signal K server process.
 
 ## Remaining roadmap
 
