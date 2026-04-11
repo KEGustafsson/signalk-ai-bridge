@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-label="AI Bridge icon">
+  <rect width="72" height="72" rx="12" fill="#0b3d91"/>
+  <circle cx="36" cy="24" r="8" fill="#7dd3fc"/>
+  <rect x="20" y="38" width="32" height="16" rx="6" fill="#bae6fd"/>
+  <path d="M18 56h36" stroke="#e0f2fe" stroke-width="4" stroke-linecap="round"/>
+</svg>
