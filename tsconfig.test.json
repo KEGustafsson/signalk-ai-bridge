@@ -27,6 +27,8 @@
     "src/policySync.ts",
     "src/policySync.test.ts",
     "src/policyChannel.ts",
-    "src/policyChannel.test.ts"
+    "src/policyChannel.test.ts",
+    "src/pathAccess.ts",
+    "src/pathAccess.test.ts"
   ]
 }

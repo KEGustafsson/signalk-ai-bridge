@@ -56,4 +56,15 @@ describe('createWaypointDraft', () => {
       return value.code === 'validation-failed';
     });
   });
+
+  it('rejects draft creation when navigation path is read-only', async () => {
+    const api: EmbeddedWebAppApi = {
+      getApplicationData: async <T>(_path: string) => [{ path: 'navigation.*', access: 'read-only' }] as T
+    };
+
+    await assert.rejects(createWaypointDraft(api, 'Blocked', 10, 20), (error: unknown) => {
+      const value = error as { code?: string };
+      return value.code === 'unauthorized';
+    });
+  });
 });

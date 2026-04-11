@@ -7,6 +7,7 @@ import type {
   VesselPosition,
   WaypointDraft
 } from './types.js';
+import { assertSignalkPathAccess } from './pathAccess.js';
 import { APP_DATA_KEYS, SIGNALK_PATHS } from './signalkPaths.js';
 
 const MAX_TRACKED_DELTA_KEYS = 50;
@@ -55,6 +56,11 @@ export async function getVesselSnapshot(api: EmbeddedWebAppApi): Promise<VesselS
   if (!api.get) {
     throw toApiError('Signal K API function `get` is not available.');
   }
+  await Promise.all([
+    assertSignalkPathAccess(api, SIGNALK_PATHS.selfNavigationPosition, 'read'),
+    assertSignalkPathAccess(api, SIGNALK_PATHS.selfNavigationSog, 'read'),
+    assertSignalkPathAccess(api, SIGNALK_PATHS.selfNavigationCogt, 'read')
+  ]);
 
   const [positionRaw, sogRaw, cogRaw] = await Promise.all([
     api.get<unknown>(SIGNALK_PATHS.selfNavigationPosition),
@@ -77,6 +83,7 @@ export async function getActiveAlarms(api: EmbeddedWebAppApi): Promise<readonly 
   if (!api.get) {
     throw toApiError('Signal K API function `get` is not available.');
   }
+  await assertSignalkPathAccess(api, SIGNALK_PATHS.selfAlarms, 'read');
 
   const notifications = await api.get<unknown>(SIGNALK_PATHS.selfAlarms);
   if (typeof notifications !== 'object' || notifications === null) {
@@ -101,8 +108,9 @@ export async function getRecentDeltas(api: EmbeddedWebAppApi): Promise<readonly 
   if (!api.get) {
     throw toApiError('Signal K API function `get` is not available.');
   }
+  await assertSignalkPathAccess(api, SIGNALK_PATHS.selfNavigation, 'read');
 
-  const currentSelf = await api.get<unknown>(SIGNALK_PATHS.selfVessel);
+  const currentSelf = await api.get<unknown>(SIGNALK_PATHS.selfNavigation);
   const currentFlat = flattenObject(currentSelf);
 
   const previousFlat =
@@ -114,7 +122,7 @@ export async function getRecentDeltas(api: EmbeddedWebAppApi): Promise<readonly 
     .map(([path, value]) => ({
       path,
       value,
-      source: 'vessels.self',
+      source: 'vessels.self.navigation',
       timestamp: new Date().toISOString()
     }));
 
@@ -131,6 +139,8 @@ export async function createWaypointDraft(
   latitude: number,
   longitude: number
 ): Promise<WaypointDraft> {
+  await assertSignalkPathAccess(api, 'navigation.waypoints', 'write');
+
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
     throw toApiError('Latitude and longitude must be valid finite numbers.', 'validation-failed');
   }

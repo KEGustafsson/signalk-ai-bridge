@@ -26,6 +26,9 @@ Signal K AI Bridge configured as a **Signal K plugin** with an embedded Admin UI
 - Tool authorization is enforced via `authorizeTool()` before every action.
 - Role-based policy supports `viewer`, `operator`, and `admin` via app data key `ai-bridge/user-role`.
 - Additional allow-list policy can be set via `ai-bridge/allowed-tools`.
+- Signal K path access can be configured via `ai-bridge/path-access-rules` with wildcard path patterns and access mode:
+  - `{"path":"navigation.position","access":"read-only"}`
+  - `{"path":"navigation.*","access":"read-write"}`
 - Signed policy documents can be verified/applied through `applySignedPolicyUpdate()`.
 - Remote signed policy sync can be performed through `syncPolicyFromServer()` / `syncPolicyFromServerWithTokenProvider()`.
 - Policy sync mTLS attestation checks can be required, and are pinned-certificate gated by default to reduce trust-on-header-only configurations.
