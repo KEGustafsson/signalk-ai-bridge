@@ -97,6 +97,17 @@ function shouldShowReadmeHelp(status: BackendStatus | null): boolean {
   return false;
 }
 
+function canAskAi(status: BackendStatus | null): boolean {
+  return status?.aiAvailable === true;
+}
+
+function getLoadingLabel(status: BackendStatus | null): string {
+  const modelName = status?.resolvedModel ?? status?.model;
+  return typeof modelName === 'string' && modelName.trim().length > 0
+    ? `Waiting for AI response from ${modelName}...`
+    : 'Waiting for AI response...';
+}
+
 function formatAiRequestMessages(messages: readonly AiChatMessage[] | undefined, fallbackPrompt: string): string {
   if (!messages || messages.length === 0) {
     return fallbackPrompt.trim().length > 0 ? fallbackPrompt : '(empty prompt)';
@@ -441,9 +452,14 @@ export default function AppPanel(props: AppPanelProps) {
             onChange={(event: { target: { value: string } }) =>
               setAiInput({ prompt: event.target.value })}
           />
-          <button type="button" onClick={onAskAi} disabled={isLoading}>
+          <button type="button" onClick={onAskAi} disabled={isLoading || !canAskAi(backendStatus)}>
             Ask AI
           </button>
+          {!canAskAi(backendStatus) ? (
+            <p style={{ margin: 0, color: '#475569' }}>
+              Ask AI is disabled until Ollama and the configured model are available.
+            </p>
+          ) : null}
         </div>
       </fieldset>
 
@@ -464,7 +480,7 @@ export default function AppPanel(props: AppPanelProps) {
               gap: '0.5rem'
             }}
           >
-            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>Waiting for Ollama / Gemma...</p>
+            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>{getLoadingLabel(backendStatus)}</p>
             <p style={{ margin: 0, color: '#475569' }}>
               The request has been sent. The response will appear here as soon as the model finishes.
             </p>

@@ -31,51 +31,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
     ...normalizeServerConfig(pluginOptions)
   });
 
-  function isAuthenticatedRequest(req) {
-    if (!req || typeof req !== 'object') {
-      return false;
-    }
-
-    if (typeof req.isAuthenticated === 'function') {
-      try {
-        if (req.isAuthenticated() === true) {
-          return true;
-        }
-      } catch {
-        // Ignore helper failures and fall back to common request properties.
-      }
-    }
-
-    if (req.user && typeof req.user === 'object') {
-      return true;
-    }
-
-    const session = req.session;
-    if (!session || typeof session !== 'object') {
-      return false;
-    }
-
-    return (
-      Boolean(session.user) ||
-      Boolean(session.userId) ||
-      Boolean(session.username) ||
-      session.loggedIn === true ||
-      session.authenticated === true ||
-      Boolean(session.passport && session.passport.user)
-    );
-  }
-
-  function requireAuthenticatedRequest(req, routeLabel) {
-    if (isAuthenticatedRequest(req)) {
-      return;
-    }
-
-    const error = new Error(`Authentication is required to access ${routeLabel}.`);
-    error.code = 'unauthorized';
-    error.statusCode = 401;
-    throw error;
-  }
-
   const schema = () => ({
     type: 'object',
     properties: {
@@ -183,7 +138,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
   const queryHandler = async (req, res) => {
     try {
       const config = getConfig();
-      requireAuthenticatedRequest(req, 'the AI query route');
       const body = await readJsonBody(req);
       const payload = await bridgeService.buildAiPayload(body, config);
       const result = await queryAiModel(payload, config, dependencies);
@@ -220,7 +174,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
   const bridgeExecuteHandler = async (req, res) => {
     try {
       const config = getConfig();
-      requireAuthenticatedRequest(req, 'the bridge execute route');
       const body = await readJsonBody(req);
       const result = await bridgeService.executeTool(body, config);
       res.status(200).json(result);

@@ -582,13 +582,26 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal('environment.wind.speedTrue' in bridgeResponse.body.context.selectedData, false);
   });
 
-  it('rejects anonymous AI query and bridge requests', async () => {
+  it('allows prompt-only AI routes without explicit auth state', async () => {
     const registeredRoutes = {};
-    const plugin = createPlugin(createPluginHost());
+
+    const plugin = createPlugin(createPluginHost(), {
+      ollamaClient: {
+        chat: async () => ({
+          model: 'gemma4:e2b',
+          created_at: '2026-04-11T10:00:00.000Z',
+          message: {
+            role: 'assistant',
+            content: 'Anonymous local request worked.'
+          }
+        })
+      }
+    });
 
     plugin.start({
       model: 'gemma4:e2b',
-      baseUrl: 'http://localhost:11434'
+      baseUrl: 'http://localhost:11434',
+      aiDataPaths: ['navigation.position']
     });
 
     plugin.registerWithRouter({
@@ -621,10 +634,10 @@ describe('signalk-ai-bridge plugin', () => {
       bridgeResponse
     );
 
-    assert.equal(queryResponse.statusCode, 401);
-    assert.equal(queryResponse.body.error.code, 'unauthorized');
-    assert.equal(bridgeResponse.statusCode, 401);
-    assert.equal(bridgeResponse.body.error.code, 'unauthorized');
+    assert.equal(queryResponse.statusCode, 200);
+    assert.equal(queryResponse.body.answer, 'Anonymous local request worked.');
+    assert.equal(bridgeResponse.statusCode, 200);
+    assert.equal(bridgeResponse.body.response.answer, 'Anonymous local request worked.');
   });
 
 });
