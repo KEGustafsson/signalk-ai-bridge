@@ -1,7 +1,7 @@
 {
   "name": "signalk-ai-bridge",
   "version": "0.1.0-beta.1",
-  "description": "Signal K AI Bridge plugin with embedded web UI for Ollama and Gemma",
+  "description": "Signal K AI Bridge plugin with embedded web UI for Ollama and Gemma4, AI trials",
   "main": "index.cjs",
   "type": "module",
   "files": [
