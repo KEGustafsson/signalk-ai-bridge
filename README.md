@@ -1,61 +1,24 @@
 # signalk-ai-bridge
 
-Signal K AI Bridge configured as a **Signal K plugin** with an embedded Admin UI webapp panel.
+Signal K AI Bridge packaged as a Signal K plugin with both standalone and embedded Admin UI webapp support.
 
-## Plan implementation (current)
+## What it does
 
-### ✅ Embedded webapp integration
+- Serves a packaged React webapp for standalone and embedded Signal K Admin UI use.
+- Publishes a legacy-compatible `public/remoteEntry.js` container for Signal K Admin embedding.
+- Lets the plugin read selected Signal K self paths directly from the Signal K plugin API.
+- Sends the operator prompt plus selected Signal K data to a local Ollama server.
+- Shows the AI response, request history, and the exact request sent to AI in the web UI.
 
-- `src/index.ts` exports `AppPanel` as the embedded panel entry for host integration.
-- Package is marked as both a Signal K plugin and embeddable webapp (`signalk-node-server-plugin`, `signalk-embeddable-webapp`).
-- App metadata includes display name and icon.
+## AI pipeline
 
-### ✅ Read-only operator tools
+1. The webapp posts an Ask AI request to `/plugins/signalk-ai-bridge/bridge/execute`.
+2. The plugin reads the configured Signal K self paths directly from the Signal K plugin API.
+3. The plugin sends the operator prompt plus collected Signal K context to Ollama through the official `ollama` npm client.
+4. The plugin returns the AI response and request context back to the UI.
 
-- **Get Vessel Snapshot** (`navigation.position`, SOG, COGT)
-- **Get Active Alarms** (`vessels.self.notifications`)
-- **Get Recent Deltas** from diffed `vessels.self` snapshots persisted in app data
-
-### ✅ Draft-only workflow starter
-
-- **Create Waypoint Draft** with explicit user action.
-- Draft object is persisted in app data and does not mutate vessel state.
-
-### ✅ Policy and authorization baseline
-
-- Tool authorization is enforced via `authorizeTool()` before every action.
-- Role-based policy supports `viewer`, `operator`, and `admin` via app data key `ai-bridge/user-role`.
-- Additional allow-list policy can be set via `ai-bridge/allowed-tools`.
-- Signal K path access can be configured via `ai-bridge/path-access-rules` with wildcard path patterns and access mode:
-  - `{"path":"navigation.position","access":"read-only"}`
-  - `{"path":"navigation.*","access":"read-write"}`
-- Signed policy documents can be verified/applied through `applySignedPolicyUpdate()`.
-- Remote signed policy sync can be performed through `syncPolicyFromServer()` / `syncPolicyFromServerWithTokenProvider()`.
-- Policy sync mTLS attestation checks can be required, and are pinned-certificate gated by default to reduce trust-on-header-only configurations.
-- Pinned certificate fingerprint comparisons use normalized, constant-time equality checks to reduce side-channel leakage.
-- Policy sync can enforce freshness windows (`maxPolicyAgeMs`), future timestamp skew limits (`maxFutureSkewMs`), and expiry checks before applying remote policy documents.
-- Freshness window options are validated as finite non-negative values, and future-issued policies are rejected by default unless bounded skew is explicitly configured.
-- Policy sync allows transport wiring via `fetchImpl` + `fetchInitOverrides` (for example, Node fetch `dispatcher` configuration used for client-certificate mTLS plumbing).
-- `createMutualTlsFetchInitOverrides()` can build Node-compatible fetch overrides from client cert/key material for runtime mTLS transport wiring.
-- `syncPolicyFromServer()` can also accept `mutualTlsClientConfig` + `mutualTlsAgentFactory` to derive mTLS transport overrides directly in the sync call path.
-- `createHardenedPolicySyncOptions()` provides a secure-by-default preset (`requireMutualTls: true` + mandatory pinned fingerprint), and requires `mutualTlsAgentFactory` when mTLS client cert config is provided.
-- Logged-out users are blocked from tool execution.
-
-### ✅ Runtime bridge boundary baseline
-
-- Tool execution is routed through `executeBridgeRequest()` with auth-token verification, policy checks, and audit logging before tool dispatch.
-
-### ✅ Audit trail baseline
-
-- Tool execution outcomes are appended to app data audit key `ai-bridge/audit-log`.
-- Outcomes are tracked as `allowed`, `denied`, or `error` with timestamps and tool IDs.
-- Malformed existing audit payloads are safely normalized before appending new entries.
-
-### ✅ Quality gates and operations baseline
-
-- TypeScript strict checks + Node-based unit tests + mocked integration harness test + smoke baseline
-- GitHub Actions CI pipeline for lint, typecheck, test, npm audit, and Trivy filesystem scan
-- Hardened Docker Compose template for external Gemma service only (plugin runs inside Signal K)
+The default backend target is `http://localhost:11434` with model family `gemma4`.
+If Ollama only has a tagged variant installed, such as `gemma4:e2b`, the plugin will retry with the installed tag automatically.
 
 ## Development
 
@@ -67,10 +30,9 @@ npm run dev
 ## Local checks
 
 ```bash
-npm run lint        # smoke-based lint gate in this environment
+npm run lint
 npm run typecheck
-npm run test        # compiles and runs unit tests with Node test runner
-npm run test:smoke  # lightweight source smoke validation
+npm run test
 npm run check
 ```
 
@@ -80,11 +42,29 @@ npm run check
 npm run build
 ```
 
-## Compose template
+## Plugin configuration
 
-Use `docker-compose.gemma.yml` as a starting point for running only the external `ai/gemma` service.
-The `signalk-ai-bridge` component is expected to run as a Signal K plugin inside the Signal K server process.
+The plugin accepts AI settings from plugin config or environment variables:
 
-## Remaining roadmap
+- `AI_MODEL_URL` or plugin `baseUrl`: Ollama host URL. Default: `http://localhost:11434`
+- `AI_MODEL_NAME` or plugin `model`: Ollama model name. Default: `gemma4`
+  If the exact name is missing, the plugin will try an installed tagged variant from the same Ollama family.
+- Optional plugin settings for `systemPrompt`, `requestTimeoutMs`, `temperature`, `topP`, and `maxTokens`
+  The default AI timeout is `120000` ms to allow for local Gemma model load and generation. Set `requestTimeoutMs` to `0` to disable the timeout. The maximum configurable timeout is `300000` ms.
+  The default token setting is `131072`, and it is forwarded to Ollama as both `num_predict` and `num_ctx`.
+- `aiDataPaths`: array of Signal K self paths to send to AI. Exact paths like `navigation.position` and simple wildcards like `navigation.*` are supported.
 
-- None currently tracked in this baseline slice.
+## Ollama with Docker Compose
+
+[`docker-compose.gemma.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.gemma.yml) runs a local Ollama server and persists pulled models in `./ollama_data`.
+
+Start Ollama:
+
+```bash
+docker compose -f docker-compose.gemma.yml up -d
+```
+
+This compose setup already pulls `gemma4:e2b` during startup, so you do not need to run a separate `ollama pull` command.
+
+If Signal K runs on the host, the plugin default `http://localhost:11434` is correct.
+If Signal K runs in another container, point the plugin at `http://ollama:11434` on a shared Docker network instead of `localhost`.

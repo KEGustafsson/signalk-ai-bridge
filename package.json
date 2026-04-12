@@ -1,32 +1,47 @@
 {
   "name": "signalk-ai-bridge",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Signal K AI Bridge plugin with embedded webapp panel",
+  "version": "0.1.0-beta.1",
+  "description": "Signal K AI Bridge plugin with embedded web UI for Ollama and Gemma",
+  "main": "index.cjs",
   "type": "module",
+  "files": [
+    "index.cjs",
+    "lib",
+    "public"
+  ],
   "keywords": [
     "signalk-node-server-plugin",
+    "signalk-webapp",
     "signalk-embeddable-webapp"
   ],
   "signalk": {
-    "displayName": "AI Bridge",
+    "displayName": "Signal K AI Bridge",
     "appIcon": "./assets/icons/icon-72x72.svg"
   },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "clean": "node scripts/clean.mjs",
+    "postbuild": "node scripts/sync-public-assets.mjs",
+    "prepack": "npm run build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/smoke-test.mjs",
-    "test": "rm -rf .tmp-tests && tsc -p tsconfig.test.json && node --experimental-specifier-resolution=node --test .tmp-tests/*.test.js && rm -rf .tmp-tests",
+    "test": "node scripts/run-tests.mjs",
     "check": "npm run lint && npm run typecheck && npm run test",
     "test:smoke": "node scripts/smoke-test.mjs"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
+    "ollama": "^0.6.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@module-federation/vite": "^1.9.4",
+    "@types/node": "^22.19.17",
     "typescript": "^5.8.0",
     "vite": "^6.0.0"
   }

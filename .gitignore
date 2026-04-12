@@ -1,4 +1,8 @@
 node_modules/
 dist/
 .tmp-tests/
+public/
 npm-debug.log*
+.npm-cache/
+.__mf__temp/
+*.tgz

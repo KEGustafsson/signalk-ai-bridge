@@ -1,103 +1,127 @@
-import { createWaypointDraft, getActiveAlarms, getRecentDeltas, getVesselSnapshot } from './api.js';
-import { appendAuditEntry } from './audit.js';
-import type { ToolId, ToolResult } from './contracts.js';
+import type {
+  AskVesselAiResult,
+  ToolId,
+  ToolResult
+} from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import { authorizeTool } from './policy.js';
+import type { AiChatMessage, ApiError } from './types.js';
 
 export interface BridgeRequest {
   readonly toolId: ToolId;
   readonly draftName?: string;
   readonly latitude?: number;
   readonly longitude?: number;
+  readonly prompt?: string;
 }
 
-function constantTimeEquals(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false;
+const DEFAULT_BRIDGE_ENDPOINT = '/plugins/signalk-ai-bridge/bridge/execute';
+
+function toApiError(message: string, code: ApiError['code'] = 'unknown'): ApiError {
+  return { code, message };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isApiError(value: unknown): value is ApiError {
+  return isObjectRecord(value) && typeof value.code === 'string' && typeof value.message === 'string';
+}
+
+function isAiChatMessage(value: unknown): value is AiChatMessage {
+  return (
+    isObjectRecord(value) &&
+    (value.role === 'system' || value.role === 'user' || value.role === 'assistant') &&
+    typeof value.content === 'string'
+  );
+}
+
+function isAskVesselAiResult(value: unknown): value is AskVesselAiResult {
+  return (
+    isObjectRecord(value) &&
+    value.type === 'ask-vessel-ai-result' &&
+    typeof value.prompt === 'string' &&
+    (value.context === undefined || isObjectRecord(value.context)) &&
+    (value.requestMessages === undefined ||
+      (Array.isArray(value.requestMessages) && value.requestMessages.every(isAiChatMessage))) &&
+    isObjectRecord(value.response)
+  );
+}
+
+function isToolErrorResult(value: unknown): value is ToolResult {
+  return isObjectRecord(value) && value.type === 'error' && isApiError(value.error);
+}
+
+function isToolResult(value: unknown): value is ToolResult {
+  return isAskVesselAiResult(value) || isToolErrorResult(value);
+}
+
+function parseRemoteError(value: unknown): string | undefined {
+  if (!isObjectRecord(value)) {
+    return undefined;
   }
 
-  let mismatch = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  if (typeof value.message === 'string') {
+    return value.message;
   }
 
-  return mismatch === 0;
+  if (isObjectRecord(value.error) && typeof value.error.message === 'string') {
+    return value.error.message;
+  }
+
+  return undefined;
+}
+
+function toToolErrorResult(error: ApiError): ToolResult {
+  return {
+    type: 'error',
+    error
+  };
 }
 
 export async function executeBridgeRequest(
   api: AppPanelProps,
-  request: BridgeRequest,
-  providedToken: string,
-  expectedToken: string
+  request: BridgeRequest
 ): Promise<ToolResult> {
-  if (!constantTimeEquals(providedToken, expectedToken)) {
-    await appendAuditEntry(api, request.toolId, 'denied', 'Invalid bridge auth token');
-    return {
-      type: 'error',
-      error: {
-        code: 'unauthorized',
-        message: 'Invalid bridge auth token.'
-      }
-    };
+  const fetchImpl = api.bridgeFetch ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    return toToolErrorResult(toApiError('Global fetch is not available for bridge requests.'));
   }
 
   try {
-    await authorizeTool(api, request.toolId);
-    await appendAuditEntry(api, request.toolId, 'allowed');
+    const response = await fetchImpl(api.bridgeEndpoint ?? DEFAULT_BRIDGE_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json'
+      },
+      credentials: 'include',
+      body: JSON.stringify(request)
+    });
 
-    switch (request.toolId) {
-      case 'get-vessel-snapshot':
-        return {
-          type: 'get-vessel-snapshot-result',
-          snapshot: await getVesselSnapshot(api)
-        };
-      case 'get-active-alarms':
-        return {
-          type: 'get-active-alarms-result',
-          alarms: await getActiveAlarms(api)
-        };
-      case 'get-recent-deltas':
-        return {
-          type: 'get-recent-deltas-result',
-          deltas: await getRecentDeltas(api)
-        };
-      case 'create-waypoint-draft':
-        return {
-          type: 'create-waypoint-draft-result',
-          draft: await createWaypointDraft(
-            api,
-            request.draftName ?? 'New waypoint draft',
-            request.latitude ?? Number.NaN,
-            request.longitude ?? Number.NaN
-          )
-        };
-      default:
-        return {
-          type: 'error',
-          error: {
-            code: 'validation-failed',
-            message: 'Unknown tool id.'
-          }
-        };
+    let payload: unknown = undefined;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = undefined;
     }
+
+    if (!response.ok) {
+      return toToolErrorResult(
+        toApiError(
+          parseRemoteError(payload) ?? `Bridge request failed with status ${response.status}.`,
+          response.status === 401 ? 'unauthorized' : response.status === 400 ? 'validation-failed' : 'unknown'
+        )
+      );
+    }
+
+    if (!isToolResult(payload)) {
+      return toToolErrorResult(toApiError('Bridge route returned an invalid response payload.'));
+    }
+
+    return payload;
   } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error) {
-      const apiError = error as { code: 'unauthorized' | 'validation-failed' | 'timeout' | 'unknown'; message: string };
-      await appendAuditEntry(api, request.toolId, apiError.code === 'unauthorized' ? 'denied' : 'error', apiError.message);
-      return {
-        type: 'error',
-        error: apiError
-      };
-    }
-
-    const message = error instanceof Error ? error.message : 'Unknown runtime error.';
-    await appendAuditEntry(api, request.toolId, 'error', message);
-    return {
-      type: 'error',
-      error: {
-        code: 'unknown',
-        message
-      }
-    };
+    return toToolErrorResult(
+      toApiError(error instanceof Error ? error.message : 'Unknown bridge request failure.')
+    );
   }
 }

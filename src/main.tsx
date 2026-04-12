@@ -1,4 +1,4 @@
-import { StrictMode } from 'react';
+import React from 'react';
 import { createRoot } from 'react-dom/client';
 import AppPanel from './AppPanel.js';
 
@@ -8,8 +8,6 @@ if (rootElement !== null) {
   const root = createRoot(rootElement);
 
   root.render(
-    <StrictMode>
-      <AppPanel isLoggedIn={true} serverId="local-preview" />
-    </StrictMode>
+    <AppPanel isLoggedIn={true} serverId="local-preview" />
   );
 }

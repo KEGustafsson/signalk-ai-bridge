@@ -8,6 +8,7 @@ declare module 'react' {
   export const StrictMode: (props: { children?: unknown }) => unknown;
 
   export function useState<T>(initial: T): [T, (value: T | ((prev: T) => T)) => void];
+  export function useEffect(effect: () => void | (() => void), deps: readonly unknown[]): void;
   export function useMemo<T>(factory: () => T, deps: readonly unknown[]): T;
   export function useCallback<T extends (...args: never[]) => unknown>(
     callback: T,
