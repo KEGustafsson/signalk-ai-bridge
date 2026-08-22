@@ -358,6 +358,55 @@ To build the packaged web UI:
 npm run build
 ```
 
+## Testing on a Jetson Before a Release
+
+A pre-release branch has to be packed before it is installed. **Do not install
+this plugin straight from a git URL** — the embedded webapp is built by the
+`prepack` script, which npm does not run for git installs, so such an install
+ships an `index.html` referencing bundles that are not there and the `Ask AI`
+panel never loads.
+
+Build a tarball first, then install that:
+
+```bash
+git clone -b <branch> https://github.com/KEGustafsson/signalk-ai-bridge
+cd signalk-ai-bridge
+npm install
+npm pack                                 # runs the build; writes the .tgz
+```
+
+Then on the Jetson:
+
+```bash
+scp signalk-ai-bridge-*.tgz <jetson>:~
+ssh <jetson> 'cd ~/.signalk && npm install ~/signalk-ai-bridge-*.tgz'
+```
+
+Restart Signal K afterwards and the plugin appears in the plugin list. Cloning
+and packing on the Jetson itself works too; only the git-URL install is broken.
+
+(The obvious fix — moving the build to a `prepare` script, which npm *does* run
+for git installs — is not viable: npm 10 runs `prepare` even under
+`--ignore-scripts`, and its lifecycle banner on stdout breaks the `npm pack
+--json` parsing in the official Signal K plugin CI's pack check.)
+
+### What to check once it is running
+
+1. Start the inference server: `docker compose -f docker-compose.jetson.yml up -d`
+2. Set MAXN clocks: `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the
+   panel names the id if the current mode is capped.
+3. Open the plugin's web UI and read the `GPU Acceleration` card. It should say
+   **GPU accelerated**, with `In GPU memory` equal for both figures.
+4. Ask a question. `Generation speed` should be in the tens of tokens/second on a
+   4B-class model. Low single digits means the model is on the CPU regardless of
+   what anything else claims.
+5. If the card reports a partial offload, the auto-tuner has already shrunk the
+   context as far as it will go — try `q4_0` for `OLLAMA_KV_CACHE_TYPE`, or a
+   more heavily quantized model.
+
+`POST /plugins/signalk-ai-bridge/ai/retune` re-measures the fit if you free
+memory later without restarting the plugin.
+
 ## Licence
 
 Apache-2.0. See [`LICENSE`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/LICENSE).
