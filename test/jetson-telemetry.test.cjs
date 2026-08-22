@@ -58,6 +58,28 @@ function jetsonFixture(overrides = {}) {
 }
 
 describe('Jetson host telemetry', () => {
+  it('probes POSIX sysfs paths whatever platform the test runs on', async () => {
+    // sysfs paths are POSIX by definition. Building them with the platform
+    // separator made the probe look for "\\etc\\nv_tegra_release" on Windows,
+    // which matches nothing — caught by the Windows leg of the plugin CI.
+    const probed = [];
+    const fsImpl = {
+      async readFile(filePath) {
+        probed.push(filePath);
+        const error = new Error(`ENOENT: ${filePath}`);
+        error.code = 'ENOENT';
+        throw error;
+      },
+      async readdir() {
+        return [];
+      }
+    };
+
+    await readJetsonTelemetry({ fsImpl });
+
+    assert.deepEqual(probed, ['/etc/nv_tegra_release']);
+  });
+
   it('reports nothing at all on a host that is not a Jetson', async () => {
     const result = await readJetsonTelemetry({ fsImpl: createFakeFs({}) });
 
