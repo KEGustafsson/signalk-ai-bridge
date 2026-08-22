@@ -86,6 +86,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       maxTokens: 131072,
@@ -140,6 +141,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.*', 'notifications']
@@ -199,6 +201,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.headingTrue', 'navigation.courseOverGroundTrue']
@@ -256,6 +259,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['environment.*']
@@ -338,6 +342,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4',
       baseUrl: 'http://localhost:11434'
     });
@@ -396,6 +401,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434'
     });
@@ -441,6 +447,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position', 'notifications']
@@ -494,6 +501,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position']
@@ -550,6 +558,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position', 'environment.wind.speedTrue']
@@ -599,6 +608,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position']
@@ -638,6 +648,126 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(queryResponse.body.answer, 'Anonymous local request worked.');
     assert.equal(bridgeResponse.statusCode, 200);
     assert.equal(bridgeResponse.body.response.answer, 'Anonymous local request worked.');
+  });
+
+
+  it('reports GPU residency and accelerator settings on /ai/status', async () => {
+    const registeredRoutes = {};
+    const plugin = createPlugin(createPluginHost(), {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/api/ps')) {
+          return new Response(
+            JSON.stringify({
+              models: [
+                {
+                  name: 'gemma4:e2b',
+                  size: 5000000000,
+                  size_vram: 5000000000,
+                  expires_at: '2026-04-11T10:30:00.000Z'
+                }
+              ]
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+
+        return new Response(JSON.stringify({ models: [{ name: 'gemma4:e2b' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    });
+
+    plugin.start({
+      warmupOnStart: false,
+      model: 'gemma4:e2b',
+      numCtx: 4096,
+      numGpu: 999,
+      keepAlive: '45m'
+    });
+
+    plugin.registerWithRouter({
+      get(path, handler) {
+        registeredRoutes[`GET ${path}`] = handler;
+      },
+      post(path, handler) {
+        registeredRoutes[`POST ${path}`] = handler;
+      }
+    });
+
+    const statusResponse = createResponseRecorder();
+    await registeredRoutes['GET /ai/status']({}, statusResponse);
+
+    assert.equal(statusResponse.statusCode, 200);
+    assert.equal(statusResponse.body.backend, 'ollama');
+    assert.equal(statusResponse.body.numCtx, 4096);
+    assert.equal(statusResponse.body.numGpu, 999);
+    assert.equal(statusResponse.body.keepAlive, '45m');
+    assert.equal(statusResponse.body.accelerator.state, 'gpu');
+    assert.equal(statusResponse.body.accelerator.vramBytes, 5000000000);
+  });
+
+  it('omits GPU residency when the inference host is unreachable', async () => {
+    const registeredRoutes = {};
+    const plugin = createPlugin(createPluginHost(), {
+      fetchImpl: async () => {
+        throw new Error('fetch failed');
+      }
+    });
+
+    plugin.start({ warmupOnStart: false });
+    plugin.registerWithRouter({
+      get(path, handler) {
+        registeredRoutes[`GET ${path}`] = handler;
+      },
+      post(path, handler) {
+        registeredRoutes[`POST ${path}`] = handler;
+      }
+    });
+
+    const statusResponse = createResponseRecorder();
+    await registeredRoutes['GET /ai/status']({}, statusResponse);
+
+    assert.equal(statusResponse.statusCode, 200);
+    assert.equal(statusResponse.body.ollamaReachable, false);
+    assert.equal(statusResponse.body.accelerator, undefined);
+  });
+
+  it('preloads the model on start so the first question does not pay the cold load', async () => {
+    const calls = [];
+    const statusMessages = [];
+    const plugin = createPlugin(
+      createPluginHost({
+        setPluginStatus(message) {
+          statusMessages.push(message);
+        }
+      }),
+      {
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [{ name: 'gemma4:e2b' }] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          return new Response(JSON.stringify({ done: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+      }
+    );
+
+    plugin.start({ model: 'gemma4:e2b', keepAlive: '30m' });
+
+    // start() must not block on the warm-up, so wait for it separately.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(calls.includes('http://localhost:11434/api/generate'));
+    assert.ok(statusMessages.some((message) => /preloaded/.test(message)));
+    plugin.stop();
   });
 
 });

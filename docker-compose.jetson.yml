@@ -1,0 +1,66 @@
+# Ollama on an NVIDIA Jetson Orin Nano Super, with CUDA actually enabled.
+#
+# The difference from docker-compose.gemma.yml is that the GPU is not optional
+# here: the NVIDIA container runtime is requested, the Tegra release file is
+# mounted so Ollama detects JetPack, and the server-side accelerator flags are
+# set. Without these the container runs, answers questions, and quietly does all
+# of the work on the six Cortex-A78AE cores.
+#
+# Requirements on the host:
+#   - JetPack 6.x with nvidia-container-toolkit installed
+#     (`sudo apt-get install -y nvidia-container-toolkit`, then restart Docker)
+#   - `sudo nvpmodel -m 2 && sudo jetson_clocks` for MAXN SUPER clocks
+#
+# Start it with:
+#   docker compose -f docker-compose.jetson.yml up -d
+#
+# Verify the GPU is really being used:
+#   curl -s localhost:11434/api/ps | jq '.models[] | {name, size, size_vram}'
+#   (size_vram must equal size — the plugin's "GPU Acceleration" card shows the
+#   same thing, and says what to change when it does not.)
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    runtime: nvidia
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+      # Lets Ollama identify the board as a Jetson and pick its CUDA runner.
+      - /etc/nv_tegra_release:/etc/nv_tegra_release:ro
+    environment:
+      - JETSON_JETPACK=6
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Fused attention kernels: less memory traffic and a smaller KV cache
+      # footprint on Ampere (Orin is SM 8.7).
+      - OLLAMA_FLASH_ATTENTION=1
+      # 8-bit KV cache roughly halves cache memory, which is what buys the
+      # headroom to keep every layer on the GPU inside 8 GB of unified memory.
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+      # Keep the model resident between operator questions; reloading it from
+      # the Jetson's storage costs seconds.
+      - OLLAMA_KEEP_ALIVE=30m
+      # One model, one request at a time. Concurrency on a single 1024-core
+      # iGPU with shared memory trades latency for nothing.
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      # Headroom left free for the display/compositor and other CUDA users.
+      - OLLAMA_GPU_OVERHEAD=536870912
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 7G
+        reservations:
+          memory: 2G
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    entrypoint: /bin/sh
+    command: -c "ollama serve & sleep 5 && ollama pull gemma4:e2b && wait"

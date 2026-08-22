@@ -73,7 +73,10 @@ async function main() {
       throw new Error(`No test files found in ${tmpTestsDir} or ${path.join(projectRoot, 'test')}`);
     }
 
-    await runNode(['--experimental-specifier-resolution=node', '--test', ...testFiles]);
+    // Compiled tests use explicit .js specifiers, so no resolver flag is
+    // needed — and --experimental-specifier-resolution is not accepted by
+    // every Node release the plugin CI matrix covers.
+    await runNode(['--test', ...testFiles]);
   } finally {
     await rm(tmpTestsDir, { recursive: true, force: true });
   }

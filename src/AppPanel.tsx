@@ -2,7 +2,7 @@ import React from 'react';
 import { executeBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import type { AiChatMessage } from './types.js';
+import type { AcceleratorStatus, AiChatMessage } from './types.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -22,8 +22,15 @@ interface BackendStatus {
   readonly enabled: boolean;
   readonly baseUrl: string;
   readonly model: string;
+  readonly backend?: string;
   readonly requestTimeoutMs: number;
   readonly maxTokens?: number;
+  readonly numCtx?: number;
+  readonly numGpu?: number;
+  readonly numBatch?: number;
+  readonly numThread?: number;
+  readonly keepAlive?: string;
+  readonly accelerator?: AcceleratorStatus;
   readonly aiDataPaths?: readonly string[];
   readonly signalKSelfId?: string;
   readonly aiAvailable?: boolean;
@@ -72,6 +79,51 @@ function formatTimeoutLabel(timeoutMs: number | undefined): string {
   }
 
   return timeoutMs === 0 ? 'Disabled' : `${timeoutMs} ms`;
+}
+
+function formatBytes(bytes: number | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const scaled = bytes / 1024 ** exponent;
+  return `${scaled.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatBackendLabel(backend: string | undefined): string {
+  return backend === 'tensorrt-llm' ? 'TensorRT-LLM (CUDA engine)' : 'Ollama (llama.cpp CUDA)';
+}
+
+interface AcceleratorPresentation {
+  readonly label: string;
+  readonly background: string;
+  readonly border: string;
+  readonly color: string;
+}
+
+function describeAccelerator(accelerator: AcceleratorStatus | undefined): AcceleratorPresentation {
+  switch (accelerator?.state) {
+    case 'gpu':
+      return { label: 'GPU accelerated', background: '#f0fdf4', border: '#86efac', color: '#166534' };
+    case 'partial':
+      return { label: 'Partly on CPU', background: '#fff7ed', border: '#fdba74', color: '#9a3412' };
+    case 'cpu':
+      return { label: 'CPU only', background: '#fef2f2', border: '#fca5a5', color: '#991b1b' };
+    case 'not-loaded':
+      return { label: 'Model not loaded', background: '#f8fafc', border: '#cbd5e1', color: '#475569' };
+    default:
+      return { label: 'Unknown', background: '#f8fafc', border: '#cbd5e1', color: '#475569' };
+  }
+}
+
+function formatThroughput(tokensPerSecond: number | undefined): string | undefined {
+  if (typeof tokensPerSecond !== 'number' || !Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return undefined;
+  }
+
+  return `${tokensPerSecond.toFixed(1)} tokens/s`;
 }
 
 function shouldShowReadmeHelp(status: BackendStatus | null): boolean {
@@ -250,6 +302,11 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, [props, aiInput]);
 
+  const acceleratorPresentation = React.useMemo(
+    () => describeAccelerator(backendStatus?.accelerator),
+    [backendStatus]
+  );
+
   return (
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>
       <h2 style={{ marginTop: 0 }}>Signal K AI Bridge</h2>
@@ -365,6 +422,47 @@ export default function AppPanel(props: AppPanelProps) {
           ) : (
             <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
           )}
+        </section>
+
+        <section
+          style={{
+            padding: '0.75rem',
+            borderRadius: '8px',
+            backgroundColor: acceleratorPresentation.background,
+            border: `1px solid ${acceleratorPresentation.border}`
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>GPU Acceleration</h3>
+          <p style={{ margin: 0 }}>
+            Runtime: {formatBackendLabel(backendStatus?.backend)}
+            <br />
+            Status:{' '}
+            <strong style={{ color: acceleratorPresentation.color }}>{acceleratorPresentation.label}</strong>
+            {backendStatus?.accelerator?.supported && backendStatus.accelerator.totalBytes ? (
+              <>
+                <br />
+                In GPU memory: {formatBytes(backendStatus.accelerator.vramBytes)} of{' '}
+                {formatBytes(backendStatus.accelerator.totalBytes)}
+              </>
+            ) : null}
+            <br />
+            Context window: {backendStatus?.numCtx ?? 'Unavailable'} tokens
+            <br />
+            GPU layers: {backendStatus?.numGpu === undefined
+              ? 'Unavailable'
+              : backendStatus.numGpu < 0
+                ? 'Auto'
+                : backendStatus.numGpu === 0
+                  ? 'CPU only'
+                  : backendStatus.numGpu}
+            <br />
+            Keep loaded: {backendStatus?.keepAlive ?? 'Unavailable'}
+          </p>
+          {backendStatus?.accelerator?.message ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: acceleratorPresentation.color }}>
+              {backendStatus.accelerator.message}
+            </p>
+          ) : null}
         </section>
       </div>
 
@@ -508,6 +606,19 @@ export default function AppPanel(props: AppPanelProps) {
                 <>
                   <br />
                   Total tokens: {toolResult.response.usage.totalTokens}
+                </>
+              ) : null}
+              {formatThroughput(toolResult.response.performance?.tokensPerSecond) ? (
+                <>
+                  <br />
+                  Generation speed: {formatThroughput(toolResult.response.performance?.tokensPerSecond)}
+                </>
+              ) : null}
+              {typeof toolResult.response.performance?.loadMs === 'number' &&
+              toolResult.response.performance.loadMs > 0 ? (
+                <>
+                  <br />
+                  Model load: {toolResult.response.performance.loadMs} ms
                 </>
               ) : null}
             </p>

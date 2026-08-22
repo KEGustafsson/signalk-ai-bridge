@@ -36,6 +36,16 @@ export default defineConfig({
       shared: sharedDependencies as never
     })
   ],
+  server: {
+    // Lets `npm run dev` render the panel against a real backend: either a
+    // Signal K server running the plugin, or scripts/preview-host.mjs.
+    proxy: {
+      '/plugins/signalk-ai-bridge': {
+        target: process.env.SIGNALK_AI_BRIDGE_DEV_TARGET ?? 'http://localhost:3000',
+        changeOrigin: true
+      }
+    }
+  },
   build: {
     outDir: 'public',
     emptyOutDir: true,

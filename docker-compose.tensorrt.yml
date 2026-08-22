@@ -1,0 +1,62 @@
+# NVIDIA TensorRT-LLM on a Jetson Orin Nano Super, exposed as an
+# OpenAI-compatible server for the plugin's `tensorrt-llm` backend.
+#
+# Where Ollama compiles nothing and decides the CPU/GPU split at load time,
+# TensorRT-LLM builds a CUDA engine ahead of time for this GPU's SM version
+# (8.7 on Orin) and a fixed maximum sequence length. That removes the runtime
+# split entirely — the engine either fits and runs on the Tensor cores, or it
+# fails to build — and lets the Orin's INT4/FP8 paths be used directly.
+#
+# Configure the plugin with:
+#   backend  = tensorrt-llm
+#   baseUrl  = http://localhost:8000
+#   model    = the model id reported by GET /v1/models
+#
+# The image tag below must match the JetPack version on the host; see
+# https://github.com/NVIDIA/TensorRT-LLM and the jetson-containers project for
+# the current Jetson builds.
+
+services:
+  tensorrt-llm:
+    image: nvcr.io/nvidia/tensorrt-llm/release:latest
+    container_name: tensorrt-llm
+    restart: unless-stopped
+    runtime: nvidia
+    ports:
+      - "8000:8000"
+    volumes:
+      # Hugging Face checkpoints and the engines built from them. Building an
+      # engine is slow; keeping it on a persistent volume means it happens once.
+      - ./trtllm_models:/models
+      - ./trtllm_engines:/engines
+      - /etc/nv_tegra_release:/etc/nv_tegra_release:ro
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HOME=/models
+    # `--max_seq_len` is the hard ceiling the engine is compiled with. Keep the
+    # plugin's "GPU context window" (num_ctx) at or below it: unlike Ollama,
+    # asking for more is a request error, not a silent CPU fallback.
+    command: >-
+      trtllm-serve /models/gemma-4-e2b
+      --host 0.0.0.0
+      --port 8000
+      --backend pytorch
+      --max_batch_size 1
+      --max_seq_len 8192
+      --kv_cache_free_gpu_memory_fraction 0.6
+    deploy:
+      resources:
+        limits:
+          memory: 7G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 300s

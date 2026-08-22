@@ -26,6 +26,7 @@ export interface AiBridgeResponse {
   readonly model: string;
   readonly createdAt: string;
   readonly usage?: AiTokenUsage;
+  readonly performance?: AiPerformance;
 }
 
 export interface AiChatMessage {
@@ -37,4 +38,27 @@ export interface AiRequestContext {
   readonly serverId?: string;
   readonly aiDataPaths?: readonly string[];
   readonly selectedData?: Record<string, unknown>;
+}
+
+export type AcceleratorState = 'gpu' | 'partial' | 'cpu' | 'not-loaded' | 'unknown';
+
+export interface AcceleratorStatus {
+  /** False when the backend cannot report a CPU/GPU split (TensorRT-LLM). */
+  readonly supported: boolean;
+  readonly state: AcceleratorState;
+  readonly model?: string;
+  readonly totalBytes?: number;
+  readonly vramBytes?: number;
+  readonly vramRatio?: number;
+  readonly expiresAt?: string;
+  readonly loadedModels?: number;
+  readonly message: string;
+}
+
+export interface AiPerformance {
+  readonly totalMs?: number;
+  readonly loadMs?: number;
+  readonly promptEvalMs?: number;
+  readonly evalMs?: number;
+  readonly tokensPerSecond?: number;
 }
