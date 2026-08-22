@@ -35,6 +35,19 @@ this project uses [semantic versioning](https://semver.org/).
 - **INT4-AWQ TensorRT-LLM engine build script.** `scripts/build-trtllm-engine.sh`
   quantizes and builds an engine for SM 8.7, the configuration that makes most
   use of the Orin's Tensor cores.
+- **Streaming responses.** The answer now appears token by token as the model
+  generates it, over a new `POST /bridge/stream` NDJSON route. Throughput is
+  unchanged — the GPU generates at the same rate — but on a Jetson producing
+  tens of tokens per second, a long vessel summary goes from a spinner to
+  visible text in a few hundred milliseconds. Falls back to the blocking route
+  when streaming is unavailable, and a mid-stream failure surfaces as an error
+  rather than replaying and duplicating text.
+- **KV cache configuration hint.** Ollama exposes no endpoint reporting its own
+  settings, so the plugin now infers the cache type arithmetically: model
+  geometry from `/api/show`, weight size from `/api/tags` and resident size from
+  `/api/ps`. When the footprint matches an unquantized f16 cache it says so, and
+  reports the memory `OLLAMA_FLASH_ATTENTION=1` plus `OLLAMA_KV_CACHE_TYPE=q8_0`
+  would free. Reported as an estimate, and silent when it cannot tell.
 - **Model preload on start.** The plugin warms the model into GPU memory when it
   starts (`warmupOnStart`), so the first operator question does not pay a
   multi-second cold load from Jetson storage.
@@ -51,6 +64,8 @@ this project uses [semantic versioning](https://semver.org/).
 - Package metadata required by the Signal K App Store and plugin registry:
   `repository`, `homepage`, `bugs`, `engines.node`, `signalk.screenshots`, and a
   published `assets/` directory.
+- **Apache-2.0 licence.** `LICENSE` and the `license` field in `package.json`,
+  which npm previously warned about on publish.
 
 ### Changed
 
@@ -74,6 +89,8 @@ this project uses [semantic versioning](https://semver.org/).
 
 - A non-numeric `status_code` on a backend error no longer produces a
   `NaN` HTTP status on the plugin's own routes.
+- Message text is no longer trimmed per streamed fragment, which would have
+  welded words together at chunk boundaries.
 
 ## [0.1.0-beta.1]
 

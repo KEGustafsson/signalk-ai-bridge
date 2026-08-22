@@ -313,6 +313,59 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /**
+   * Newline-delimited JSON stream of the answer as it is generated.
+   *
+   * NDJSON rather than SSE: the payload is already JSON objects, every line is
+   * independently parseable, and it survives Express's default handling without
+   * needing an event-source content type. Each line is one of
+   *   {"type":"token","text":"..."}
+   *   {"type":"result", ...}   (the same shape /bridge/execute returns)
+   *   {"type":"error","error":{...}}
+   *
+   * Errors after the first byte cannot use a status code — the header is long
+   * gone — so they are delivered as a trailing error line instead.
+   */
+  const bridgeStreamHandler = async (req, res) => {
+    let headersSent = false;
+
+    const writeLine = (payload) => {
+      if (!headersSent) {
+        res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('cache-control', 'no-cache, no-transform');
+        // Without this a reverse proxy in front of Signal K may buffer the
+        // whole response and defeat the point of streaming.
+        res.setHeader('x-accel-buffering', 'no');
+        if (typeof res.status === 'function') {
+          res.status(200);
+        }
+        if (typeof res.flushHeaders === 'function') {
+          res.flushHeaders();
+        }
+        headersSent = true;
+      }
+      res.write(`${JSON.stringify(payload)}\n`);
+    };
+
+    try {
+      const config = getConfig();
+      const body = await readJsonBody(req);
+      const result = await bridgeService.streamTool(body, config, (text) => {
+        writeLine({ type: 'token', text });
+      });
+
+      writeLine(result);
+      res.end();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown bridge failure.';
+      const code =
+        typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
+
+      writeLine({ type: 'error', error: { code, message } });
+      res.end();
+    }
+  };
+
   return {
     id: 'signalk-ai-bridge',
     name: 'AI Bridge',
@@ -358,6 +411,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/ai/status', statusHandler);
       router.post('/ai/query', queryHandler);
       router.post('/bridge/execute', bridgeExecuteHandler);
+      router.post('/bridge/stream', bridgeStreamHandler);
       routesRegistered = true;
     },
     stop: () => {

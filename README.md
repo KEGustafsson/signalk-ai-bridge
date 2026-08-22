@@ -33,6 +33,7 @@ With this plugin you can:
 - see a history of previous AI requests
 - inspect the actual request that was sent to the model
 - check whether Ollama and the configured model are available
+- watch the answer stream in as the model generates it
 - see whether the model is actually running on the GPU, and how fast it generates
 
 ## What You Need
@@ -135,13 +136,24 @@ card reads the board's own sysfs and reports the model, JetPack/L4T version,
 with a warning and the exact command to run when any of them is holding the GPU
 back. When Signal K runs elsewhere, this section is simply absent.
 
+### Streaming
+
+Answers stream token by token over `POST /bridge/stream` (newline-delimited
+JSON), so the first words appear in a few hundred milliseconds instead of after
+the whole answer is generated. This does not make the GPU faster — it changes
+when you see the output. The panel falls back to the blocking route
+automatically if streaming is unavailable.
+
 ### Squeezing the most out of the hardware
 
 Roughly in order of what they buy on an Orin Nano Super:
 
 1. `docker-compose.jetson.yml` — NVIDIA runtime, flash attention and a q8_0 KV
    cache. Without the runtime there is no GPU at all; the other two are what make
-   full residency achievable.
+   full residency achievable. If you run your own Ollama, the panel estimates
+   whether the KV cache is quantized and tells you what enabling it would free —
+   Ollama reports no configuration, so this is inferred from the resident
+   footprint rather than read.
 2. `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the panel names the id.
 3. Leave `gpuAutoTune` on, so full offload is driven rather than hoped for.
 4. `scripts/build-trtllm-engine.sh` — an INT4-AWQ TensorRT-LLM engine compiled
@@ -323,6 +335,10 @@ To build the packaged web UI:
 ```bash
 npm run build
 ```
+
+## Licence
+
+Apache-2.0. See [`LICENSE`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/LICENSE).
 
 ## Continuous Integration
 

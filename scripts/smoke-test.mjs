@@ -14,11 +14,13 @@ const requiredFiles = [
   'lib/gpu-offload.cjs',
   'lib/gpu-telemetry.cjs',
   'lib/jetson-telemetry.cjs',
+  'lib/kv-cache.cjs',
   'lib/http-utils.cjs',
   'lib/tensorrt-service.cjs',
   'index.cjs',
   'README.md',
   'CHANGELOG.md',
+  'LICENSE',
   'docker-compose.gemma.yml',
   'docker-compose.jetson.yml',
   'docker-compose.tensorrt.yml',
@@ -33,6 +35,7 @@ for (const file of requiredFiles) {
 const bridgeRuntimeSource = fs.readFileSync('src/bridgeRuntime.ts', 'utf8');
 assert.match(bridgeRuntimeSource, /DEFAULT_BRIDGE_ENDPOINT/);
 assert.match(bridgeRuntimeSource, /export async function executeBridgeRequest/);
+assert.match(bridgeRuntimeSource, /export async function streamBridgeRequest/);
 assert.match(bridgeRuntimeSource, /plugins\/signalk-ai-bridge\/bridge\/execute/);
 
 const bridgeServiceSource = fs.readFileSync('lib/bridge-service.cjs', 'utf8');
@@ -42,6 +45,7 @@ assert.match(bridgeServiceSource, /case 'ask-vessel-ai'/);
 
 const pluginSource = fs.readFileSync('index.cjs', 'utf8');
 assert.match(pluginSource, /router\.post\('\/bridge\/execute'/);
+assert.match(pluginSource, /router\.post\('\/bridge\/stream'/);
 assert.match(pluginSource, /router\.post\('\/ai\/query'/);
 assert.match(pluginSource, /numCtx/);
 assert.match(pluginSource, /keepAlive/);
@@ -53,6 +57,7 @@ const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 assert.ok(pkg.keywords.includes('signalk-node-server-plugin'), 'Missing signalk-node-server-plugin keyword');
 assert.ok(typeof pkg.repository?.url === 'string', 'package.json needs a repository URL');
 assert.ok(typeof pkg.engines?.node === 'string', 'package.json needs engines.node');
+assert.ok(typeof pkg.license === 'string' && pkg.license.length > 0, 'package.json needs a license');
 assert.ok(
   Array.isArray(pkg.signalk?.screenshots) && pkg.signalk.screenshots.length > 0,
   'package.json needs at least one signalk.screenshots entry'

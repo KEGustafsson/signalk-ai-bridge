@@ -1,5 +1,5 @@
 import React from 'react';
-import { executeBridgeRequest } from './bridgeRuntime.js';
+import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage } from './types.js';
@@ -199,17 +199,24 @@ function getAskAiRequestText(result: AskVesselAiResult, fallbackPrompt: string):
 
 async function runTool(
   props: AppPanelProps,
-  aiInput: AiInput
+  aiInput: AiInput,
+  onToken: (text: string) => void
 ): Promise<ToolResult> {
-  return executeBridgeRequest(props, {
-    toolId: 'ask-vessel-ai',
-    prompt: aiInput.prompt
-  });
+  return streamBridgeRequest(
+    props,
+    {
+      toolId: 'ask-vessel-ai',
+      prompt: aiInput.prompt
+    },
+    onToken
+  );
 }
 
 export default function AppPanel(props: AppPanelProps) {
   const [toolResult, setToolResult] = React.useState<ToolResult | null>(null);
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
+  // Text accumulated from the stream, shown until the final result arrives.
+  const [streamingAnswer, setStreamingAnswer] = React.useState<string>('');
   const [aiRequestLog, setAiRequestLog] = React.useState<AiRequestLogEntry[]>([]);
   const [backendStatus, setBackendStatus] = React.useState<BackendStatus | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
@@ -280,6 +287,8 @@ export default function AppPanel(props: AppPanelProps) {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
     setIsLoading(true);
+    setStreamingAnswer('');
+    setToolResult(null);
     const trimmedPrompt = aiInput.prompt.trim();
     setAiRequestLog((previous) => {
       const pendingEntry: AiRequestLogEntry = {
@@ -293,8 +302,14 @@ export default function AppPanel(props: AppPanelProps) {
     });
 
     try {
-      const result = await runTool(props, aiInput);
+      const result = await runTool(props, aiInput, (text) => {
+        setStreamingAnswer((previous) => previous + text);
+      });
+      // The result's answer is authoritative — it is the complete text the
+      // backend assembled, so the streamed preview is discarded rather than
+      // trusted as the final rendering.
       setToolResult(result);
+      setStreamingAnswer('');
       setAiRequestLog((previous) =>
         previous.map((entry) =>
           entry.id === requestId
@@ -313,6 +328,7 @@ export default function AppPanel(props: AppPanelProps) {
       );
     } finally {
       setIsLoading(false);
+      setStreamingAnswer('');
     }
   }, [props, aiInput]);
 
@@ -322,6 +338,7 @@ export default function AppPanel(props: AppPanelProps) {
   );
   const jetson = backendStatus?.accelerator?.jetson;
   const autoTune = backendStatus?.accelerator?.autoTune;
+  const cacheHint = backendStatus?.accelerator?.cache;
 
   return (
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>
@@ -515,6 +532,23 @@ export default function AppPanel(props: AppPanelProps) {
           {autoTune?.tuned && autoTune.reason ? (
             <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Auto-tuned: {autoTune.reason}</p>
           ) : null}
+          {cacheHint && !cacheHint.quantized ? (
+            <p
+              style={{
+                margin: '0.5rem 0 0 0',
+                padding: '0.5rem',
+                borderRadius: '6px',
+                backgroundColor: '#fff7ed',
+                border: '1px solid #fdba74',
+                color: '#9a3412'
+              }}
+            >
+              {cacheHint.message}
+            </p>
+          ) : null}
+          {cacheHint?.quantized ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>{cacheHint.message}</p>
+          ) : null}
           {(jetson?.warnings ?? []).map((warning) => (
             <p
               key={warning}
@@ -645,10 +679,21 @@ export default function AppPanel(props: AppPanelProps) {
               gap: '0.5rem'
             }}
           >
-            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>{getLoadingLabel(backendStatus)}</p>
-            <p style={{ margin: 0, color: '#475569' }}>
-              The request has been sent. The response will appear here as soon as the model finishes.
+            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>
+              {streamingAnswer.length > 0 ? 'Streaming AI response...' : getLoadingLabel(backendStatus)}
             </p>
+            {streamingAnswer.length > 0 ? (
+              <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+                {streamingAnswer}
+                <span aria-hidden="true" style={{ color: '#1d4ed8' }}>
+                  {'\u2588'}
+                </span>
+              </p>
+            ) : (
+              <p style={{ margin: 0, color: '#475569' }}>
+                The request has been sent. The response will appear here as the model generates it.
+              </p>
+            )}
           </div>
         ) : toolResult?.type === 'ask-vessel-ai-result' ? (
           <div style={{ display: 'grid', gap: '0.75rem' }}>

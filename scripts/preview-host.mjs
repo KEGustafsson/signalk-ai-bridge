@@ -41,6 +41,19 @@ const STUB_ANSWER = [
   'Nothing else in the shared Signal K context needs operator action.'
 ].join('\n');
 
+async function readBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8').trim();
+  try {
+    return raw.length === 0 ? {} : JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
@@ -82,17 +95,61 @@ function startStubOllama() {
     }
 
     if (req.url === '/api/chat') {
-      sendJson(res, 200, {
-        model: STUB_MODEL,
-        created_at: new Date().toISOString(),
-        message: { role: 'assistant', content: STUB_ANSWER },
+      const finalFields = {
         prompt_eval_count: 412,
         eval_count: 168,
         prompt_eval_duration: 900_000_000,
         eval_duration: 4_600_000_000,
         load_duration: 12_000_000,
-        total_duration: 5_600_000_000,
-        done: true
+        total_duration: 5_600_000_000
+      };
+
+      readBody(req).then((body) => {
+        if (!body.stream) {
+          sendJson(res, 200, {
+            model: STUB_MODEL,
+            created_at: new Date().toISOString(),
+            message: { role: 'assistant', content: STUB_ANSWER },
+            done: true,
+            ...finalFields
+          });
+          return;
+        }
+
+        // Ollama streams NDJSON, one chunk per token-ish fragment. Splitting on
+        // word boundaries (keeping the trailing space) mimics that closely
+        // enough to exercise the client's reassembly.
+        res.writeHead(200, { 'content-type': 'application/x-ndjson' });
+        const fragments = STUB_ANSWER.match(/\S+\s*/g) ?? [STUB_ANSWER];
+        let index = 0;
+
+        const pump = () => {
+          if (index >= fragments.length) {
+            res.end(
+              `${JSON.stringify({
+                model: STUB_MODEL,
+                created_at: new Date().toISOString(),
+                message: { role: 'assistant', content: '' },
+                done: true,
+                ...finalFields
+              })}\n`
+            );
+            return;
+          }
+
+          res.write(
+            `${JSON.stringify({
+              model: STUB_MODEL,
+              created_at: new Date().toISOString(),
+              message: { role: 'assistant', content: fragments[index] },
+              done: false
+            })}\n`
+          );
+          index += 1;
+          setTimeout(pump, 12);
+        };
+
+        pump();
       });
       return;
     }
@@ -159,6 +216,20 @@ function createResponseAdapter(res) {
     json(payload) {
       sendJson(res, statusCode, payload);
       return this;
+    },
+    // The streaming route writes headers and NDJSON lines directly, so the
+    // adapter has to expose the same surface Express gives it.
+    setHeader(name, value) {
+      res.setHeader(name, value);
+    },
+    flushHeaders() {
+      res.flushHeaders();
+    },
+    write(chunk) {
+      return res.write(chunk);
+    },
+    end(chunk) {
+      res.end(chunk);
     }
   };
 }

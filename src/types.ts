@@ -71,6 +71,16 @@ export interface AcceleratorAutoTune {
   readonly reason?: string;
 }
 
+export interface KvCacheHint {
+  /** True when the backend already runs a quantized KV cache. */
+  readonly quantized: boolean;
+  readonly savingBytes?: number;
+  readonly numCtx?: number;
+  readonly likelyCacheType?: string;
+  readonly observedOverheadBytes?: number;
+  readonly message: string;
+}
+
 export interface AcceleratorStatus {
   /** False when the backend cannot report a CPU/GPU split (TensorRT-LLM). */
   readonly supported: boolean;
@@ -83,6 +93,7 @@ export interface AcceleratorStatus {
   readonly loadedModels?: number;
   readonly message: string;
   readonly autoTune?: AcceleratorAutoTune;
+  readonly cache?: KvCacheHint;
   readonly jetson?: JetsonTelemetry;
 }
 
