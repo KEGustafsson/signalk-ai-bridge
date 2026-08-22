@@ -48,6 +48,12 @@ this project uses [semantic versioning](https://semver.org/).
   `/api/ps`. When the footprint matches an unquantized f16 cache it says so, and
   reports the memory `OLLAMA_FLASH_ATTENTION=1` plus `OLLAMA_KV_CACHE_TYPE=q8_0`
   would free. Reported as an estimate, and silent when it cannot tell.
+- **TensorRT-LLM streaming.** The OpenAI backend now streams over SSE with
+  `stream_options.include_usage`, so it reports token counts like the blocking
+  path does. Previously only Ollama streamed.
+- **`POST /ai/retune`.** Re-measures the GPU fit from the configured settings
+  without restarting the plugin, since the start-up tuner only ever shrinks the
+  context window and never grows it back within a run.
 - **Model preload on start.** The plugin warms the model into GPU memory when it
   starts (`warmupOnStart`), so the first operator question does not pay a
   multi-second cold load from Jetson storage.
@@ -69,6 +75,13 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Changed
 
+- **Roughly half the prompt tokens.** Prompt evaluation is GPU work, so the
+  context sent to the model is now compact JSON rather than two-space indented,
+  numbers are rounded to 6 decimals, and the configured path list is no longer
+  repeated alongside data that is already keyed by path — only paths that
+  produced no value are listed, which is what the system prompt actually needs.
+  Measured at 46% fewer characters on a typical wildcard selection. The context
+  returned to the panel is unchanged.
 - **`maxTokens` no longer sizes the KV cache.** It now maps to `num_predict`
   only; the context window is the separate `numCtx` setting. The previous
   behaviour requested a 131072-token context on every request, which on 8 GB of

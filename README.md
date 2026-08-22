@@ -141,15 +141,37 @@ back. When Signal K runs elsewhere, this section is simply absent.
 Answers stream token by token over `POST /bridge/stream` (newline-delimited
 JSON), so the first words appear in a few hundred milliseconds instead of after
 the whole answer is generated. This does not make the GPU faster — it changes
-when you see the output. The panel falls back to the blocking route
+when you see the output. Both backends stream (Ollama's NDJSON and
+TensorRT-LLM's SSE), and the panel falls back to the blocking route
 automatically if streaming is unavailable.
+
+### Prompt size
+
+Prompt evaluation is GPU work, so the context sent to the model is kept tight:
+compact JSON rather than indented, numbers rounded to 6 decimals (finer than any
+sensor on a boat), and the data keyed by path instead of repeating the path list
+alongside it. Paths that produced no value are listed separately, so the model
+can still be explicit about what is missing. On a typical wildcard selection
+this is roughly half the tokens the plugin used to send, on every request.
+
+The context returned to the panel is unchanged — only what reaches the model is
+compacted.
+
+### Re-tuning without a restart
+
+The start-up tuner only ever shrinks the context window. If memory is freed
+later — another process exits, a smaller model is loaded — the reduced value
+persists for the life of the run. `POST /plugins/signalk-ai-bridge/ai/retune`
+discards the tuned state and measures the fit again. It is deliberately manual:
+re-tuning reloads the model, which is not something to do unprompted mid-voyage.
 
 ### Squeezing the most out of the hardware
 
 Roughly in order of what they buy on an Orin Nano Super:
 
 1. `docker-compose.jetson.yml` — NVIDIA runtime, flash attention and a q8_0 KV
-   cache. Without the runtime there is no GPU at all; the other two are what make
+   cache (`q4_0` halves the cache again if you need a larger context, at some
+   cost to answer quality). Without the runtime there is no GPU at all; the other two are what make
    full residency achievable. If you run your own Ollama, the panel estimates
    whether the KV cache is quantized and tells you what enabling it would free —
    Ollama reports no configuration, so this is inferred from the resident

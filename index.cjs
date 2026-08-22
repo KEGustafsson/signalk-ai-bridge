@@ -23,6 +23,7 @@ const {
   queryAiModel,
   readJsonBody,
   resetRuntimeState,
+  retuneOffload,
   warmUpModel
 } = require('./lib/ai-service.cjs');
 const { createBridgeService } = require('./lib/bridge-service.cjs');
@@ -314,6 +315,28 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
+   * Re-measure the GPU fit and report the result.
+   *
+   * The start-up tuner never grows its context window back, so this is how an
+   * operator picks up memory that has since been freed without restarting the
+   * plugin.
+   */
+  const retuneHandler = async (req, res) => {
+    try {
+      const config = getConfig();
+      const result = await retuneOffload(config, dependencies);
+      res.status(result.retuned ? 200 : 503).json(result);
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'unknown',
+          message: error instanceof Error ? error.message : 'Unknown re-tune failure.'
+        }
+      });
+    }
+  };
+
+  /**
    * Newline-delimited JSON stream of the answer as it is generated.
    *
    * NDJSON rather than SSE: the payload is already JSON objects, every line is
@@ -415,6 +438,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/ai/query', queryHandler);
       router.post('/bridge/execute', bridgeExecuteHandler);
       router.post('/bridge/stream', bridgeStreamHandler);
+      router.post('/ai/retune', retuneHandler);
       routesRegistered = true;
     },
     stop: () => {

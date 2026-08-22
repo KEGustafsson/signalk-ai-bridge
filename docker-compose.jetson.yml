@@ -41,6 +41,9 @@ services:
       - OLLAMA_FLASH_ATTENTION=1
       # 8-bit KV cache roughly halves cache memory, which is what buys the
       # headroom to keep every layer on the GPU inside 8 GB of unified memory.
+      # q4_0 halves it again — worth trying when the plugin's GPU Acceleration
+      # card still reports a partial offload at a context you need, at some cost
+      # to answer quality. Requires OLLAMA_FLASH_ATTENTION=1 either way.
       - OLLAMA_KV_CACHE_TYPE=q8_0
       # Keep the model resident between operator questions; reloading it from
       # the Jetson's storage costs seconds.

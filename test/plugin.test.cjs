@@ -174,7 +174,12 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.context.selectedData['navigation.position.latitude'], 60.1);
     assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 5.4);
     assert.equal(bridgeResponse.body.context.selectedData.notifications['navigation.anchor'].state, 'alarm');
-    assert.match(capturedMessages[1].content, /selectedData/);
+    // The prompt carries the data keyed by path, with no second copy of the
+    // path list — every token here is prompt-eval work on the GPU.
+    assert.match(capturedMessages[1].content, /"data":/);
+    assert.match(capturedMessages[1].content, /navigation\.speedOverGround/);
+    assert.doesNotMatch(capturedMessages[1].content, /"aiDataPaths"/);
+    assert.doesNotMatch(capturedMessages[1].content, /\n  "/);
   });
 
   it('converts angle data from radians to degrees before sending it to AI', async () => {
@@ -475,7 +480,11 @@ describe('signalk-ai-bridge plugin', () => {
 
     assert.equal(queryResponse.statusCode, 200);
     assert.equal(queryResponse.body.answer, 'Prompt-only request worked.');
-    assert.match(capturedMessages[1].content, /selectedData/);
+    // The prompt carries the data keyed by path, with no second copy of the
+    // path list — every token here is prompt-eval work on the GPU.
+    assert.match(capturedMessages[1].content, /"data":/);
+    assert.doesNotMatch(capturedMessages[1].content, /"aiDataPaths"/);
+    assert.doesNotMatch(capturedMessages[1].content, /\n  "/);
     assert.match(capturedMessages[1].content, /navigation\.position/);
     assert.match(capturedMessages[1].content, /notifications/);
   });

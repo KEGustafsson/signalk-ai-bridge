@@ -26,6 +26,28 @@ function streamingClient(fragments, final = {}) {
   };
 }
 
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  });
+}
+
+/** A response whose body streams the given Server-Sent Events text. */
+function sseResponse(chunks) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    }
+  });
+
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
 /** Collects everything a streaming route writes, as parsed NDJSON lines. */
 function createStreamRecorder() {
   const chunks = [];
@@ -179,22 +201,78 @@ describe('streamAiModel', () => {
     assert.equal(blockingCalls, 0);
   });
 
-  it('uses the blocking path for backends that cannot stream', async () => {
+  it('streams TensorRT-LLM over SSE', async () => {
+    const fragments = [];
+    let requestBody;
+
     const result = await streamAiModel(
       { prompt: 'Status?' },
       normalizeAiConfig({ backend: 'tensorrt-llm' }),
       {
-        fetchImpl: async (url) => {
+        fetchImpl: async (url, init) => {
           assert.match(String(url), /\/v1\/chat\/completions$/);
-          return new Response(
-            JSON.stringify({ choices: [{ message: { content: 'From TensorRT-LLM.' } }] }),
-            { status: 200, headers: { 'content-type': 'application/json' } }
-          );
+          requestBody = JSON.parse(String(init.body));
+          return sseResponse([
+            'data: {"model":"trt","choices":[{"delta":{"content":"All "}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"nominal."}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":30,"completion_tokens":4,"total_tokens":34}}\n\n',
+            'data: [DONE]\n\n'
+          ]);
+        }
+      },
+      (text) => fragments.push(text)
+    );
+
+    assert.equal(requestBody.stream, true);
+    // Without include_usage a streamed OpenAI response carries no token counts.
+    assert.deepEqual(requestBody.stream_options, { include_usage: true });
+    assert.deepEqual(fragments, ['All ', 'nominal.']);
+    assert.equal(result.answer, 'All nominal.');
+    assert.equal(result.usage.totalTokens, 34);
+  });
+
+  it('reassembles TensorRT-LLM events split across chunk boundaries', async () => {
+    const fragments = [];
+
+    const result = await streamAiModel(
+      { prompt: 'Status?' },
+      normalizeAiConfig({ backend: 'tensorrt-llm' }),
+      {
+        fetchImpl: async () =>
+          sseResponse([
+            'data: {"choices":[{"delta":{"con',
+            'tent":"split"}}]}\n\ndata: [DO',
+            'NE]\n\n'
+          ])
+      },
+      (text) => fragments.push(text)
+    );
+
+    assert.deepEqual(fragments, ['split']);
+    assert.equal(result.answer, 'split');
+  });
+
+  it('falls back to a blocking TensorRT-LLM request when the stream yields nothing', async () => {
+    const bodies = [];
+
+    const result = await streamAiModel(
+      { prompt: 'Status?' },
+      normalizeAiConfig({ backend: 'tensorrt-llm' }),
+      {
+        fetchImpl: async (url, init) => {
+          const body = JSON.parse(String(init.body));
+          bodies.push(body.stream === true);
+          if (body.stream) {
+            // A server that ignores `stream` and answers in one JSON object.
+            return sseResponse(['{"choices":[{"message":{"content":"Blocking."}}]}']);
+          }
+          return jsonResponse({ choices: [{ message: { content: 'Blocking.' } }] });
         }
       }
     );
 
-    assert.equal(result.answer, 'From TensorRT-LLM.');
+    assert.deepEqual(bodies, [true, false]);
+    assert.equal(result.answer, 'Blocking.');
   });
 });
 
