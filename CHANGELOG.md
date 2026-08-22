@@ -30,8 +30,9 @@ this project uses [semantic versioning](https://semver.org/).
   container runtime, flash attention and a quantized KV cache) and
   `docker-compose.tensorrt.yml` (TensorRT-LLM OpenAI server).
 - **Official Signal K plugin CI.** `.github/workflows/plugin-ci.yml` calls the
-  canonical `SignalK/signalk-server` reusable workflow, including the armv7
-  (Venus OS) leg and a live `signalk-server` integration test.
+  canonical `SignalK/signalk-server` reusable workflow, including a live
+  `signalk-server` integration test. The armv7 (Venus OS) leg is disabled — the
+  plugin targets hosts with an NVIDIA GPU.
 - Package metadata required by the Signal K App Store and plugin registry:
   `repository`, `homepage`, `bugs`, `engines.node`, `signalk.screenshots`, and a
   published `assets/` directory.

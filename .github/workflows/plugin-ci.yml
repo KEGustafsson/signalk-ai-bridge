@@ -5,8 +5,8 @@
 # load it: package.json metadata, entry point, schema(), start/stop/restart
 # lifecycle, deprecated/internal API usage, npm pack contents, an
 # --ignore-scripts App Store install, and the plugin's own test suite — across
-# Linux x64/arm64, macOS, Windows (Node 22 and 24), armv7/Venus OS under QEMU,
-# and a live signalk-server install.
+# Linux x64/arm64, macOS, Windows (Node 22 and 24), and a live signalk-server
+# install.
 #
 # The Signal K plugin registry also reads the build/test commands declared here
 # when it scores the plugin, so these must stay in sync with package.json.
@@ -35,8 +35,10 @@ jobs:
       build-command: npm run build
       test-command: npm run test
       node-versions: '["22", "24"]'
-      # Venus OS / Cerbo GX runs Node 20 on armv7; advisory, non-blocking.
-      enable-armv7: true
+      # armv7 (Venus OS / Cerbo GX) runs under QEMU emulation and is disabled:
+      # this plugin needs an NVIDIA GPU on the inference host, so 32-bit ARM is
+      # not a target platform for it.
+      enable-armv7: false
       # Install the packed plugin into a real signalk-server and assert it
       # loads and starts.
       enable-signalk-integration: true

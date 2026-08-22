@@ -266,8 +266,9 @@ Two workflows run on every push and pull request:
   load it — package metadata, entry point, `schema()`, the start/stop/restart
   lifecycle, deprecated and internal API usage, `npm pack` contents and an
   `--ignore-scripts` App Store install — across Linux x64/arm64, macOS and
-  Windows on Node 22 and 24, armv7 (Venus OS / Cerbo GX) under QEMU, and a live
-  `signalk-server` install.
+  Windows on Node 22 and 24, plus a live `signalk-server` install. The armv7
+  (Venus OS / Cerbo GX) leg is disabled: this plugin targets hosts with an
+  NVIDIA GPU, not 32-bit ARM.
 - **`ci`** runs the repository's own smoke test, type check, unit tests and a
   production `npm audit`.
 
