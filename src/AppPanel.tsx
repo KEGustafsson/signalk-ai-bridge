@@ -26,6 +26,7 @@ interface BackendStatus {
   readonly requestTimeoutMs: number;
   readonly maxTokens?: number;
   readonly numCtx?: number;
+  readonly configuredNumCtx?: number;
   readonly numGpu?: number;
   readonly numBatch?: number;
   readonly numThread?: number;
@@ -116,6 +117,19 @@ function describeAccelerator(accelerator: AcceleratorStatus | undefined): Accele
     default:
       return { label: 'Unknown', background: '#f8fafc', border: '#cbd5e1', color: '#475569' };
   }
+}
+
+function formatClock(currentHz: number | undefined, maxHz: number | undefined): string {
+  if (typeof currentHz !== 'number' || !Number.isFinite(currentHz) || currentHz <= 0) {
+    return '';
+  }
+
+  const current = `${Math.round(currentHz / 1e6)} MHz`;
+  if (typeof maxHz !== 'number' || !Number.isFinite(maxHz) || maxHz <= 0) {
+    return ` at ${current}`;
+  }
+
+  return ` at ${current} of ${Math.round(maxHz / 1e6)} MHz`;
 }
 
 function formatThroughput(tokensPerSecond: number | undefined): string | undefined {
@@ -306,6 +320,8 @@ export default function AppPanel(props: AppPanelProps) {
     () => describeAccelerator(backendStatus?.accelerator),
     [backendStatus]
   );
+  const jetson = backendStatus?.accelerator?.jetson;
+  const autoTune = backendStatus?.accelerator?.autoTune;
 
   return (
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>
@@ -447,22 +463,73 @@ export default function AppPanel(props: AppPanelProps) {
             ) : null}
             <br />
             Context window: {backendStatus?.numCtx ?? 'Unavailable'} tokens
+            {typeof backendStatus?.configuredNumCtx === 'number' &&
+            backendStatus.configuredNumCtx !== backendStatus.numCtx
+              ? ` (configured ${backendStatus.configuredNumCtx})`
+              : ''}
             <br />
             GPU layers: {backendStatus?.numGpu === undefined
               ? 'Unavailable'
               : backendStatus.numGpu < 0
-                ? 'Auto'
+                ? 'Backend estimate'
                 : backendStatus.numGpu === 0
                   ? 'CPU only'
-                  : backendStatus.numGpu}
+                  : backendStatus.numGpu >= 999
+                    ? 'All (forced)'
+                    : backendStatus.numGpu}
             <br />
             Keep loaded: {backendStatus?.keepAlive ?? 'Unavailable'}
+            {jetson?.present ? (
+              <>
+                <br />
+                Board: {jetson.model ?? 'Jetson'}
+                {jetson.l4tVersion ? ` (L4T ${jetson.l4tVersion})` : ''}
+                {jetson.powerMode ? (
+                  <>
+                    <br />
+                    Power mode: {jetson.powerMode.name ?? jetson.powerMode.id}
+                    {jetson.powerMode.isMaximum ? ' (maximum)' : ' (below maximum)'}
+                  </>
+                ) : null}
+                {typeof jetson.gpuLoadPercent === 'number' ? (
+                  <>
+                    <br />
+                    GPU load: {jetson.gpuLoadPercent}%
+                    {formatClock(jetson.gpuClockHz, jetson.gpuMaxClockHz)}
+                  </>
+                ) : null}
+                {typeof jetson.gpuTemperatureC === 'number' ? (
+                  <>
+                    <br />
+                    GPU temperature: {jetson.gpuTemperatureC} C
+                  </>
+                ) : null}
+              </>
+            ) : null}
           </p>
           {backendStatus?.accelerator?.message ? (
             <p style={{ margin: '0.5rem 0 0 0', color: acceleratorPresentation.color }}>
               {backendStatus.accelerator.message}
             </p>
           ) : null}
+          {autoTune?.tuned && autoTune.reason ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Auto-tuned: {autoTune.reason}</p>
+          ) : null}
+          {(jetson?.warnings ?? []).map((warning) => (
+            <p
+              key={warning}
+              style={{
+                margin: '0.5rem 0 0 0',
+                padding: '0.5rem',
+                borderRadius: '6px',
+                backgroundColor: '#fff7ed',
+                border: '1px solid #fdba74',
+                color: '#9a3412'
+              }}
+            >
+              {warning}
+            </p>
+          ))}
         </section>
       </div>
 

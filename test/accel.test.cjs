@@ -10,7 +10,7 @@ const {
   getAiAvailability,
   normalizeAiConfig,
   queryAiModel,
-  resetAvailabilityCache,
+  resetRuntimeState,
   warmUpModel
 } = require('../lib/ai-service.cjs');
 
@@ -22,7 +22,7 @@ function jsonResponse(payload, status = 200) {
 }
 
 beforeEach(() => {
-  resetAvailabilityCache();
+  resetRuntimeState();
 });
 
 describe('accelerator configuration', () => {
@@ -285,18 +285,29 @@ describe('model warm-up', () => {
         if (String(url).endsWith('/api/tags')) {
           return jsonResponse({ models: [{ name: 'gemma4:e2b', details: { family: 'gemma4' } }] });
         }
+        if (String(url).endsWith('/api/ps')) {
+          return jsonResponse({ models: [{ name: 'gemma4:e2b', size: 100, size_vram: 100 }] });
+        }
         const body = JSON.parse(String(init.body));
         assert.equal(body.model, 'gemma4:e2b');
         assert.equal(body.prompt, '');
         assert.equal(body.keep_alive, '1h');
         assert.equal(body.options.num_ctx, DEFAULT_NUM_CTX);
+        assert.equal(body.options.num_gpu, 999);
         return jsonResponse({ done: true });
       }
     });
 
     assert.equal(result.warmed, true);
     assert.equal(result.model, 'gemma4:e2b');
-    assert.deepEqual(calls, ['http://localhost:11434/api/tags', 'http://localhost:11434/api/generate']);
+    assert.equal(result.offload.numCtx, DEFAULT_NUM_CTX);
+    assert.equal(result.offload.numGpu, 999);
+    assert.equal(result.offload.tuned, false);
+    assert.deepEqual(calls, [
+      'http://localhost:11434/api/tags',
+      'http://localhost:11434/api/generate',
+      'http://localhost:11434/api/ps'
+    ]);
   });
 
   it('never throws when the backend is down', async () => {

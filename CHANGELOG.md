@@ -20,6 +20,21 @@ this project uses [semantic versioning](https://semver.org/).
 - **Generation throughput.** Responses carry `performance.tokensPerSecond`,
   `loadMs`, `promptEvalMs` and `evalMs` derived from Ollama's timings — the
   fastest way to see a CPU fallback that nothing else reports.
+- **Automatic GPU offload maximization.** On start the plugin now requests full
+  offload (`num_gpu` = all layers) and measures what actually landed on the GPU.
+  If any layer spilled to the CPU it halves the context window and reloads, up
+  to three times, and only hands the split back to the backend's estimator when
+  the model cannot fit at all. Controlled by `gpuAutoTune`; an explicit `numGpu`
+  always overrides it. A mid-flight allocation failure retries once at half the
+  context instead of failing the operator's question.
+- **Jetson board telemetry.** When Signal K runs on the Jetson itself, the panel
+  reports board model, JetPack/L4T version, `nvpmodel` power mode, GPU load,
+  clock against maximum and GPU temperature — with the exact command to run when
+  a reduced power mode or thermal limit is holding the GPU back. Absent, at no
+  cost, on any other host.
+- **INT4-AWQ TensorRT-LLM engine build script.** `scripts/build-trtllm-engine.sh`
+  quantizes and builds an engine for SM 8.7, the configuration that makes most
+  use of the Orin's Tensor cores.
 - **Model preload on start.** The plugin warms the model into GPU memory when it
   starts (`warmupOnStart`), so the first operator question does not pay a
   multi-second cold load from Jetson storage.
@@ -50,6 +65,10 @@ this project uses [semantic versioning](https://semver.org/).
   seconds instead of polling the inference server from every open panel.
 - Backend-facing messages name the configured backend (Ollama or TensorRT-LLM)
   rather than always saying Ollama.
+- `/ai/status` reports the accelerator settings requests will actually use
+  (post-tuning), alongside `configuredNumCtx` for what was asked for.
+- `docker-compose.jetson.yml` pins `OLLAMA_SCHED_SPREAD=0` and gained a
+  healthcheck.
 
 ### Fixed
 

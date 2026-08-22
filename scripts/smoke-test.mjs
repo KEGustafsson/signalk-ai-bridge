@@ -11,7 +11,9 @@ const requiredFiles = [
   'lib/bridge-service.cjs',
   'lib/ai-service.cjs',
   'lib/accel-config.cjs',
+  'lib/gpu-offload.cjs',
   'lib/gpu-telemetry.cjs',
+  'lib/jetson-telemetry.cjs',
   'lib/http-utils.cjs',
   'lib/tensorrt-service.cjs',
   'index.cjs',
@@ -20,6 +22,7 @@ const requiredFiles = [
   'docker-compose.gemma.yml',
   'docker-compose.jetson.yml',
   'docker-compose.tensorrt.yml',
+  'scripts/build-trtllm-engine.sh',
   '.github/workflows/plugin-ci.yml'
 ];
 
@@ -42,6 +45,7 @@ assert.match(pluginSource, /router\.post\('\/bridge\/execute'/);
 assert.match(pluginSource, /router\.post\('\/ai\/query'/);
 assert.match(pluginSource, /numCtx/);
 assert.match(pluginSource, /keepAlive/);
+assert.match(pluginSource, /gpuAutoTune/);
 
 // The registry and app store both read package.json metadata directly, so a
 // missing field here is a silent score loss rather than a build failure.

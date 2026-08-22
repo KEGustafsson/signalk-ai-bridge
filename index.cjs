@@ -16,12 +16,13 @@ const {
   MAX_NUM_THREAD,
   MIN_NUM_BATCH,
   MIN_NUM_CTX,
-  getAcceleratorStatus,
+  getAccelerationReport,
   getAiAvailability,
+  resolveOffload,
   normalizeAiConfig,
   queryAiModel,
   readJsonBody,
-  resetAvailabilityCache,
+  resetRuntimeState,
   warmUpModel
 } = require('./lib/ai-service.cjs');
 const { createBridgeService } = require('./lib/bridge-service.cjs');
@@ -125,6 +126,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
         minimum: -1,
         maximum: MAX_NUM_GPU
       },
+      gpuAutoTune: {
+        type: 'boolean',
+        title: 'Maximize GPU offload automatically',
+        description:
+          'On start, force every layer onto the GPU and shrink the context window until the whole model is resident, instead of accepting whatever CPU/GPU split the backend estimates. Falls back to the backend estimate when the model cannot fit at all.',
+        default: true
+      },
       numBatch: {
         type: 'integer',
         title: 'Prompt batch size (num_batch)',
@@ -198,8 +206,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const availability = await getAiAvailability(config, dependencies);
       // Residency is only meaningful once the backend answered; probing a
       // host that is down would just repeat the same connection failure.
+      // Report what requests will actually use, not just what was configured:
+      // the start-up tuner may have shrunk the context window to fit the GPU.
+      const effective = resolveOffload(config);
       const accelerator = availability.backendReachable
-        ? await getAcceleratorStatus({ ...config, resolvedModel: availability.resolvedModel }, dependencies)
+        ? await getAccelerationReport({ ...config, resolvedModel: availability.resolvedModel }, dependencies)
         : undefined;
 
       res.status(200).json({
@@ -209,11 +220,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
         backend: config.backend,
         requestTimeoutMs: config.requestTimeoutMs,
         maxTokens: config.maxTokens,
-        numCtx: config.numCtx,
-        numGpu: config.numGpu,
+        numCtx: effective.numCtx,
+        numGpu: effective.numGpu,
+        configuredNumCtx: config.numCtx,
         numBatch: config.numBatch,
         numThread: config.numThread,
         keepAlive: config.keepAlive,
+        gpuAutoTune: config.gpuAutoTune,
         aiDataPaths: config.aiDataPaths,
         signalKSelfId: typeof app.selfId === 'string' ? app.selfId : undefined,
         aiAvailable: availability.available,
@@ -308,7 +321,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     start: (options = {}) => {
       pluginOptions = options;
       bridgeService.reset();
-      resetAvailabilityCache();
+      resetRuntimeState();
       lifecycleGeneration += 1;
       const generation = lifecycleGeneration;
       const config = getConfig();
@@ -328,9 +341,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
             return;
           }
           if (result.warmed && typeof app.setPluginStatus === 'function') {
-            app.setPluginStatus(
-              `AI Bridge ready: ${result.model} preloaded on ${config.baseUrl} (keep_alive ${config.keepAlive})`
-            );
+            const offload = result.offload;
+            const placement =
+              offload && offload.numGpu >= 0
+                ? `all layers on GPU, num_ctx ${offload.numCtx}`
+                : `backend-chosen layer split, num_ctx ${offload ? offload.numCtx : config.numCtx}`;
+            app.setPluginStatus(`AI Bridge ready: ${result.model} preloaded (${placement})`);
           }
         })
         .catch(() => {});
@@ -350,7 +366,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         app.setPluginStatus('AI Bridge stopped.');
       }
       bridgeService.reset();
-      resetAvailabilityCache();
+      resetRuntimeState();
       pluginOptions = {};
     }
   };

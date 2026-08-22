@@ -42,6 +42,35 @@ export interface AiRequestContext {
 
 export type AcceleratorState = 'gpu' | 'partial' | 'cpu' | 'not-loaded' | 'unknown';
 
+export interface JetsonPowerMode {
+  readonly id: number;
+  readonly name?: string;
+  readonly isMaximum: boolean;
+  readonly maximumId?: number;
+  readonly maximumName?: string;
+}
+
+export interface JetsonTelemetry {
+  readonly present: boolean;
+  readonly model?: string;
+  readonly l4tVersion?: string;
+  readonly powerMode?: JetsonPowerMode;
+  readonly gpuLoadPercent?: number;
+  readonly gpuClockHz?: number;
+  readonly gpuMaxClockHz?: number;
+  readonly gpuTemperatureC?: number;
+  readonly warnings?: readonly string[];
+  readonly message?: string;
+}
+
+export interface AcceleratorAutoTune {
+  readonly enabled: boolean;
+  readonly tuned: boolean;
+  readonly numCtx?: number;
+  readonly numGpu?: number;
+  readonly reason?: string;
+}
+
 export interface AcceleratorStatus {
   /** False when the backend cannot report a CPU/GPU split (TensorRT-LLM). */
   readonly supported: boolean;
@@ -53,6 +82,8 @@ export interface AcceleratorStatus {
   readonly expiresAt?: string;
   readonly loadedModels?: number;
   readonly message: string;
+  readonly autoTune?: AcceleratorAutoTune;
+  readonly jetson?: JetsonTelemetry;
 }
 
 export interface AiPerformance {

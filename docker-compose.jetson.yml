@@ -51,6 +51,13 @@ services:
       - OLLAMA_NUM_PARALLEL=1
       # Headroom left free for the display/compositor and other CUDA users.
       - OLLAMA_GPU_OVERHEAD=536870912
+      # Never spread one model across devices; there is one iGPU here and
+      # spreading only invites a partial CPU placement.
+      - OLLAMA_SCHED_SPREAD=0
+      # If Ollama still selects a CPU runner (check `docker logs ollama` for the
+      # runner it picks), force the CUDA one. The exact suffix depends on the
+      # image build, so it is left commented rather than guessed:
+      # - OLLAMA_LLM_LIBRARY=cuda_v12
     deploy:
       resources:
         limits:
@@ -64,3 +71,9 @@ services:
               capabilities: [gpu]
     entrypoint: /bin/sh
     command: -c "ollama serve & sleep 5 && ollama pull gemma4:e2b && wait"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s

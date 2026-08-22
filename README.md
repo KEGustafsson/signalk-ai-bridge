@@ -86,10 +86,33 @@ moves layers back to the six Cortex-A78AE cores. The model still answers — jus
 at a few tokens per second instead of tens, with nothing in the response saying
 why.
 
+### Maximizing GPU use
+
+The plugin does not accept whatever CPU/GPU split the backend estimates. On
+start it asks for **full offload** (`num_gpu` = all layers) and then measures
+what actually landed on the GPU. If any layer spilled to the CPU, it halves the
+context window — the KV cache is the part of the footprint the plugin controls,
+and it scales linearly with `num_ctx` — and loads again, up to three times.
+
+Only if the model still will not fit at the smallest context does it hand the
+split back to the backend's estimator, and say so. A model that genuinely cannot
+fit must still answer, on the CPU if that is all there is, rather than failing
+with an allocation error.
+
+The panel shows the tuned result, for example:
+
+> Context window: 4096 tokens (configured 8192)
+> GPU layers: All (forced)
+> Auto-tuned: Context window reduced to 4096 tokens so every layer fits in GPU memory.
+
+Turn this off with `gpuAutoTune` if you would rather pin the settings yourself.
+Setting `numGpu` explicitly always wins over the tuner, including `0`, which is
+useful for a CPU-vs-GPU comparison.
+
 ### Is it actually accelerated?
 
-The `GPU Acceleration` card in the panel answers this directly. It reads Ollama's
-`/api/ps` and reports one of:
+The `GPU Acceleration` card answers this directly. It reads Ollama's `/api/ps`
+and reports one of:
 
 - **GPU accelerated** — the whole model is resident in GPU memory.
 - **Partly on CPU** — some layers spilled; lower `numCtx` or use a smaller or
@@ -101,6 +124,29 @@ The `GPU Acceleration` card in the panel answers this directly. It reads Ollama'
 
 Each AI response also reports `Generation speed` in tokens/second, which is the
 quickest independent confirmation.
+
+### Is the GPU running flat out?
+
+Residency is not the whole story: an Orin held in a 15 W power mode, or
+clock-capped by temperature, is fully GPU-resident and still delivering a
+fraction of its throughput. When Signal K runs on the Jetson itself, the same
+card reads the board's own sysfs and reports the model, JetPack/L4T version,
+`nvpmodel` power mode, GPU load, clock against maximum, and GPU temperature —
+with a warning and the exact command to run when any of them is holding the GPU
+back. When Signal K runs elsewhere, this section is simply absent.
+
+### Squeezing the most out of the hardware
+
+Roughly in order of what they buy on an Orin Nano Super:
+
+1. `docker-compose.jetson.yml` — NVIDIA runtime, flash attention and a q8_0 KV
+   cache. Without the runtime there is no GPU at all; the other two are what make
+   full residency achievable.
+2. `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the panel names the id.
+3. Leave `gpuAutoTune` on, so full offload is driven rather than hoped for.
+4. `scripts/build-trtllm-engine.sh` — an INT4-AWQ TensorRT-LLM engine compiled
+   for SM 8.7. This is the ceiling: a plan built for this exact device, with the
+   Ampere Tensor cores doing four-bit matmuls.
 
 The same thing from the command line:
 
@@ -126,7 +172,8 @@ docker compose -f docker-compose.jetson.yml up -d
 | --- | --- | --- |
 | `numCtx` | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
 | `maxTokens` | `2048` | Output budget only; it no longer resizes the KV cache. |
-| `numGpu` | `-1` | Let Ollama estimate the split. Use `999` to force full offload, `0` to pin to CPU for comparison. |
+| `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
+| `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
 | `numBatch` | `512` | Prompt-eval throughput on the Ampere GPU. |
 | `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
 | `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
@@ -142,6 +189,23 @@ TensorRT-LLM compiles a CUDA engine ahead of time for this GPU's SM version
 CPU/GPU split to get wrong — but `numCtx` must stay at or below the engine's
 `--max_seq_len`, because exceeding it is a request error rather than a silent
 fallback.
+
+Build the engine on the Jetson with
+[`scripts/build-trtllm-engine.sh`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/scripts/build-trtllm-engine.sh),
+which quantizes to INT4-AWQ and builds for SM 8.7:
+
+```bash
+docker run --rm -it --runtime nvidia \
+  -v "$PWD/trtllm_models:/models" \
+  -v "$PWD/trtllm_engines:/engines" \
+  -v "$PWD/scripts:/scripts" \
+  nvcr.io/nvidia/tensorrt-llm/release:latest \
+  bash /scripts/build-trtllm-engine.sh
+```
+
+The engine must be built on the target board — it needs the local driver and the
+GPU present, so it cannot be cross-built on a workstation. Calibration takes tens
+of minutes; the result is reused on every start.
 
 ## Normal Use
 
@@ -188,9 +252,13 @@ These are the settings most users will care about:
   Context window in tokens (`num_ctx`). This is what sizes the KV cache, and
   therefore whether the model stays resident on the GPU
 
+- `gpuAutoTune`
+  Force every layer onto the GPU on start and shrink `numCtx` until the whole
+  model is resident, falling back to the backend estimate only if it cannot fit
+
 - `numGpu`
-  Layers offloaded to the GPU (`num_gpu`). `-1` lets Ollama estimate, `0` forces
-  CPU-only, a high value such as `999` forces full offload
+  Layers offloaded to the GPU (`num_gpu`). `-1` lets the auto-tuner drive; an
+  explicit value overrides it, with `0` forcing CPU-only and `999` full offload
 
 - `numBatch`
   Tokens evaluated per GPU batch (`num_batch`)

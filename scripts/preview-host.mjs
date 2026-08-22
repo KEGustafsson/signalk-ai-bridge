@@ -51,6 +51,7 @@ function sendJson(res, statusCode, payload) {
 }
 
 function startStubOllama() {
+  let residencyProbes = 0;
   const server = createServer((req, res) => {
     if (req.url === '/api/tags') {
       sendJson(res, 200, { models: [{ name: STUB_MODEL, details: { family: 'gemma4' } }] });
@@ -58,12 +59,16 @@ function startStubOllama() {
     }
 
     if (req.url === '/api/ps') {
+      // The first probe reports a partial offload, so the preview exercises the
+      // auto-tuner the same way an 8 GB Jetson would.
+      residencyProbes += 1;
+      const resident = residencyProbes > 1 ? 5_600_000_000 : 3_100_000_000;
       sendJson(res, 200, {
         models: [
           {
             name: STUB_MODEL,
             size: 5_600_000_000,
-            size_vram: 5_600_000_000,
+            size_vram: resident,
             expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString()
           }
         ]

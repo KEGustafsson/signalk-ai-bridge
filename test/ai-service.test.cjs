@@ -114,9 +114,10 @@ describe('queryAiModel', () => {
     assert.match(capturedBody, /\"num_ctx\":8192/);
     assert.match(capturedBody, /\"num_batch\":512/);
     assert.match(capturedBody, /\"keep_alive\":\"30m\"/);
-    // num_gpu is Ollama's "estimate the split" sentinel at -1 and must not be
-    // sent, or it is read as a literal layer count.
-    assert.doesNotMatch(capturedBody, /num_gpu/);
+    // Full offload is requested rather than left to Ollama's estimator, which
+    // tends to leave a few layers on the CPU. llama.cpp clamps this to the real
+    // layer count.
+    assert.match(capturedBody, /\"num_gpu\":999/);
     assert.equal(result.model, 'gemma4');
     assert.equal(result.usage.totalTokens, 22);
   });
