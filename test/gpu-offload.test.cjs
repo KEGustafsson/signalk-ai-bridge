@@ -151,3 +151,37 @@ describe('tuned settings reach the chat request', () => {
     assert.equal(effective.numGpu, FORCE_ALL_LAYERS);
   });
 });
+
+describe('review follow-ups', () => {
+  it('does not claim a GPU placement when the layer count is pinned to zero', async () => {
+    const statuses = [];
+    const plugin = require('../index.cjs')(
+      {
+        selfId: 'urn:mrn:signalk:uuid:test',
+        setPluginStatus: (message) => statuses.push(message),
+        getSelfPath: () => undefined
+      },
+      {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith('/api/tags')) {
+            return jsonResponse({ models: [{ name: 'gemma4:e2b' }] });
+          }
+          if (String(url).endsWith('/api/ps')) {
+            return jsonResponse({ models: [{ name: 'gemma4:e2b', size: 100, size_vram: 0 }] });
+          }
+          return jsonResponse({ done: true });
+        }
+      }
+    );
+
+    plugin.start({ model: 'gemma4:e2b', numGpu: 0 });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const preloaded = statuses.find((message) => /preloaded/.test(message));
+    assert.ok(preloaded, 'expected a preload status message');
+    assert.match(preloaded, /CPU only/);
+    assert.doesNotMatch(preloaded, /all layers on GPU/);
+    plugin.stop();
+  });
+});

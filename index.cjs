@@ -395,10 +395,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
           }
           if (result.warmed && typeof app.setPluginStatus === 'function') {
             const offload = result.offload;
+            // numGpu 0 is a deliberate CPU-only pin, not a GPU placement.
             const placement =
-              offload && offload.numGpu >= 0
+              offload && offload.numGpu > 0
                 ? `all layers on GPU, num_ctx ${offload.numCtx}`
-                : `backend-chosen layer split, num_ctx ${offload ? offload.numCtx : config.numCtx}`;
+                : offload && offload.numGpu === 0
+                  ? `CPU only, num_ctx ${offload.numCtx}`
+                  : `backend-chosen layer split, num_ctx ${offload ? offload.numCtx : config.numCtx}`;
             app.setPluginStatus(`AI Bridge ready: ${result.model} preloaded (${placement})`);
           }
         })

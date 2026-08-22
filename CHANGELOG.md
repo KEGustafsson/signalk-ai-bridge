@@ -91,6 +91,27 @@ this project uses [semantic versioning](https://semver.org/).
   `NaN` HTTP status on the plugin's own routes.
 - Message text is no longer trimmed per streamed fragment, which would have
   welded words together at chunk boundaries.
+- `requestTimeoutMs` now bounds the whole exchange. The abort timer was cleared
+  once response headers arrived, so a peer that stalled mid-body never timed out
+  — which for a streamed answer is the entire response.
+- A fixed five-second delay before `ollama pull` in the compose files could fail
+  on slower storage and restart-loop the container. Both now poll for readiness,
+  and a failed pull no longer takes the server down.
+- `docker-compose.tensorrt.yml` now serves the engine directory
+  `scripts/build-trtllm-engine.sh` actually produces; the two disagreed.
+- The TensorRT-LLM path no longer retries on timeouts or 5xx responses, which
+  cost two inference calls and two timeout windows. Its model resolution also
+  now works: it falls back to the single served id, since `trtllm-serve` derives
+  ids from engine paths that never match Ollama-style tag or family rules.
+- Plugin status no longer claims "all layers on GPU" when `numGpu` is pinned
+  to 0 (CPU-only).
+- Jetson telemetry no longer advises a power-mode change when the reported
+  `pmode` id is absent from `nvpmodel.conf` and its name cannot be resolved.
+- An injected host-telemetry probe that rejects no longer turns `/ai/status`
+  into a 500.
+- Panel status text derives from the configured backend instead of naming
+  Ollama unconditionally, and the Ollama Docker Compose help is hidden for a
+  TensorRT-LLM backend.
 
 ## [0.1.0-beta.1]
 

@@ -6,6 +6,7 @@ const {
   DEFAULT_KEEP_ALIVE,
   DEFAULT_NUM_CTX,
   buildRuntimeOptions,
+  getAccelerationReport,
   getAcceleratorStatus,
   getAiAvailability,
   normalizeAiConfig,
@@ -351,5 +352,63 @@ describe('generation throughput reporting', () => {
     assert.equal(result.performance.loadMs, 2500);
     assert.equal(result.performance.evalMs, 4000);
     assert.equal(result.performance.totalMs, 7000);
+  });
+});
+
+describe('review follow-ups', () => {
+  it('does not spend a second inference call on a TensorRT-LLM timeout', async () => {
+    let chatCalls = 0;
+    let listCalls = 0;
+
+    await assert.rejects(
+      queryAiModel({ prompt: 'Status?' }, normalizeAiConfig({ backend: 'tensorrt-llm' }), {
+        fetchImpl: async (url) => {
+          if (String(url).endsWith('/v1/models')) {
+            listCalls += 1;
+            return jsonResponse({ data: [{ id: 'some-other-model' }] });
+          }
+          chatCalls += 1;
+          return jsonResponse({ error: { message: 'upstream timed out' } }, 504);
+        }
+      }),
+      /upstream timed out/
+    );
+
+    // Retrying a timeout would cost the operator two full timeout windows.
+    assert.equal(chatCalls, 1);
+    assert.equal(listCalls, 0);
+  });
+
+  it('still resolves the served model id when the configured one is missing', async () => {
+    const chatModels = [];
+
+    const result = await queryAiModel({ prompt: 'Status?' }, normalizeAiConfig({ backend: 'tensorrt-llm' }), {
+      fetchImpl: async (url, init) => {
+        if (String(url).endsWith('/v1/models')) {
+          return jsonResponse({ data: [{ id: 'gemma-3-4b-it-int4-awq' }] });
+        }
+        const body = JSON.parse(String(init.body));
+        chatModels.push(body.model);
+        if (chatModels.length === 1) {
+          return jsonResponse({ error: { message: 'model not found' } }, 404);
+        }
+        return jsonResponse({ choices: [{ message: { content: 'Resolved.' } }] });
+      }
+    });
+
+    assert.deepEqual(chatModels, ['gemma4', 'gemma-3-4b-it-int4-awq']);
+    assert.equal(result.answer, 'Resolved.');
+  });
+
+  it('keeps the status page alive when host telemetry throws', async () => {
+    const report = await getAccelerationReport(normalizeAiConfig({ model: 'gemma4:e2b' }), {
+      fetchImpl: async () => jsonResponse({ models: [{ name: 'gemma4:e2b', size: 10, size_vram: 10 }] }),
+      jetsonTelemetry: async () => {
+        throw new Error('sysfs exploded');
+      }
+    });
+
+    assert.equal(report.state, 'gpu');
+    assert.equal(report.jetson.present, false);
   });
 });

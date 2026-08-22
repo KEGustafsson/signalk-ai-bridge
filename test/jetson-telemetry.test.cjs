@@ -141,3 +141,17 @@ describe('Jetson host telemetry', () => {
     assert.deepEqual(result.warnings, []);
   });
 });
+
+describe('power-mode warnings', () => {
+  it('stays quiet when the reported mode id is not declared in nvpmodel.conf', async () => {
+    // pmode 7 is absent from the fixture's POWER_MODEL list, so the name cannot
+    // be resolved and any "your mode caps the GPU" advice would be a guess.
+    const result = await readJetsonTelemetry(
+      jetsonFixture({ '/var/lib/nvpmodel/status': 'pmode:0007 fmode:fan_mode_quiet' })
+    );
+
+    assert.equal(result.powerMode.id, 7);
+    assert.equal(result.powerMode.name, undefined);
+    assert.deepEqual(result.warnings, []);
+  });
+});

@@ -48,7 +48,7 @@ async function waitForUrl(url, timeoutMs = 60_000) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url);
-      if (response.status < 500) {
+      if (response.status >= 200 && response.status < 300) {
         return;
       }
     } catch {

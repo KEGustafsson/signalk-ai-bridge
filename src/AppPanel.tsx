@@ -97,6 +97,15 @@ function formatBackendLabel(backend: string | undefined): string {
   return backend === 'tensorrt-llm' ? 'TensorRT-LLM (CUDA engine)' : 'Ollama (llama.cpp CUDA)';
 }
 
+/** Short backend name for status lines. */
+function backendName(backend: string | undefined): string {
+  return backend === 'tensorrt-llm' ? 'TensorRT-LLM' : 'Ollama';
+}
+
+function isOllamaBackend(backend: string | undefined): boolean {
+  return backend !== 'tensorrt-llm';
+}
+
 interface AcceleratorPresentation {
   readonly label: string;
   readonly background: string;
@@ -142,6 +151,12 @@ function formatThroughput(tokensPerSecond: number | undefined): string | undefin
 
 function shouldShowReadmeHelp(status: BackendStatus | null): boolean {
   if (!status) {
+    return false;
+  }
+
+  // The help below is the Ollama Docker Compose walkthrough; it would be wrong
+  // advice for a TensorRT-LLM server, which is set up entirely differently.
+  if (!isOllamaBackend(status.backend)) {
     return false;
   }
 
@@ -344,7 +359,7 @@ export default function AppPanel(props: AppPanelProps) {
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>
       <h2 style={{ marginTop: 0 }}>Signal K AI Bridge</h2>
       <p>
-        Embedded Admin UI panel for sending selected Signal K data to Ollama and reviewing the exact AI request.
+        Embedded Admin UI panel for sending selected Signal K data to a local AI backend and reviewing the exact AI request.
       </p>
       <div
         style={{
@@ -378,7 +393,7 @@ export default function AppPanel(props: AppPanelProps) {
             border: '1px solid #cbd5e1'
           }}
         >
-          <h3 style={{ marginTop: 0 }}>Ollama / Gemma</h3>
+          <h3 style={{ marginTop: 0 }}>{backendName(backendStatus?.backend)}</h3>
           <p style={{ margin: 0 }}>
             Backend: {backendStatus?.baseUrl ?? 'Unavailable'}
             <br />
@@ -396,7 +411,8 @@ export default function AppPanel(props: AppPanelProps) {
           </p>
           {backendStatus?.aiAvailable !== true ? (
             <p style={{ marginTop: '0.5rem', marginBottom: 0, color: '#475569' }}>
-              Ollama reachable: {backendStatus?.ollamaReachable === undefined ? 'Unavailable' : backendStatus.ollamaReachable ? 'Yes' : 'No'}
+              {backendName(backendStatus?.backend)} reachable:{' '}
+              {backendStatus?.ollamaReachable === undefined ? 'Unavailable' : backendStatus.ollamaReachable ? 'Yes' : 'No'}
               <br />
               Model available: {backendStatus?.modelAvailable === undefined ? 'Unavailable' : backendStatus.modelAvailable ? 'Yes' : 'No'}
               <br />
@@ -642,7 +658,7 @@ export default function AppPanel(props: AppPanelProps) {
       ) : null}
 
       <fieldset style={{ marginTop: '1rem', border: '1px solid #bfdbfe', borderRadius: '8px' }}>
-        <legend>Ollama vessel analysis</legend>
+        <legend>{backendName(backendStatus?.backend)} vessel analysis</legend>
         <div style={{ display: 'grid', gap: '0.5rem' }}>
           <textarea
             aria-label="AI prompt"
@@ -656,7 +672,7 @@ export default function AppPanel(props: AppPanelProps) {
           </button>
           {!canAskAi(backendStatus) ? (
             <p style={{ margin: 0, color: '#475569' }}>
-              Ask AI is disabled until Ollama and the configured model are available.
+              Ask AI is disabled until {backendName(backendStatus?.backend)} and the configured model are available.
             </p>
           ) : null}
         </div>

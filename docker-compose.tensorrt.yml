@@ -37,8 +37,12 @@ services:
     # `--max_seq_len` is the hard ceiling the engine is compiled with. Keep the
     # plugin's "GPU context window" (num_ctx) at or below it: unlike Ollama,
     # asking for more is a request error, not a silent CPU fallback.
+    # Serves the engine directory scripts/build-trtllm-engine.sh writes. Its
+    # MODEL_ID, ENGINE_DIR and MAX_SEQ_LEN defaults are what produce this path
+    # and sequence length — change them together or the service starts on a
+    # directory that does not exist.
     command: >-
-      trtllm-serve /models/gemma-4-e2b
+      trtllm-serve /engines/gemma-3-4b-it-int4-awq
       --host 0.0.0.0
       --port 8000
       --backend pytorch

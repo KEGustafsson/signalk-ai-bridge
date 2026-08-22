@@ -31,4 +31,8 @@ services:
         reservations:
           memory: 2G
     entrypoint: /bin/sh
-    command: -c "ollama serve & sleep 5 && ollama pull gemma4:e2b && wait"
+    # Poll until the server accepts requests instead of sleeping a fixed
+    # interval: a slower Jetson start-up made `ollama pull` fail, which took
+    # the shell down through the && chain and restart-looped the container.
+    # A failed pull is also non-fatal now — cached models still serve.
+    command: -c "ollama serve & tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; ollama pull gemma4:e2b || echo 'model pull failed; serving whatever is already cached'; wait"

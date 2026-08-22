@@ -16,6 +16,7 @@ const requiredFiles = [
   'lib/jetson-telemetry.cjs',
   'lib/kv-cache.cjs',
   'lib/http-utils.cjs',
+  'lib/http-utils.cjs',
   'lib/tensorrt-service.cjs',
   'index.cjs',
   'README.md',
