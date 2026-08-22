@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { readJetsonTelemetry } = require('../lib/jetson-telemetry.cjs');
+const { findMaximumPowerMode, readJetsonTelemetry } = require('../lib/jetson-telemetry.cjs');
 
 const NVPMODEL_CONF = [
   '< PM_CONFIG DEFAULT=2 >',
@@ -51,8 +51,46 @@ function jetsonFixture(overrides = {}) {
     ...overrides
   };
   const directories = {
+    // The GPU node is discovered by scanning, as on a real board, rather than
+    // by guessing one path.
+    '/sys/devices': [],
+    '/sys/devices/platform': ['gpu.0', 'bus@0'],
     '/sys/class/devfreq': ['17000000.gpu'],
     '/sys/devices/virtual/thermal': ['thermal_zone0', 'thermal_zone1']
+  };
+  return { fsImpl: createFakeFs(files, directories) };
+}
+
+// Jetson Xavier NX: Volta GPU node (gv11b), L4T 35.x, and nvpmodel modes named
+// by power budget and core count with no MAXN entry anywhere.
+const XAVIER_NVPMODEL_CONF = [
+  '< PM_CONFIG DEFAULT=2 >',
+  '< POWER_MODEL ID=0 NAME=MODE_15W_2CORE >',
+  '< POWER_MODEL ID=1 NAME=MODE_15W_4CORE >',
+  '< POWER_MODEL ID=2 NAME=MODE_15W_6CORE >',
+  '< POWER_MODEL ID=5 NAME=MODE_10W_DESKTOP >',
+  '< POWER_MODEL ID=7 NAME=MODE_20W_4CORE >',
+  '< POWER_MODEL ID=8 NAME=MODE_20W_6CORE >'
+].join('\n');
+
+function xavierFixture(overrides = {}) {
+  const files = {
+    '/etc/nv_tegra_release': '# R35 (release), REVISION: 4.1, GCID: 33958178, BOARD: t186ref',
+    '/proc/device-tree/model': 'NVIDIA Jetson Xavier NX Developer Kit',
+    '/var/lib/nvpmodel/status': 'pmode:0002 fmode:fan_mode_quiet',
+    '/etc/nvpmodel.conf': XAVIER_NVPMODEL_CONF,
+    '/sys/devices/17000000.gv11b/load': '765',
+    '/sys/class/devfreq/17000000.gv11b/cur_freq': '1109250000',
+    '/sys/class/devfreq/17000000.gv11b/max_freq': '1109250000',
+    '/sys/devices/virtual/thermal/thermal_zone2/type': 'GPU-therm',
+    '/sys/devices/virtual/thermal/thermal_zone2/temp': '48000',
+    ...overrides
+  };
+  const directories = {
+    '/sys/devices': ['17000000.gv11b', 'platform'],
+    '/sys/devices/platform': [],
+    '/sys/class/devfreq': ['17000000.gv11b'],
+    '/sys/devices/virtual/thermal': ['thermal_zone0', 'thermal_zone2']
   };
   return { fsImpl: createFakeFs(files, directories) };
 }
@@ -153,5 +191,65 @@ describe('power-mode warnings', () => {
     assert.equal(result.powerMode.id, 7);
     assert.equal(result.powerMode.name, undefined);
     assert.deepEqual(result.warnings, []);
+  });
+});
+
+describe('Jetson Xavier NX', () => {
+  it('finds the Volta GPU node, which is not named "gpu"', async () => {
+    const result = await readJetsonTelemetry(xavierFixture());
+
+    assert.equal(result.present, true);
+    assert.equal(result.model, 'NVIDIA Jetson Xavier NX Developer Kit');
+    assert.equal(result.l4tVersion, '35.4.1');
+    assert.equal(result.gpuLoadPercent, 76.5);
+    assert.equal(result.gpuClockHz, 1109250000);
+    assert.equal(result.gpuTemperatureC, 48);
+  });
+
+  it('ranks the highest power budget as the maximum when no MAXN mode exists', async () => {
+    // Xavier NX names modes by watts and cores; nothing matches /maxn/.
+    const result = await readJetsonTelemetry(xavierFixture());
+
+    assert.equal(result.powerMode.id, 2);
+    assert.equal(result.powerMode.name, 'MODE_15W_6CORE');
+    assert.equal(result.powerMode.isMaximum, false);
+    assert.equal(result.powerMode.maximumId, 8);
+    assert.equal(result.powerMode.maximumName, 'MODE_20W_6CORE');
+    assert.match(result.warnings[0], /nvpmodel -m 8/);
+    assert.match(result.warnings[0], /MODE_20W_6CORE/);
+  });
+
+  it('breaks a wattage tie on core count', () => {
+    const modes = new Map([
+      [7, 'MODE_20W_4CORE'],
+      [8, 'MODE_20W_6CORE'],
+      [2, 'MODE_15W_6CORE']
+    ]);
+
+    assert.deepEqual(findMaximumPowerMode(modes), [8, 'MODE_20W_6CORE']);
+  });
+
+  it('stays quiet on the maximum mode', async () => {
+    const result = await readJetsonTelemetry(
+      xavierFixture({ '/var/lib/nvpmodel/status': 'pmode:0008 fmode:fan_mode_quiet' })
+    );
+
+    assert.equal(result.powerMode.isMaximum, true);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it('still prefers MAXN_SUPER where a board exposes it', () => {
+    const modes = new Map([
+      [0, '15W'],
+      [1, '25W'],
+      [2, 'MAXN_SUPER']
+    ]);
+
+    assert.deepEqual(findMaximumPowerMode(modes), [2, 'MAXN_SUPER']);
+  });
+
+  it('reports no maximum when modes carry neither MAXN nor a wattage', () => {
+    assert.equal(findMaximumPowerMode(new Map([[0, 'CUSTOM'], [1, 'OTHER']])), undefined);
+    assert.equal(findMaximumPowerMode(new Map()), undefined);
   });
 });

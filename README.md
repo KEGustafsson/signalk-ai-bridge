@@ -59,7 +59,8 @@ If you do not already have Ollama running, you can use one of the included compo
 | File | Use it for |
 | --- | --- |
 | [`docker-compose.gemma.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.gemma.yml) | Any host. Portable, no GPU requested, so inference runs on the CPU. |
-| [`docker-compose.jetson.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.jetson.yml) | NVIDIA Jetson Orin Nano Super. Ollama with the NVIDIA container runtime, flash attention and a quantized KV cache. |
+| [`docker-compose.jetson.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.jetson.yml) | NVIDIA Jetson Orin (JetPack 6). Ollama with the NVIDIA container runtime, flash attention and a quantized KV cache. |
+| [`docker-compose.xavier.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.xavier.yml) | NVIDIA Jetson Xavier NX (JetPack 5). Same, adjusted for the older JetPack. |
 | [`docker-compose.tensorrt.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.tensorrt.yml) | NVIDIA TensorRT-LLM served over the OpenAI API, for engines compiled ahead of time for the local GPU. |
 
 Start one with:
@@ -74,7 +75,30 @@ If Signal K runs on the host, the default Ollama URL `http://localhost:11434` is
 
 If Signal K runs in another container, use an address reachable from that container, for example `http://ollama:11434` on a shared Docker network.
 
-## NVIDIA Jetson Orin Nano Super
+## NVIDIA Jetson
+
+Tested targets are the Orin Nano Super (JetPack 6) and the Xavier NX developer
+kit (JetPack 5). The plugin itself is hardware-agnostic — it talks to Ollama over
+HTTP and never branches on the board — so anything Ollama runs on will work. What
+differs per board is the deployment file and what the telemetry can read.
+
+| | Orin Nano Super | Xavier NX |
+| --- | --- | --- |
+| Compute capability | 8.7 (Ampere) | 7.2 (Volta) |
+| Memory | 8 GB LPDDR5, 102 GB/s | 8 GB LPDDR4x, 59.7 GB/s |
+| JetPack | 6 (L4T 36.x) | 5.1.x (L4T 35.x) — JetPack 6 dropped Xavier |
+| Compose file | `docker-compose.jetson.yml` | `docker-compose.xavier.yml` |
+| Top power mode | `MAXN_SUPER` | highest wattage, usually `MODE_20W_6CORE` |
+| TensorRT-LLM | supported | **not supported** — needs compute capability 8.0+ |
+
+Generation is memory-bandwidth bound, so expect roughly 55-65% of the Orin Nano
+Super's tokens per second on a Xavier NX with the same model. The GPU tuning
+matters more there, not less: the same 8 GB budget with less bandwidth to make up
+for a spill to the CPU.
+
+Xavier NX has two NVDLA engines that Orin Nano lacks, but llama.cpp cannot use
+DLA — it is a fixed-function accelerator for convolutional networks — so it buys
+nothing for this workload.
 
 The plugin does no inference itself — all of the compute happens in Ollama or
 TensorRT-LLM. What the plugin controls is the shape of the request, and on a
@@ -195,10 +219,18 @@ curl -s localhost:11434/api/ps | jq '.models[] | {name, size, size_vram}'
 ```bash
 sudo apt-get install -y nvidia-container-toolkit
 sudo systemctl restart docker
-sudo nvpmodel -m 2   # MAXN SUPER
+sudo nvpmodel -m <id>   # the panel names the id for your board
 sudo jetson_clocks
+
+# Orin (JetPack 6)
 docker compose -f docker-compose.jetson.yml up -d
+# Xavier NX (JetPack 5)
+docker compose -f docker-compose.xavier.yml up -d
 ```
+
+The power-mode id differs per board: Orin exposes `MAXN`/`MAXN_SUPER`, while
+Xavier NX names its modes by budget and core count with no MAXN at all. The
+plugin ranks them either way and names the id to switch to.
 
 ### Suggested plugin settings on 8 GB
 
@@ -213,6 +245,10 @@ docker compose -f docker-compose.jetson.yml up -d
 | `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
 
 ### TensorRT-LLM
+
+**Orin only.** TensorRT-LLM requires compute capability 8.0 or newer; Xavier NX
+is 7.2, so there is no engine to build or serve there. On Xavier, Ollama is the
+whole story.
 
 Set `backend` to `tensorrt-llm` and point `baseUrl` at an OpenAI-compatible
 NVIDIA server (`trtllm-serve` or a NIM container); `model` is the id reported by

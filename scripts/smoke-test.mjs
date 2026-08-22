@@ -25,6 +25,7 @@ const requiredFiles = [
   'docker-compose.gemma.yml',
   'docker-compose.jetson.yml',
   'docker-compose.tensorrt.yml',
+  'docker-compose.xavier.yml',
   'scripts/build-trtllm-engine.sh',
   '.github/workflows/plugin-ci.yml'
 ];

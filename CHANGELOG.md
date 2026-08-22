@@ -60,6 +60,15 @@ this project uses [semantic versioning](https://semver.org/).
 - **TensorRT-LLM backend.** A `backend: tensorrt-llm` option talks to any
   OpenAI-compatible NVIDIA server (`trtllm-serve`, NIM) with an optional API
   key, for engines compiled ahead of time for the local GPU.
+- **Jetson Xavier NX support.** `docker-compose.xavier.yml` for JetPack 5, and
+  the host telemetry now works on the older board: the GPU node is found by
+  scanning for any Tegra GPU device-tree name (`ga10b` on Orin, `gv11b` on
+  Xavier, `gp10b`/`gm20b` on TX2/TX1) instead of matching only `gpu`, which
+  silently found nothing on every board except Orin. Power-mode ranking no
+  longer requires a `MAXN` entry — Xavier NX names its modes by budget and core
+  count, so the highest wattage wins with core count breaking ties.
+  TensorRT-LLM remains Orin-only; Xavier's compute capability 7.2 is below its
+  8.0 floor.
 - **Jetson compose files.** `docker-compose.jetson.yml` (Ollama with the NVIDIA
   container runtime, flash attention and a quantized KV cache) and
   `docker-compose.tensorrt.yml` (TensorRT-LLM OpenAI server).
