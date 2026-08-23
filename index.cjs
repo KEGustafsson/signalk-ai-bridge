@@ -22,6 +22,7 @@ const {
   normalizeAiConfig,
   queryAiModel,
   readJsonBody,
+  redactUrl,
   resetRuntimeState,
   retuneOffload,
   warmUpModel
@@ -255,7 +256,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
       res.status(200).json({
         enabled: config.enabled,
-        baseUrl: config.baseUrl,
+        // Redacted: a baseUrl may legitimately carry credentials, and this
+        // payload is rendered in the panel and readable by anyone with access.
+        baseUrl: redactUrl(config.baseUrl),
         model: config.model,
         backend: config.backend,
         requestTimeoutMs: config.requestTimeoutMs,

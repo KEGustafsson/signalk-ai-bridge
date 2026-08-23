@@ -77,10 +77,14 @@ services:
           memory: 7G
         reservations:
           memory: 2G
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+          # No `devices:` block here. Compose turns that into a --gpus device
+          # request, which on L4T needs CDI specs that `apt-get install
+          # nvidia-container-toolkit` - what the README and this header tell you
+          # to run - does not generate; the container then refuses to start with
+          # 'could not select device driver "nvidia" with capabilities: [[gpu]]'.
+          # Tegra is the exception where `runtime: nvidia` above is the supported
+          # form. Add the device request back only if you have also run
+          # `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
     entrypoint: /bin/sh
     # Poll until the server accepts requests instead of sleeping a fixed
     # interval: a slower Jetson start-up made `ollama pull` fail, which took

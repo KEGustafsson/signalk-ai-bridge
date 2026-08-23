@@ -482,3 +482,50 @@ describe('unit conversion', () => {
   });
 });
 
+describe('cost and safety of the status and retune routes', () => {
+  const { retuneOffload, redactUrl, resetRuntimeState: reset } = require('../lib/ai-service.cjs');
+
+  function countingDeps(counts) {
+    return {
+      fetchImpl: async (url) => {
+        const key = String(url).replace(/^.*\/api\//, '');
+        counts[key] = (counts[key] || 0) + 1;
+        if (key === 'tags') {
+          return jsonOk({ models: [{ name: 'gemma4:e2b', size: 3_000_000_000 }] });
+        }
+        if (key === 'ps') {
+          return jsonOk({ models: [{ name: 'gemma4:e2b', size: 4e9, size_vram: 2e9 }] });
+        }
+        return jsonOk({});
+      }
+    };
+  }
+
+  function jsonOk(payload) {
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  }
+
+  it('runs one tuning ladder for concurrent re-tunes', async () => {
+    // A re-tune loads and unloads the model up to four times. Ten at once used
+    // to mean ten interleaved ladders in the same unified memory - a cheap way
+    // for anything that can reach the route to thrash the accelerator.
+    reset();
+    const counts = {};
+    const config = normalizeAiConfig({ model: 'gemma4:e2b', warmupOnStart: true });
+
+    await Promise.all(Array.from({ length: 10 }, () => retuneOffload(config, countingDeps(counts))));
+
+    assert.ok(counts.generate <= 8, `expected one shared ladder, saw ${counts.generate} model loads`);
+  });
+
+  it('never echoes credentials from the configured base URL', () => {
+    assert.equal(redactUrl('http://admin:hunter2@ollama.local:11434'), 'http://ollama.local:11434');
+    assert.equal(redactUrl('http://localhost:11434'), 'http://localhost:11434');
+    // Unparseable input is returned untouched rather than throwing.
+    assert.equal(redactUrl('not a url'), 'not a url');
+  });
+});
+

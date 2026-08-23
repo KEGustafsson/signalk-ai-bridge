@@ -93,6 +93,15 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Security
 
+- `POST /ai/retune` is single-flight and serialized against inference. It loads
+  and unloads the model up to four times, so concurrent calls interleaved those
+  loads in the same unified memory and raced each other's result — ten at once
+  produced seventy model preloads. Inference now also waits for an in-flight
+  re-tune rather than being torn down mid-answer by the reload.
+- The accumulated answer is capped. `requestTimeoutMs: 0` is documented as
+  "disable the timeout", after which a backend that never stops streaming had
+  nothing to stop it.
+- Credentials are stripped from `baseUrl` before `/ai/status` serializes it.
 - The Ollama and TensorRT-LLM ports in every compose file now bind
   `127.0.0.1`. Docker publishes to `0.0.0.0` by default *and* bypasses the host
   firewall, which put an unauthenticated inference API — including
@@ -121,6 +130,16 @@ this project uses [semantic versioning](https://semver.org/).
   one that never settles, and this suite has hung that way before.
 - Compose files are published in the npm tarball; the README references them by
   bare filename.
+- Both Jetson compose files drop the `deploy.resources.reservations.devices`
+  block. Compose turns it into a `--gpus` device request, which on L4T needs CDI
+  specs that the documented `apt-get install nvidia-container-toolkit` does not
+  generate — the container then refuses to start at all. `runtime: nvidia` is
+  the supported form on Tegra.
+- GGUF geometry and weight size are cached per model tag. They cannot change
+  without the model being re-pulled, but were re-fetched on every `/ai/status`,
+  and the weight lookup hit `/api/tags` a second time — defeating the
+  availability cache in front of the first call. Three status polls cost ten
+  backend round trips; they now cost six, with `/api/ps` still read live.
 
 ### Added
 
