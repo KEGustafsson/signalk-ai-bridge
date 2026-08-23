@@ -7,6 +7,121 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [0.2.0-beta.1]
 
+### Fixed
+
+- **The admin-UI panel never loaded.** `package.json` declares `"type":
+  "module"`, so signalk-server emits `<script type="module"
+  src=".../remoteEntry.js">` — but the Vite config named the ESM container
+  `esmRemoteEntry.js` and left `remoteEntry.js` as the `var` IIFE. A module
+  script creates no global and the IIFE exports nothing, so the admin UI
+  reported "Module ... is not available". The panel is only ever loaded
+  directly by the tests and by `scripts/preview-host.mjs`, which is why nothing
+  caught it; `scripts/smoke-test.mjs` now asserts the container shape.
+- **The GPU auto-tuner missed real out-of-memory failures.** Ollama refuses an
+  over-large model with `model requires more system memory (...) than is
+  available (...)`, and the kernel OOM-killer case arrives as `signal: killed`.
+  Neither matched, so the ladder treated a fit failure as a broken backend and
+  never halved the context — the one case it exists for.
+- **The tuner shrank the context on hardware with no GPU to win.** With
+  `numGpu: 0` (a documented CPU pin) `/api/ps` reports no VRAM, which read as
+  "spilled", so the ladder halved four times and pinned every later request to
+  the smallest window for the life of the process. It now stops when no layer
+  reached the GPU at full context, and the give-up path restores the configured
+  window rather than keeping the smallest one it tried.
+- **Distances and positions were multiplied by 180/π.** The angle heuristic
+  matched any path *segment* starting with `course`/`track`/…, and under `/i`
+  the character class also matched `.`, so every leaf beneath
+  `navigation.courseGreatCircle.*` was converted: a 1852 m leg reached the
+  model as `106111.783658`. Matching is now on the leaf segment against an
+  explicit list.
+- **A wildcard selection sent raw envelopes and unconverted angles.** The
+  wildcard branch flattened `{value, timestamp, $source, meta}` instead of
+  unwrapping it, so keys ended in `.value` — which meant the angle conversion
+  never fired for wildcards, and `meta` plus one copy per conflicting source
+  went into the prompt. Leaves are now unwrapped, the timestamp is kept as
+  `<path>@` so the model can see staleness, and `meta`/`$source` are dropped.
+- **A stopped plugin kept answering.** Express cannot unmount a subrouter, so
+  every route stayed live after `stop()` and fell back to the *default* config
+  — `enabled: true` against `http://localhost:11434`. All five routes now
+  return 503 while stopped, and reach no backend.
+- **A warm-up could write tuning state for a configuration that no longer
+  existed.** The generation guard covered only the status string, and the state
+  key omitted `numCtx`/`numGpu`/`gpuAutoTune`, so lowering `num_ctx` after an
+  out-of-memory error and restarting silently kept the old window.
+- **A failed re-tune left the plugin worse off than before.** `/ai/retune`
+  cleared the measured state up front, so a re-tune against an unreachable
+  backend dropped it back to the settings the tuner had already rejected. The
+  previous result is now restored on failure, and the availability cache is
+  cleared so a re-tune moments after starting Ollama is not answered from a
+  stale probe.
+- **A stalled stream was reported as an unknown error.** The timeout-to-`code`
+  translation covered only the header phase, but for a streamed answer the body
+  *is* the response, so a peer going quiet mid-answer surfaced as a bare
+  `AbortError` and mapped to 502 instead of 504.
+- **TensorRT-LLM streams lost tokens.** CRLF-framed events never matched the
+  `\n\n` boundary, so a conforming server yielded nothing and fell back to a
+  second full generation; and the final event was dropped when the peer closed
+  without a trailing blank line, truncating the answer while presenting it as
+  complete. A server that ignores `stream: true` is now read from the body
+  already received rather than generating a second time.
+- **A cancelled question kept the GPU busy.** `/bridge/stream` never noticed a
+  client disconnect, so the accelerator finished an answer nobody could read
+  while holding the single Ollama slot the Jetson compose files configure.
+- **`num_predict` could exceed the whole context window.** It was clamped
+  independently of `num_ctx`, so after the tuner shrank the window llama.cpp
+  dropped the prompt mid-answer instead of erroring.
+- **The KV cache hint gave inverted advice.** The match was symmetric, so
+  ordinary compute buffers pushed the observation into the next larger
+  candidate and an already-quantized cache was reported as `f16`. Matching is
+  now one-sided, ambiguous footprints report nothing, and sliding-window models
+  (Gemma 3/4) are declined outright — the whole-context formula overestimates
+  them several times over.
+- **The start-up status claimed a GPU placement it had not measured.** It read
+  the *requested* layer count, so it printed "all layers on GPU" even when the
+  plugin's own telemetry reported a spill or could not read residency at all.
+- **The context sent to the model was unbounded.** Roughly 300 configured leaf
+  paths already exceeded the default `num_ctx`, and llama.cpp answers by
+  silently dropping the oldest context. It is now capped, with the number of
+  omitted paths stated in the prompt.
+- Smaller: `parseInt` in the config clamps turned `1e300` into `1` (a 1 ms
+  timeout); `formatBytes` rendered `"512.0 undefined"` below one byte;
+  malformed and oversized request bodies returned 502 with internal parser text
+  instead of 400; non-string prompts were coerced (`[object Object]`) or threw;
+  cyclic or very deep Signal K values blew the stack; the panel refetched
+  `/ai/status` on every parent render; and a non-2xx response leaked its abort
+  timer, listener and pooled connection.
+
+### Security
+
+- The Ollama and TensorRT-LLM ports in every compose file now bind
+  `127.0.0.1`. Docker publishes to `0.0.0.0` by default *and* bypasses the host
+  firewall, which put an unauthenticated inference API — including
+  `POST /api/pull` and `DELETE /api/delete` — on the boat's LAN.
+- `apiKey` is rendered with a password widget instead of a cleartext field.
+
+### Changed
+
+- `react` and `react-dom` move to `devDependencies`: Vite bundles them into
+  `public/`, and nothing in the shipped CommonJS resolves them. A production
+  install drops from 7.8 MB to 1.8 MB, which is real storage on a Jetson.
+- The TensorRT-LLM image is pinned. There is no `latest` tag in that NGC
+  repository, so `docker compose up` failed with `manifest unknown`; a
+  serialized engine is also tied to the exact runtime version that built it.
+  The compose command now points at the checkpoint directory it actually
+  serves, and the whole TensorRT path is marked unverified-on-hardware.
+- `TRTLLM_CUDA_ARCHS` is gone from the build script — it is not a TensorRT-LLM
+  variable and provided none of the protection its comment claimed. The GPU's
+  compute capability is checked against `nvidia-smi` instead.
+- The compose files forward SIGTERM to `ollama serve`, wait 30 s for it, and
+  retry a failed model pull three times: `sh -c "... & wait"` without a trap
+  orphaned the server, so a shore-power cut during the initial pull corrupted
+  `ollama_data`.
+- The test runner passes `--test-timeout=30000` and CI jobs are bounded at 15
+  minutes. A regression in the request-bounding code turns a failing test into
+  one that never settles, and this suite has hung that way before.
+- Compose files are published in the npm tarball; the README references them by
+  bare filename.
+
 ### Added
 
 - **NVIDIA Jetson / CUDA acceleration controls.** New plugin settings for
@@ -89,7 +204,9 @@ this project uses [semantic versioning](https://semver.org/).
   numbers are rounded to 6 decimals, and the configured path list is no longer
   repeated alongside data that is already keyed by path — only paths that
   produced no value are listed, which is what the system prompt actually needs.
-  Measured at 46% fewer characters on a typical wildcard selection. The context
+  Measured at about 20% fewer characters on a typical wildcard selection; the
+  token saving is smaller still, since tokenizers encode runs of leading spaces
+  efficiently and indentation is the largest single component. The context
   returned to the panel is unchanged.
 - **`maxTokens` no longer sizes the KV cache.** It now maps to `num_predict`
   only; the context window is the separate `numCtx` setting. The previous

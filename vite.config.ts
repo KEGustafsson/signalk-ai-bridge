@@ -27,8 +27,14 @@ export default defineConfig({
   plugins: [
     federation({
       name: safePackageName,
-      filename: 'esmRemoteEntry.js',
-      varFilename: 'remoteEntry.js',
+      // package.json declares "type": "module", so signalk-server emits
+      // <script type="module" src="/signalk-ai-bridge/remoteEntry.js">. That
+      // URL must therefore serve the ESM container, not the `var` IIFE: a
+      // module-scope `var` creates no global for the admin UI to find, and
+      // `document.currentScript` is null in a module script. Naming the ESM
+      // output esmRemoteEntry.js left remoteEntry.js as the IIFE and the panel
+      // failed to mount with "Module ... is not available".
+      filename: 'remoteEntry.js',
       dts: false,
       exposes: {
         './AppPanel': './src/AppPanel.tsx'

@@ -422,15 +422,23 @@ Restart Signal K afterwards and the plugin appears in the plugin list. Cloning
 and packing on the Jetson itself works too; only the git-URL install is broken.
 
 (The obvious fix — moving the build to a `prepare` script, which npm *does* run
-for git installs — is not viable: npm 10 runs `prepare` even under
-`--ignore-scripts`, and its lifecycle banner on stdout breaks the `npm pack
---json` parsing in the official Signal K plugin CI's pack check.)
+for git installs — is not viable yet: npm 10 runs `prepare` even under
+`--ignore-scripts`, and its lifecycle banner on stdout breaks the `JSON.parse`
+of `npm pack --dry-run --json --ignore-scripts` in the official Signal K plugin
+CI's pack check. Upstream says the same thing in that workflow's own comments —
+"npm < 11 runs prepare here despite --ignore-scripts" — so this becomes safe to
+change once the CI matrix is on npm 11. Re-tested against npm 10.9.7: the check
+still fails with `Unexpected token 'v', "vite v6.4."...`.)
 
 ### What to check once it is running
 
-1. Start the inference server: `docker compose -f docker-compose.jetson.yml up -d`
-2. Set MAXN clocks: `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the
-   panel names the id if the current mode is capped.
+1. Start the inference server for your board:
+   - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.jetson.yml up -d`
+   - Xavier NX (JetPack 5): `docker compose -f docker-compose.xavier.yml up -d`
+2. Raise the power mode: `sudo nvpmodel -m <id> && sudo jetson_clocks`. The panel
+   names the id when the current mode is capped. On Orin that is `MAXN_SUPER`;
+   Xavier NX has no MAXN mode at all, so the highest wattage and core count wins
+   — usually `MODE_20W_6CORE`.
 3. Open the plugin's web UI and read the `GPU Acceleration` card. It should say
    **GPU accelerated**, with `In GPU memory` equal for both figures.
 4. Ask a question. `Generation speed` should be in the tens of tokens/second on a

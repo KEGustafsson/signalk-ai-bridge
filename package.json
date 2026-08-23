@@ -18,7 +18,11 @@
     "lib",
     "public",
     "assets",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docker-compose.gemma.yml",
+    "docker-compose.jetson.yml",
+    "docker-compose.xavier.yml",
+    "docker-compose.tensorrt.yml"
   ],
   "keywords": [
     "signalk-node-server-plugin",
@@ -51,17 +55,18 @@
     "access": "public"
   },
   "dependencies": {
-    "ollama": "^0.6.3",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "ollama": "^0.6.3"
   },
   "devDependencies": {
     "@module-federation/vite": "^1.9.4",
     "@types/node": "^22.19.17",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "typescript": "^5.8.0",
     "vite": "^6.0.0"
   },
   "engines": {
     "node": ">=20.19.0"
-  }
+  },
+  "author": "KEGustafsson"
 }

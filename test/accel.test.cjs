@@ -412,3 +412,73 @@ describe('review follow-ups', () => {
     assert.equal(report.jetson.present, false);
   });
 });
+
+describe('unit conversion', () => {
+  const { createBridgeService } = require('../lib/bridge-service.cjs');
+
+  function contextFor(paths, model) {
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: (path) => path.split('.').reduce((node, key) => (node ? node[key] : undefined), model)
+    };
+    const service = createBridgeService(app, {});
+    return service.buildAiPayload({ prompt: 'x' }, { aiDataPaths: paths, ...normalizeAiConfig({}) });
+  }
+
+  it('leaves distances and positions alone under a course subtree', async () => {
+    // "course" used to taint every leaf beneath it, because the pattern matched
+    // a following "." under /i. A 1852 m leg reached the model as 106111.78 and
+    // a latitude already in degrees was multiplied by 180/pi a second time.
+    const payload = await contextFor(['navigation.courseGreatCircle.*'], {
+      navigation: {
+        courseGreatCircle: {
+          nextPoint: {
+            distance: { value: 1852 },
+            velocityMadeGood: { value: 3.5 },
+            position: { value: { latitude: 60.1, longitude: 24.9 } }
+          },
+          bearingTrackTrue: { value: Math.PI / 2 }
+        }
+      }
+    });
+
+    const data = payload.context.selectedData;
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.distance'], 1852);
+    // The envelope is unwrapped, not flattened: no ".value" keys, no "meta",
+    // no per-source copies - and the timestamp survives, so the model can tell
+    // a live fix from a three-hour-old one.
+    assert.equal(
+      Object.keys(data).some((key) => key.endsWith('.value') || key.includes('.meta.')),
+      false
+    );
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 3.5);
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.position.latitude'], 60.1);
+    // A real angle in the same subtree still converts. This never fired for a
+    // wildcard before, because the key was "...bearingTrackTrue.value".
+    assert.equal(data['navigation.courseGreatCircle.bearingTrackTrue'], 90);
+  });
+
+  it('keeps the leaf timestamp so staleness is visible to the model', async () => {
+    const payload = await contextFor(['navigation.*'], {
+      navigation: {
+        speedOverGround: { value: 4.1, timestamp: '2026-08-23T04:00:00Z', $source: 'gps.1' }
+      }
+    });
+
+    const data = payload.context.selectedData;
+    assert.equal(data['navigation.speedOverGround'], 4.1);
+    assert.equal(data['navigation.speedOverGround@'], '2026-08-23T04:00:00Z');
+    assert.equal(data['navigation.speedOverGround.$source'], undefined);
+  });
+
+  it('still converts the angle leaves that are genuinely radians', async () => {
+    const payload = await contextFor(['navigation.headingTrue', 'environment.wind.angleApparent'], {
+      navigation: { headingTrue: { value: Math.PI } },
+      environment: { wind: { angleApparent: { value: Math.PI / 4 } } }
+    });
+
+    assert.equal(payload.context.selectedData['navigation.headingTrue'], 180);
+    assert.equal(payload.context.selectedData['environment.wind.angleApparent'], 45);
+  });
+});
+

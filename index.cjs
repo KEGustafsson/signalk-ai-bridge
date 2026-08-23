@@ -31,6 +31,13 @@ const { createBridgeService } = require('./lib/bridge-service.cjs');
 module.exports = function createPlugin(app, dependencies = {}) {
   let pluginOptions = {};
   let routesRegistered = false;
+  // Express has no public API for unmounting a subrouter, and signalk-server
+  // calls registerWithRouter unconditionally - outside its `if (enabled)` guard
+  // - so gating a stopped plugin is the plugin's own job. Without this, stop()
+  // left every route live and getConfig() fell back to normalizeAiConfig({}),
+  // whose defaults are enabled:true against http://localhost:11434: a stopped
+  // plugin answering inference against a host the operator never configured.
+  let running = false;
   // Bumped on every start/stop so a warm-up that finishes after the plugin was
   // stopped (or restarted with new options) cannot overwrite the live status.
   let lifecycleGeneration = 0;
@@ -201,7 +208,39 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   });
 
+  // One place for code -> HTTP, so /ai/query and the bridge routes cannot drift
+  // apart the way they had (only one of them mapped `disabled` and `timeout`).
+  const statusForCode = (code) => {
+    switch (code) {
+      case 'validation-failed':
+        return 400;
+      case 'unauthorized':
+        return 401;
+      case 'disabled':
+        return 503;
+      case 'timeout':
+        return 504;
+      default:
+        return 502;
+    }
+  };
+
+  // A stopped plugin must not serve inference. Returns true when the request
+  // was answered with 503 and the caller should stop.
+  const rejectIfStopped = (res) => {
+    if (running) {
+      return false;
+    }
+    res.status(503).json({
+      error: { code: 'disabled', message: 'AI Bridge is stopped.' }
+    });
+    return true;
+  };
+
   const statusHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
     try {
       const config = getConfig();
       const availability = await getAiAvailability(config, dependencies);
@@ -248,6 +287,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   const queryHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
@@ -284,6 +326,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   const bridgeExecuteHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
@@ -322,6 +367,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * plugin.
    */
   const retuneHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
     try {
       const config = getConfig();
       const result = await retuneOffload(config, dependencies);
@@ -350,9 +398,35 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * gone — so they are delivered as a trailing error line instead.
    */
   const bridgeStreamHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
     let headersSent = false;
 
+    // A question the operator walked away from is still a question the GPU is
+    // answering: without this the generation ran to completion for a closed
+    // socket, holding the single Ollama slot the Jetson compose files configure
+    // and queueing the next question behind it.
+    const abortController = new AbortController();
+    const onClientGone = () => abortController.abort();
+    if (req && typeof req.on === 'function') {
+      req.on('close', onClientGone);
+      req.on('aborted', onClientGone);
+    }
+    const releaseClientListeners = () => {
+      if (req && typeof req.off === 'function') {
+        req.off('close', onClientGone);
+        req.off('aborted', onClientGone);
+      }
+    };
+
     const writeLine = (payload) => {
+      // res.write on a destroyed socket returns false rather than throwing, so
+      // the loop would otherwise keep going and keep formatting output nobody
+      // can read.
+      if (abortController.signal.aborted || res.writableEnded) {
+        return;
+      }
       if (!headersSent) {
         res.setHeader('content-type', 'application/x-ndjson; charset=utf-8');
         res.setHeader('cache-control', 'no-cache, no-transform');
@@ -373,29 +447,76 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
-      const result = await bridgeService.streamTool(body, config, (text) => {
-        writeLine({ type: 'token', text });
-      });
+      const result = await bridgeService.streamTool(
+        body,
+        config,
+        (text) => {
+          writeLine({ type: 'token', text });
+        },
+        abortController.signal
+      );
+
+      // streamTool reports a bad request by *returning* an error result rather
+      // than throwing, so a validation failure went out as HTTP 200 with an
+      // error line and the status ladder below was dead code for it.
+      //
+      // Only pre-generation errors are mapped to a status: a backend failure
+      // stays a trailing error line, because a non-2xx makes the panel fall
+      // back to the blocking route and pay for a second generation.
+      const preGeneration =
+        result &&
+        result.type === 'error' &&
+        result.error &&
+        (result.error.code === 'validation-failed' || result.error.code === 'disabled');
+
+      if (!headersSent && preGeneration && typeof res.status === 'function') {
+        releaseClientListeners();
+        res.status(statusForCode(result.error.code)).json({ error: result.error });
+        return;
+      }
 
       writeLine(result);
-      res.end();
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown bridge failure.';
-      const code =
-        typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
+      // The client hanging up is not a failure to report - there is nobody
+      // left to report it to, and the headers may already be gone.
+      if (!abortController.signal.aborted) {
+        const message = error instanceof Error ? error.message : 'Unknown bridge failure.';
+        const code =
+          typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
 
-      writeLine({ type: 'error', error: { code, message } });
-      res.end();
+        // Nothing has been written yet, so a real status code is still
+        // available: a malformed request should not look like a backend fault.
+        if (!headersSent && typeof res.status === 'function' && code === 'validation-failed') {
+          releaseClientListeners();
+          res.status(400).json({ error: { code, message } });
+          return;
+        }
+        writeLine({ type: 'error', error: { code, message } });
+      }
+    } finally {
+      releaseClientListeners();
+      if (!res.writableEnded) {
+        res.end();
+      }
     }
   };
+
+  // Without this the admin UI renders apiKey as an ordinary text input, so the
+  // token is on screen in cleartext and echoed back on every config page load.
+  const uiSchema = () => ({
+    apiKey: { 'ui:widget': 'password' },
+    systemPrompt: { 'ui:widget': 'textarea' }
+  });
 
   return {
     id: 'signalk-ai-bridge',
     name: 'AI Bridge',
     description: 'Signal K Ask AI plugin with embedded web UI for Ollama and Gemma.',
     schema,
+    uiSchema,
     start: (options = {}) => {
       pluginOptions = options;
+      running = true;
       bridgeService.reset();
       resetRuntimeState();
       lifecycleGeneration += 1;
@@ -411,20 +532,43 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
       // Fire-and-forget: a warm-up is a latency optimisation, so start() must
       // not wait for it and must never fail because the backend is not up yet.
-      warmUpModel(config, dependencies)
+      warmUpModel(config, dependencies, { isCurrent: () => generation === lifecycleGeneration })
         .then((result) => {
           if (generation !== lifecycleGeneration) {
             return;
           }
+          // A failed warm-up used to leave the optimistic "ready" status from
+          // start() in place, so the admin UI showed green while the backend
+          // was unreachable.
+          if (!result.warmed && result.reason && result.reason !== 'skipped') {
+            if (typeof app.setPluginError === 'function') {
+              app.setPluginError(`AI Bridge could not reach the model: ${result.reason}`);
+            } else if (typeof app.setPluginStatus === 'function') {
+              app.setPluginStatus(`AI Bridge degraded: ${result.reason}`);
+            }
+            return;
+          }
           if (result.warmed && typeof app.setPluginStatus === 'function') {
             const offload = result.offload;
-            // numGpu 0 is a deliberate CPU-only pin, not a GPU placement.
+            const numCtx = offload ? offload.numCtx : config.numCtx;
+            // numGpu is what we *asked* for (999 means "all layers"), not what
+            // landed. Only the last ladder step's measured residency can say
+            // "all layers on GPU"; claiming it from the request printed a full
+            // offload even when /api/ps was unreadable or reported a spill.
+            const measured =
+              offload && Array.isArray(offload.steps) && offload.steps.length > 0
+                ? offload.steps[offload.steps.length - 1].state
+                : undefined;
             const placement =
-              offload && offload.numGpu > 0
-                ? `all layers on GPU, num_ctx ${offload.numCtx}`
-                : offload && offload.numGpu === 0
-                  ? `CPU only, num_ctx ${offload.numCtx}`
-                  : `backend-chosen layer split, num_ctx ${offload ? offload.numCtx : config.numCtx}`;
+              offload && offload.numGpu === 0
+                ? `CPU only, num_ctx ${numCtx}`
+                : measured === 'gpu'
+                  ? `all layers on GPU, num_ctx ${numCtx}`
+                  : measured === 'partial'
+                    ? `partly on CPU, num_ctx ${numCtx}`
+                    : measured === 'cpu'
+                      ? `on CPU, num_ctx ${numCtx}`
+                      : `GPU residency unconfirmed, num_ctx ${numCtx}`;
             app.setPluginStatus(`AI Bridge ready: ${result.model} preloaded (${placement})`);
           }
         })
@@ -449,6 +593,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       bridgeService.reset();
       resetRuntimeState();
       pluginOptions = {};
+      running = false;
     }
   };
 };

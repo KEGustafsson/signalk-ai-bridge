@@ -16,7 +16,6 @@ const requiredFiles = [
   'lib/jetson-telemetry.cjs',
   'lib/kv-cache.cjs',
   'lib/http-utils.cjs',
-  'lib/http-utils.cjs',
   'lib/tensorrt-service.cjs',
   'index.cjs',
   'README.md',
@@ -59,7 +58,7 @@ const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 assert.ok(pkg.keywords.includes('signalk-node-server-plugin'), 'Missing signalk-node-server-plugin keyword');
 assert.ok(typeof pkg.repository?.url === 'string', 'package.json needs a repository URL');
 assert.ok(typeof pkg.engines?.node === 'string', 'package.json needs engines.node');
-assert.ok(typeof pkg.license === 'string' && pkg.license.length > 0, 'package.json needs a license');
+assert.equal(pkg.license, 'Apache-2.0', 'package.json license must be the SPDX id Apache-2.0, matching LICENSE');
 assert.ok(
   Array.isArray(pkg.signalk?.screenshots) && pkg.signalk.screenshots.length > 0,
   'package.json needs at least one signalk.screenshots entry'
@@ -71,6 +70,30 @@ for (const asset of [pkg.signalk.appIcon, ...pkg.signalk.screenshots]) {
     pkg.files.some((entry) => relative === entry || relative.startsWith(`${entry}/`)),
     `Declared Signal K asset is not published: ${asset}`
   );
+}
+
+// signalk-server picks the container script tag from package.json's "type":
+// with "module" it emits <script type="module" src=".../remoteEntry.js">, so
+// remoteEntry.js must be the ESM container. Shipping the `var` IIFE under that
+// name makes the admin UI report "Module ... is not available" and the panel
+// never mounts - a failure no unit test sees, because the panel is only ever
+// loaded directly in tests and in scripts/preview-host.mjs.
+if (fs.existsSync('public/remoteEntry.js')) {
+  const remoteEntry = fs.readFileSync('public/remoteEntry.js', 'utf8');
+  if (pkg.type === 'module') {
+    assert.match(
+      remoteEntry,
+      /export\s*\{[^}]*\bas get\b[^}]*\}/,
+      'public/remoteEntry.js must export `get` for an ESM ("type": "module") webapp'
+    );
+    assert.match(remoteEntry, /\binit\b/, 'public/remoteEntry.js must export `init`');
+  } else {
+    assert.match(
+      remoteEntry,
+      new RegExp(`var\\s+${pkg.name.replace(/[-@/]/g, '_')}\\b`),
+      'a non-module webapp needs the global `var` container in public/remoteEntry.js'
+    );
+  }
 }
 
 // The plugin-ci caller must keep pointing at the canonical reusable workflow,

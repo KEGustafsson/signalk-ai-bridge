@@ -170,7 +170,11 @@ export async function streamBridgeRequest(
     return executeBridgeRequest(api, request);
   }
 
-  if (!response.ok || !response.body || typeof response.body.getReader !== 'function') {
+  // Fall back only when the streaming route is genuinely unavailable: an older
+  // plugin build (404), or a browser with no readable body. Falling back on any
+  // non-2xx meant a proxy timing out mid-generation started a *second*
+  // generation on the same GPU while the first was still running.
+  if (response.status === 404 || !response.body || typeof response.body.getReader !== 'function') {
     return executeBridgeRequest(api, request);
   }
 

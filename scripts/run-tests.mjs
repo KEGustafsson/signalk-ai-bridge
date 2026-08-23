@@ -76,7 +76,10 @@ async function main() {
     // Compiled tests use explicit .js specifiers, so no resolver flag is
     // needed — and --experimental-specifier-resolution is not accepted by
     // every Node release the plugin CI matrix covers.
-    await runNode(['--test', ...testFiles]);
+    // A regression that stops a request being bounded turns a failing test into
+    // a test that never settles - this suite has hung that way before, and with
+    // no timeout the CI job burns the runner's full default instead of failing.
+    await runNode(['--test', '--test-timeout=30000', ...testFiles]);
   } finally {
     await rm(tmpTestsDir, { recursive: true, force: true });
   }

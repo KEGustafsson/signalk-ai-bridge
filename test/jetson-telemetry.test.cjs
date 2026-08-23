@@ -37,15 +37,21 @@ function createFakeFs(files, directories = {}) {
   };
 }
 
+// JetPack 6 / L4T 36 on an Orin Nano Super, as the board really presents it:
+// the GPU node is "ga10b" (not "gpu") and lives under platform/bus@0, the
+// device-tree model string is NUL-terminated, and thermal_zone0 is a populated
+// CPU zone that the GPU-zone filter has to skip past.
 function jetsonFixture(overrides = {}) {
   const files = {
     '/etc/nv_tegra_release': '# R36 (release), REVISION: 4.3, GCID: 12345, BOARD: generic',
-    '/proc/device-tree/model': 'NVIDIA Jetson Orin Nano Super Developer Kit ',
+    '/proc/device-tree/model': `NVIDIA Jetson Orin Nano Super Developer Kit${String.fromCharCode(0)}`,
     '/var/lib/nvpmodel/status': 'pmode:0002 fmode:fan_mode_quiet',
     '/etc/nvpmodel.conf': NVPMODEL_CONF,
-    '/sys/devices/platform/gpu.0/load': '842',
-    '/sys/class/devfreq/17000000.gpu/cur_freq': '1020000000',
-    '/sys/class/devfreq/17000000.gpu/max_freq': '1020000000',
+    '/sys/devices/platform/bus@0/17000000.ga10b/load': '842',
+    '/sys/class/devfreq/17000000.ga10b/cur_freq': '1020000000',
+    '/sys/class/devfreq/17000000.ga10b/max_freq': '1020000000',
+    '/sys/devices/virtual/thermal/thermal_zone0/type': 'cpu-thermal',
+    '/sys/devices/virtual/thermal/thermal_zone0/temp': '92000',
     '/sys/devices/virtual/thermal/thermal_zone1/type': 'gpu-thermal',
     '/sys/devices/virtual/thermal/thermal_zone1/temp': '54500',
     ...overrides
@@ -54,8 +60,9 @@ function jetsonFixture(overrides = {}) {
     // The GPU node is discovered by scanning, as on a real board, rather than
     // by guessing one path.
     '/sys/devices': [],
-    '/sys/devices/platform': ['gpu.0', 'bus@0'],
-    '/sys/class/devfreq': ['17000000.gpu'],
+    '/sys/devices/platform': ['bus@0'],
+    '/sys/devices/platform/bus@0': ['17000000.ga10b', '3610000.usb'],
+    '/sys/class/devfreq': ['17000000.ga10b'],
     '/sys/devices/virtual/thermal': ['thermal_zone0', 'thermal_zone1']
   };
   return { fsImpl: createFakeFs(files, directories) };
@@ -129,15 +136,31 @@ describe('Jetson host telemetry', () => {
     const result = await readJetsonTelemetry(jetsonFixture());
 
     assert.equal(result.present, true);
+    // Device-tree strings carry a trailing NUL, which String.trim() does not
+    // remove - it would otherwise reach the panel and the JSON status payload.
     assert.equal(result.model, 'NVIDIA Jetson Orin Nano Super Developer Kit');
+    assert.equal(result.model.includes('\u0000'), false);
     assert.equal(result.l4tVersion, '36.4.3');
     assert.equal(result.powerMode.id, 2);
     assert.equal(result.powerMode.name, 'MAXN_SUPER');
     assert.equal(result.powerMode.isMaximum, true);
     assert.equal(result.gpuLoadPercent, 84.2);
     assert.equal(result.gpuClockHz, 1020000000);
+    // 54.5 from the gpu-thermal zone, not 92 from the hot CPU zone next to it:
+    // reporting CPU Tj as GPU temperature would raise a thermal-throttling
+    // warning for a GPU that is fine.
     assert.equal(result.gpuTemperatureC, 54.5);
     assert.deepEqual(result.warnings, []);
+  });
+
+  it('finds the Ampere GPU node, which is named ga10b and sits under bus@0', async () => {
+    // The node is "gpu" only on some boards. Matching that alone is the exact
+    // regression this module already shipped once, and it fails silently: load
+    // and clock simply come back blank on every other generation.
+    const result = await readJetsonTelemetry(jetsonFixture());
+
+    assert.equal(result.gpuLoadPercent, 84.2);
+    assert.equal(result.gpuClockHz, 1020000000);
   });
 
   it('warns when the board is held below its maximum power mode', async () => {
@@ -152,7 +175,7 @@ describe('Jetson host telemetry', () => {
 
   it('warns when a busy GPU is running well below its maximum clock', async () => {
     const result = await readJetsonTelemetry(
-      jetsonFixture({ '/sys/class/devfreq/17000000.gpu/cur_freq': '400000000' })
+      jetsonFixture({ '/sys/class/devfreq/17000000.ga10b/cur_freq': '400000000' })
     );
 
     assert.match(result.warnings.join(' '), /400 MHz of 1020 MHz/);

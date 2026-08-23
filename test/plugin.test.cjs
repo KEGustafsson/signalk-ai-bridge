@@ -780,3 +780,114 @@ describe('signalk-ai-bridge plugin', () => {
   });
 
 });
+
+describe('lifecycle gating', () => {
+  function makeHost() {
+    const statuses = [];
+    const errors = [];
+    return {
+      app: {
+        selfId: 'urn:mrn:signalk:uuid:test-self',
+        getSelfPath: () => undefined,
+        setPluginStatus: (text) => statuses.push(text),
+        setPluginError: (text) => errors.push(text)
+      },
+      statuses,
+      errors
+    };
+  }
+
+  function collectRoutes(plugin) {
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    return routes;
+  }
+
+  function recorder() {
+    return {
+      statusCode: 200,
+      body: undefined,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      },
+      setHeader() {},
+      write() {
+        return true;
+      },
+      end() {}
+    };
+  }
+
+  it('serves nothing, and reaches no backend, once stopped', async () => {
+    // Express cannot unmount a subrouter and signalk-server never tries, so a
+    // stopped plugin kept answering - and getConfig() fell back to
+    // normalizeAiConfig({}), whose defaults are enabled:true against
+    // http://localhost:11434. That is inference against a host the operator
+    // never configured, from a plugin they had switched off.
+    const host = makeHost();
+    const reached = [];
+    const plugin = createPlugin(host.app, {
+      ollamaClient: {
+        async chat() {
+          reached.push('chat');
+          return { message: { content: 'hi' } };
+        }
+      },
+      fetchImpl: async (url) => {
+        reached.push(String(url));
+        return new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    });
+    const routes = collectRoutes(plugin);
+
+    plugin.start({ model: 'my-model', baseUrl: 'http://ollama.local:11434', warmupOnStart: false });
+    plugin.stop();
+    reached.length = 0;
+
+    for (const route of ['GET /ai/status', 'POST /ai/query', 'POST /bridge/execute', 'POST /ai/retune']) {
+      const res = recorder();
+      await routes[route]({ body: { toolId: 'ask-vessel-ai', prompt: 'Status?' } }, res);
+      assert.equal(res.statusCode, 503, `${route} should refuse while stopped`);
+      assert.equal(res.body.error.code, 'disabled');
+    }
+
+    assert.deepEqual(reached, [], 'a stopped plugin must not contact any backend');
+  });
+
+  it('reports an unreachable backend as a plugin error, not as ready', async () => {
+    const host = makeHost();
+    const plugin = createPlugin(host.app, {
+      fetchImpl: async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:11434');
+      }
+    });
+
+    plugin.start({ warmupOnStart: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(host.errors.length, 1, 'the admin UI should be told the backend is down');
+    assert.match(host.errors[0], /could not reach the model/i);
+  });
+
+  it('exposes a password widget for the API key', () => {
+    const plugin = createPlugin(makeHost().app, {});
+    assert.equal(typeof plugin.uiSchema, 'function');
+    assert.equal(plugin.uiSchema().apiKey['ui:widget'], 'password');
+  });
+});

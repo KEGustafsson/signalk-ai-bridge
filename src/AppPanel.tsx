@@ -296,7 +296,10 @@ export default function AppPanel(props: AppPanelProps) {
     return () => {
       isActive = false;
     };
-  }, [props]);
+    // Not [props]: the host builds a fresh props object on every one of its own
+    // renders, so the effect refired and re-ran a status fetch that costs the
+    // inference server three round trips plus a full Jetson sysfs scan.
+  }, [props.bridgeFetch, props.bridgeEndpoint]);
 
   const onAskAi = React.useCallback(async () => {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;

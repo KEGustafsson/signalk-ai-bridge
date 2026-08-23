@@ -24,9 +24,18 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
+    init: true
+    # Long enough for the server to flush and exit cleanly after SIGTERM.
+    stop_grace_period: 30s
     runtime: nvidia
     ports:
-      - "11434:11434"
+      # Loopback only. Docker publishes to 0.0.0.0 by default AND bypasses
+      # the host firewall, which would put an unauthenticated Ollama API -
+      # including POST /api/pull and DELETE /api/delete - on the boat's LAN
+      # and any marina wifi it is bridged to. Signal K runs on this host, so
+      # loopback is all the plugin needs; use a shared Docker network to
+      # reach it from another container.
+      - "127.0.0.1:11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
       # Lets Ollama identify the board as a Jetson and pick its CUDA runner.
@@ -77,7 +86,7 @@ services:
     # interval: a slower Jetson start-up made `ollama pull` fail, which took
     # the shell down through the && chain and restart-looped the container.
     # A failed pull is also non-fatal now — cached models still serve.
-    command: -c "ollama serve & tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; ollama pull gemma4:e2b || echo 'model pull failed; serving whatever is already cached'; wait"
+    command: -c "ollama serve & srv=$$!; trap 'kill -TERM $$srv 2>/dev/null' TERM INT; tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; n=0; until ollama list 2>/dev/null | grep -q . || [ $$n -ge 3 ]; do n=$$((n+1)); ollama pull gemma4:e2b && break; echo "model pull attempt $$n failed; retrying"; sleep $$((n*10)); done; (ollama list 2>/dev/null | grep -q . || echo 'no model available; serving nothing until one is pulled'); wait $$srv"
     healthcheck:
       test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
       interval: 30s

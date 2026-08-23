@@ -70,6 +70,12 @@ describe('model geometry', () => {
 });
 
 describe('KV cache sizing', () => {
+  it('agrees with the hand-derived byte totals the inference tests use', () => {
+    assert.equal(estimateKvCacheBytes(GEOMETRY, 8192, 'f16'), 1_140_850_688);
+    assert.equal(estimateKvCacheBytes(GEOMETRY, 8192, 'q8_0'), 606_076_928);
+    assert.equal(estimateKvCacheBytes(GEOMETRY, 8192, 'q4_0'), 320_864_256);
+  });
+
   it('sizes the cache from context length and attention geometry', () => {
     // 8192 tokens * 34 layers * 4 KV heads * (256 + 256) dims * 2 bytes
     assert.equal(estimateKvCacheBytes(GEOMETRY, 8192, 'f16'), 1140850688);
@@ -94,9 +100,21 @@ describe('KV cache sizing', () => {
 
 describe('cache type inference', () => {
   const WEIGHTS = 3_000_000_000;
+  const MIB = 1024 * 1024;
 
-  function residentWith(cacheType, numCtx = 8192) {
-    return WEIGHTS + estimateKvCacheBytes(GEOMETRY, numCtx, cacheType);
+  // Literal byte totals, derived by hand from the fixture geometry rather than
+  // from estimateKvCacheBytes. Feeding the function under test its own output
+  // made the relative error exactly zero in every case, so the whole matching
+  // policy - and the compute-buffer slack it has to tolerate - went untested.
+  //
+  //   elements = 8192 ctx x 34 layers x 4 kv heads x (256 + 256) = 570,425,344
+  //   f16  = elements x 2      = 1,140,850,688
+  //   q8_0 = elements x 34/32  =   606,076,928
+  //   q4_0 = elements x 18/32  =   320,864,256
+  const CACHE_BYTES = { f16: 1_140_850_688, q8_0: 606_076_928, q4_0: 320_864_256 };
+
+  function residentWith(cacheType, computeBufferMib = 0) {
+    return WEIGHTS + CACHE_BYTES[cacheType] + computeBufferMib * MIB;
   }
 
   it('recognises an unquantized f16 cache', () => {
@@ -132,6 +150,47 @@ describe('cache type inference', () => {
 
     assert.equal(inference.likelyCacheType, undefined);
     assert.equal(buildCacheHint(inference), undefined);
+  });
+
+  it('still reads a quantized cache through ordinary compute buffers', () => {
+    // The estimate covers the KV cache only; llama.cpp also holds compute and
+    // graph buffers, so the observation always runs high. A symmetric match
+    // drifted into the next larger candidate and told an operator already
+    // running q8_0 to restart their container and enable q8_0.
+    for (const computeBufferMib of [0, 50, 100, 150, 200]) {
+      const inference = inferCacheType(GEOMETRY, 8192, residentWith('q8_0', computeBufferMib), WEIGHTS);
+      assert.equal(
+        inference.likelyCacheType,
+        'q8_0',
+        `misread a q8_0 cache with ${computeBufferMib} MiB of compute buffers`
+      );
+      assert.equal(buildCacheHint(inference).quantized, true);
+    }
+  });
+
+  it('says nothing when the footprint cannot separate two cache types', () => {
+    // 300 MiB of unexplained overhead sits between q8_0 and f16: a q8_0 cache
+    // with large buffers and an f16 cache with small ones are the same number.
+    const inference = inferCacheType(GEOMETRY, 8192, residentWith('q8_0', 300), WEIGHTS);
+
+    assert.equal(inference.likelyCacheType, undefined);
+    assert.equal(buildCacheHint(inference), undefined);
+  });
+
+  it('refuses to guess for a sliding-window model', () => {
+    // Gemma 3/4 size most layers to the attention window, not to num_ctx, so
+    // the whole-context formula overestimates several times over - enough to
+    // report an unquantized cache as quantized, which is the inverse of the
+    // truth and suppresses the one hint that would have helped.
+    const geometry = readModelGeometry({
+      model_info: {
+        ...SHOW_PAYLOAD.model_info,
+        'gemma3.attention.sliding_window': 1024
+      }
+    });
+
+    assert.equal(geometry.slidingWindow, 1024);
+    assert.equal(inferCacheType(geometry, 8192, WEIGHTS + 400 * MIB, WEIGHTS), undefined);
   });
 
   it('returns nothing when an input is missing or nonsensical', () => {

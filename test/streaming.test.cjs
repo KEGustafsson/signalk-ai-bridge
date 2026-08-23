@@ -252,8 +252,12 @@ describe('streamAiModel', () => {
     assert.equal(result.answer, 'split');
   });
 
-  it('falls back to a blocking TensorRT-LLM request when the stream yields nothing', async () => {
+  it('reads a non-streaming completion body without generating a second time', async () => {
+    // Some OpenAI-compatible servers ignore `stream: true` and reply with one
+    // ordinary completion object. The generation has already been paid for, so
+    // re-issuing it as a blocking request would bill the same GPU twice.
     const bodies = [];
+    const fragments = [];
 
     const result = await streamAiModel(
       { prompt: 'Status?' },
@@ -263,16 +267,97 @@ describe('streamAiModel', () => {
           const body = JSON.parse(String(init.body));
           bodies.push(body.stream === true);
           if (body.stream) {
-            // A server that ignores `stream` and answers in one JSON object.
             return sseResponse(['{"choices":[{"message":{"content":"Blocking."}}]}']);
           }
           return jsonResponse({ choices: [{ message: { content: 'Blocking.' } }] });
         }
-      }
+      },
+      (text) => fragments.push(text)
     );
 
-    assert.deepEqual(bodies, [true, false]);
+    assert.deepEqual(bodies, [true], 'the answer must not be generated twice');
+    assert.deepEqual(fragments, ['Blocking.']);
     assert.equal(result.answer, 'Blocking.');
+  });
+
+  it('does not replay a mid-flight backend failure as a second generation', async () => {
+    // `emitted === false` only means no content reached the client; it does not
+    // mean the request failed early. Replaying a late failure cost a second
+    // full generation and a second timeout window.
+    let calls = 0;
+
+    await assert.rejects(
+      streamAiModel({ prompt: 'Status?' }, normalizeAiConfig({ backend: 'tensorrt-llm' }), {
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response('{"error":"CUDA kernel launch failed"}', {
+            status: 500,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+      }),
+      (error) => error.code !== 'validation-failed'
+    );
+
+    assert.equal(calls, 1);
+  });
+
+  it('reports a stalled stream as a timeout, not an unknown abort', async () => {
+    // The abort raised while reading the body has to be classified before the
+    // "something was emitted" check, or it escapes as a bare AbortError and the
+    // route maps it to 502 instead of 504.
+    const encoder = new TextEncoder();
+    const stalling = (signal) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Steady "}}]}\n\n'));
+            signal.addEventListener('abort', () => controller.error(signal.reason ?? new Error('aborted')), {
+              once: true
+            });
+          }
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } }
+      );
+
+    const keepAlive = setInterval(() => {}, 10);
+    try {
+      await assert.rejects(
+        streamAiModel(
+          { prompt: 'Status?' },
+          normalizeAiConfig({ backend: 'tensorrt-llm', requestTimeoutMs: 80 }),
+          { fetchImpl: async (_url, init) => stalling(init.signal) },
+          () => {}
+        ),
+        (error) => error.code === 'timeout'
+      );
+    } finally {
+      clearInterval(keepAlive);
+    }
+  });
+
+  it('parses a CRLF-framed SSE stream and its unterminated tail', async () => {
+    // WHATWG allows CRLF line endings, and says the end of the stream is
+    // enough to dispatch the final event. Missing either lost tokens silently:
+    // CRLF yielded nothing at all, and a missing trailing blank line dropped
+    // the last delta while still presenting the answer as complete.
+    const fragments = [];
+
+    const result = await streamAiModel(
+      { prompt: 'Status?' },
+      normalizeAiConfig({ backend: 'tensorrt-llm' }),
+      {
+        fetchImpl: async () =>
+          sseResponse([
+            'data: {"choices":[{"delta":{"content":"All "}}]}\r\n\r\n',
+            'data: {"choices":[{"delta":{"content":"nominal."}}]}\r\n'
+          ])
+      },
+      (text) => fragments.push(text)
+    );
+
+    assert.deepEqual(fragments, ['All ', 'nominal.']);
+    assert.equal(result.answer, 'All nominal.');
   });
 });
 
@@ -331,7 +416,72 @@ describe('POST /bridge/stream', () => {
     assert.equal(res.ended, true);
   });
 
-  it('rejects an unknown tool id', async () => {
+  it('stops generating when the client disconnects', async () => {
+    // A closed socket used to be invisible: res.write returns false rather than
+    // throwing, so the GPU finished an answer nobody could read while holding
+    // the single Ollama slot the Jetson compose files configure.
+    let produced = 0;
+    const plugin = createPlugin(createPluginHost(), {
+      ollamaClient: {
+        async chat() {
+          return (async function* generate() {
+            for (let index = 0; index < 1000; index += 1) {
+              produced += 1;
+              yield { message: { role: 'assistant', content: 'tok ' } };
+            }
+          })();
+        }
+      }
+    });
+    plugin.start({ warmupOnStart: false });
+    const routes = registerRoutes(plugin);
+
+    const listeners = {};
+    const req = {
+      body: { toolId: 'ask-vessel-ai', prompt: 'Summarize the vessel state.' },
+      on(event, handler) {
+        listeners[event] = handler;
+      },
+      off() {}
+    };
+
+    const res = createStreamRecorder();
+    let tokensSeen = 0;
+    const realWrite = res.write.bind(res);
+    res.write = (chunk) => {
+      tokensSeen += 1;
+      if (tokensSeen === 3) {
+        listeners.close();
+      }
+      return realWrite(chunk);
+    };
+
+    await routes['POST /bridge/stream'](req, res);
+
+    assert.ok(produced < 1000, `generation should stop early, produced ${produced}`);
+    assert.equal(res.ended, true);
+    // Nothing is reported to a client that is already gone.
+    assert.equal(
+      res.lines().some((line) => line.type === 'error'),
+      false
+    );
+  });
+
+  it('rejects a malformed body with 400 rather than a stream error line', async () => {
+    const plugin = createPlugin(createPluginHost(), {});
+    plugin.start({ warmupOnStart: false });
+    const routes = registerRoutes(plugin);
+
+    const res = createStreamRecorder();
+    await routes['POST /bridge/stream']({ body: { toolId: 'ask-vessel-ai', prompt: { a: 1 } } }, res);
+
+    assert.equal(res.statusCode, 400);
+  });
+
+  it('rejects an unknown tool id with 400, not a 200 error line', async () => {
+    // Nothing has been generated and no header has gone out, so a real status
+    // code is still available - and a client error should not be reported the
+    // same way as a backend fault that arrives mid-answer.
     const plugin = createPlugin(createPluginHost(), {});
     plugin.start({ warmupOnStart: false });
     const routes = registerRoutes(plugin);
@@ -339,8 +489,7 @@ describe('POST /bridge/stream', () => {
     const res = createStreamRecorder();
     await routes['POST /bridge/stream']({ body: { toolId: 'nope' } }, res);
 
-    const lines = res.lines();
-    assert.equal(lines[0].type, 'error');
-    assert.equal(lines[0].error.code, 'validation-failed');
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.lines()[0].error.code, 'validation-failed');
   });
 });
