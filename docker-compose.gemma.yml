@@ -68,25 +68,30 @@ services:
           sleep 1
         done
 
-        # `ollama list` prints a "NAME ID SIZE MODIFIED" header even when no
-        # model is installed, so `grep -q .` matched on an empty store and this
-        # guard was always true: the pull below never ran once, and the warning
-        # at the end never printed either. Drop the header before testing.
+        # Ask about THIS model, not "is any model installed". Two ways to get
+        # that wrong, both of which shipped: `ollama list | grep -q .` matched
+        # the NAME/ID/SIZE/MODIFIED header on an empty store, so the pull never
+        # ran at all; and testing for any entry meant a box that already held a
+        # different model - anyone upgrading from an earlier compose file - kept
+        # that one and never fetched the configured one. `ollama show` answers
+        # the exact question with an exit status, so neither trap applies.
+        MODEL=gemma4:e2b
+
         have_model() {
-          ollama list 2>/dev/null | tail -n +2 | grep -q .
+          ollama show "$$MODEL" >/dev/null 2>&1
         }
 
-        # A failed pull is non-fatal - cached models still serve.
+        # A failed pull is non-fatal - any model already cached still serves.
         n=0
         until have_model || [ $$n -ge 3 ]; do
           n=$$((n + 1))
-          ollama pull gemma4:e2b && break
+          ollama pull "$$MODEL" && break
           echo "model pull attempt $$n failed; retrying"
           sleep $$((n * 10))
         done
 
         have_model ||
-          echo "no model available; serving nothing until one is pulled"
+          echo "$$MODEL is not installed; point the plugin at a model that is"
 
         wait $$srv
     healthcheck:

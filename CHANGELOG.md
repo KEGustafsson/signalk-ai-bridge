@@ -45,13 +45,16 @@ this project uses [semantic versioning](https://semver.org/).
   `docker-compose.jetson.yml` and `docker-compose.gemma.yml` carried the same
   line. All three now pass the script as a YAML block scalar in list form, so
   Compose does no splitting and the quoting is the shell's business alone.
-- **The compose files never pulled a model, and never said so.** The
-  "do we already have a model?" guard was `ollama list | grep -q .`, but
-  `ollama list` prints a `NAME ID SIZE MODIFIED` header even on an empty store,
-  so the guard was unconditionally true: the pull loop was skipped entirely and
-  the `no model available` fallback never printed either. It was invisible until
-  the syntax error above was fixed, because the script had never run at all. The
-  header is now dropped before the test.
+- **The compose files pulled the wrong model, or none at all.** The "do we
+  already have a model?" guard was `ollama list | grep -q .`, which got the
+  question wrong twice over. `ollama list` prints a `NAME ID SIZE MODIFIED`
+  header even on an empty store, so the guard was unconditionally true and the
+  pull loop was skipped entirely — invisible until the syntax error above was
+  fixed, because the script had never run at all. And testing for *any* entry
+  meant a host that already held a different model, which is every host
+  upgrading from an earlier compose file, kept that one and never fetched the
+  configured one. The guard is now `ollama show "$MODEL"`, which answers the
+  exact question with an exit status and is subject to neither trap.
 - **`docker-compose.xavier.yml` talked operators out of flash attention.** The
   comment claimed Volta lacked "the Ampere tensor-core path", but Volta is the
   generation that introduced tensor cores and llama.cpp's `ggml-cuda/fattn.cu`

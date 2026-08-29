@@ -469,6 +469,32 @@ describe('review follow-ups', () => {
     assert.deepEqual(report.jetson.warnings, []);
   });
 
+  // 127.0.0.1 is not the only loopback address. Anything in 127.0.0.0/8 reaches
+  // this same host, and so does a bracketed IPv6 literal.
+  it('treats the whole loopback range as this host', async () => {
+    for (const baseUrl of [
+      'http://127.0.0.1:8000',
+      'http://127.0.0.2:8000',
+      'http://127.1.2.3:8000',
+      'http://localhost:8000',
+      'http://[::1]:8000'
+    ]) {
+      const report = await trtReport(xavierBoard, { baseUrl });
+      assert.match(
+        report.jetson.warnings.join(' '),
+        /compute capability 7\.2/,
+        `${baseUrl} should be recognised as local`
+      );
+    }
+  });
+
+  it('still says nothing for a backend that only looks local', async () => {
+    for (const baseUrl of ['http://127notanip:8000', 'http://12.7.0.1:8000', 'http://orin:8000']) {
+      const report = await trtReport(xavierBoard, { baseUrl });
+      assert.deepEqual(report.jetson.warnings, [], `${baseUrl} is not this host`);
+    }
+  });
+
   it('says nothing on the ollama backend, which does run on Volta', async () => {
     const report = await getAccelerationReport(normalizeAiConfig({ model: 'gemma4:e2b' }), {
       fetchImpl: async () => jsonResponse({ models: [] }),
