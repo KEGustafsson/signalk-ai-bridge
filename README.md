@@ -543,8 +543,29 @@ Two workflows run on every push and pull request:
   (Venus OS / Cerbo GX) leg is disabled: this plugin targets hosts with an
   NVIDIA GPU, not 32-bit ARM.
 - **`ci`** runs the repository's own smoke test, type check, unit tests and a
-  production `npm audit`.
+  production `npm audit`, and then packs the plugin, installs the tarball with
+  production dependencies only and runs the suite again from there — which is
+  how the plugin registry runs it.
 
 The build and test commands declared to the reusable workflow are also what the
 [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/) reads
 when it scores the plugin, so they are asserted by `npm run lint`.
+
+### Publishing
+
+The registry scores the **published package**, not this repository, so two
+things about a release matter beyond the code in it:
+
+- **Publish from a git checkout of `main`.** `npm publish` records the commit
+  it published from as `gitHead`, and the registry needs that together with the
+  `repository` field to find this plugin's `signalk-plugin-ci` run for the
+  release. Publishing from an unpacked tarball or a tree without `.git` leaves
+  `gitHead` unset, and the score takes a 10-point `no-plugin-ci` penalty for a
+  workflow that did in fact run.
+- **Keep the suite in the tarball.** The registry runs `npm test` inside the
+  installed plugin. `npm run lint` asserts that everything it reads —
+  `scripts/run-tests.mjs`, `test/`, `src/` and the two `tsconfig` files — is
+  covered by `files` in `package.json`, and the `packaged-tests` CI job proves
+  the suite still passes there with devDependencies absent.
+
+`npm pack --dry-run` shows exactly what a release will contain.

@@ -62,6 +62,23 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- **The plugin's own test suite now runs where the plugin registry runs it: in
+  the installed package.** The
+  [Signal K plugin registry](https://signalk.org/signalk-plugin-registry/)
+  scores `npm test` inside the installed plugin, not inside a checkout, and the
+  tarball carried neither `test/` nor `scripts/run-tests.mjs` — so the suite was
+  recorded as *not runnable* and its 25 points went unclaimed. Both directories
+  are published now, along with `src/` and the two `tsconfig` files, and
+  `scripts/run-tests.mjs` resolves TypeScript rather than assuming a
+  `node_modules/` beside the checkout: an App Store install has production
+  dependencies only, so it runs the 127 `node:test` suites and says that
+  type-checking the panel sources was skipped, instead of failing on a missing
+  compiler. With devDependencies present — in the repo, in CI, and in the
+  registry's source-repo fallback — nothing is skipped and all 136 run. A new
+  `packaged-tests` CI job packs the plugin, installs it the way the App Store
+  does and runs the suite there, so a `files` entry or a devDependency that
+  quietly becomes load-bearing fails in CI rather than in the next score.
+
 - **Every streamed question failed with "Bridge stream ended without a
   result".** The stream route treated `req.on('close')` as a client-disconnect
   signal, but on Node 16 and newer an `IncomingMessage` emits `close` as soon as

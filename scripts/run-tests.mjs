@@ -1,12 +1,28 @@
 import { spawn } from 'node:child_process';
 import { readdir, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const require = createRequire(import.meta.url);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, '..');
 const tmpTestsDir = path.join(projectRoot, '.tmp-tests');
-const tscBin = path.join(projectRoot, 'node_modules', 'typescript', 'bin', 'tsc');
+
+// The published tarball carries this suite so the Signal K plugin registry can
+// run it against an App Store install, and such an install has production
+// dependencies only. TypeScript is a devDependency, so resolve it instead of
+// assuming a node_modules/ beside this checkout - under a Signal K server the
+// plugin's dependencies are hoisted to the server's own tree - and treat "not
+// installed" as "run the suites that need no compiler" rather than as failure.
+// In the repo and in CI, where npm ci has run, nothing is skipped.
+function resolveTscBin() {
+  try {
+    return require.resolve('typescript/bin/tsc');
+  } catch {
+    return null;
+  }
+}
 
 function runNode(args) {
   return new Promise((resolve, reject) => {
@@ -59,12 +75,22 @@ async function findStandaloneTests() {
 
 async function main() {
   await rm(tmpTestsDir, { recursive: true, force: true });
+  const tscBin = resolveTscBin();
+
+  if (!tscBin) {
+    console.log(
+      'typescript is not installed: type-checking the panel sources and their tests is skipped, ' +
+        'and only the node:test suites under test/ run. Install devDependencies to run the full suite.'
+    );
+  }
 
   try {
-    await runNode([tscBin, '-p', 'tsconfig.test.json']);
+    if (tscBin) {
+      await runNode([tscBin, '-p', 'tsconfig.test.json']);
+    }
 
     const [compiledTests, standaloneTests] = await Promise.all([
-      findCompiledTests(),
+      tscBin ? findCompiledTests() : [],
       findStandaloneTests()
     ]);
     const testFiles = [...compiledTests, ...standaloneTests];
