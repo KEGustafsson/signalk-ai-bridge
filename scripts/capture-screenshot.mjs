@@ -81,7 +81,10 @@ try {
   // capture works without downloading a browser bundle.
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
   const browser = await chromium.launch(executablePath ? { executablePath } : {});
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 2 });
+  // 1280 CSS px at 1x. The App Store scales the hero image down to its detail
+  // page anyway, so a 2x capture only cost bytes: the same view was a 2560px,
+  // 433 KB PNG, and every visitor to the plugin page downloaded it.
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
 
   await page.goto(DEV_URL, { waitUntil: 'networkidle' });
   await page.getByText('GPU accelerated').waitFor({ timeout: 30_000 });
