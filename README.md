@@ -91,8 +91,9 @@ differs per board is the deployment file and what the telemetry can read.
 | Compute capability | 8.7 (Ampere) | 7.2 (Volta) |
 | Memory | 8 GB LPDDR5, 102 GB/s | 8 GB LPDDR4x, 59.7 GB/s |
 | JetPack | 6 (L4T 36.x) | 5.1.x (L4T 35.x) — JetPack 6 dropped Xavier |
+| Host image | JetPack | headless Yocto/meta-tegra |
 | Compose file | `docker-compose.nano-super.yml` | `docker-compose.xavier.yml` |
-| Recommended model | `gemma4:e2b-it-qat` (4.3 GB) | `qwen3.5:2b-q4_K_M` (1.9 GB) |
+| Recommended model | `gemma4:e2b-it-qat` (4.3 GB) | `gemma4:e2b-it-qat` (4.3 GB) |
 | Top power mode | `MAXN_SUPER` | highest wattage, usually `MODE_20W_6CORE` |
 | TensorRT-LLM | supported | **not supported** — needs compute capability 8.0+ |
 
@@ -139,8 +140,8 @@ than every setting below it put together.
 | Board | Pull this | Weights |
 | --- | --- | --- |
 | Orin Nano Super, 8 GB | `gemma4:e2b-it-qat` | 4.3 GB |
-| Xavier NX, 8 GB | `qwen3.5:2b-q4_K_M` | 1.9 GB |
-| Xavier NX, 16 GB module | `gemma4:e2b-it-qat` | 4.3 GB |
+| Xavier NX, 8 GB, headless | `gemma4:e2b-it-qat` | 4.3 GB |
+| Xavier NX, 8 GB, desktop image | `qwen3.5:2b-q4_K_M` | 1.9 GB |
 
 **Quantization-aware training is why the Orin can run Gemma 4 at all.** The
 plain `gemma4:e2b` tag is 7.2 GB: E2B is 2.3B *effective* parameters but 5B
@@ -150,11 +151,17 @@ carried at a precision that four-bit weights do not shrink. That does not fit in
 to. The `-it-qat` build is 4.3 GB of the same model, trained expecting int4
 rather than rounded down afterwards, and leaves room for the KV cache.
 
-**On an 8 GB Xavier NX no Gemma 4 tag fits.** JetPack 5's desktop and the rest
-of the boat leave Ollama around 3 GB in practice, so the ceiling here is roughly
-2.5 GB of weights — a budget that rules out the 4.3 GB QAT build too. Format
-matters as much as size on this board: Volta (sm_72) has no bf16 and no FP4
-hardware, so the `-bf16` and `-nvfp4` tags in the same libraries are a larger
+**What the host image costs you matters more than the board.** Both Jetsons
+have the same 8 GB; what differs is how much is already spent when Ollama
+starts. A headless Yocto/meta-tegra Xavier idles at a few hundred MB and leaves
+around 6 GB free, so the 4.3 GB QAT build fits there as comfortably as on the
+Orin — just at 55-65% of its tokens per second, roughly 14-16 against 25. A
+JetPack desktop session costs 2.5-3 GB instead, which drops the ceiling to about
+2.5 GB of weights and makes `qwen3.5:2b-q4_K_M` (1.9 GB) the right answer. Check
+which case you are in with `free -h` before trusting the table above.
+
+**Format matters as much as size on Volta.** Xavier's sm_72 has no bf16 and no
+FP4 hardware, so the `-bf16` and `-nvfp4` tags in the same libraries are a larger
 download for a slower path. Q4_K_M and QAT q4_0 GGUF are what this GPU executes.
 
 **A long advertised context is not a reason to raise `numCtx`.** These models
@@ -164,9 +171,9 @@ local-to-global attention ratio keeps the cache nearly flat as the window grows,
 but 8192 is still the right starting point on 8 GB.
 
 Whatever you pull, the plugin's `model` field has to name it. The default is the
-untagged `gemma4`, which resolves to any installed Gemma 4 tag — so the Orin
-file needs no configuration, and the Xavier file, which installs a different
-family, does.
+untagged `gemma4`, which resolves to any installed Gemma 4 tag, so both compose
+files here need no configuration. Pulling outside that family — the
+`qwen3.5:2b-q4_K_M` fallback above, say — means setting the field explicitly.
 
 ### Maximizing GPU use
 
@@ -418,7 +425,7 @@ The plugin defaults to the Gemma 4 family.
 
 If you configure `gemma4` but Ollama only has a tagged variant installed, such as `gemma4:e2b-it-qat`, the plugin will try to resolve and use the installed tagged model automatically. The default is deliberately untagged for this reason: it follows whichever Gemma 4 tag the board actually has.
 
-That resolution only works within a family. A Xavier NX running `qwen3.5:2b-q4_K_M` shares no family name with `gemma4`, so its model field has to be set explicitly.
+That resolution only works within a family. A board running `qwen3.5:2b-q4_K_M` shares no family name with `gemma4`, so its model field has to be set explicitly.
 
 If you already know the exact installed model name, configuring that exact name is the clearest option — and on an 8 GB board it is also the only way to be sure which tag you got, since `gemma4:e2b` and `gemma4:e2b-it-qat` differ by 2.9 GB of weights. See [Choosing a model](#choosing-a-model).
 

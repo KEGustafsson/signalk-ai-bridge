@@ -22,18 +22,24 @@ this project uses [semantic versioning](https://semver.org/).
   enough to fix that. The quantization-aware-trained build is 4.3 GB of the same
   model at close to the same answer quality. `docker-compose.gemma.yml` pulls it
   too — on the CPU path it is less memory to stream per generated token.
-- **The Xavier NX pulls `qwen3.5:2b-q4_K_M` instead of `llama3.2:3b`.** The same
-  1.9 GB footprint, two generations newer, and better at the structured-numeric
-  summarising this plugin asks of a model. The 4.3 GB QAT build above does not
-  help this board — JetPack 5's desktop leaves Ollama around 3 GB, so every
-  Gemma 4 tag is out of reach and the budget, not the family, is what rules them
-  out. The compose file now also records why the `-bf16` and `-nvfp4` tags in
-  the same library are a trap here: Volta has neither in hardware, so they are a
-  larger download for a slower path.
+- **The Xavier NX pulls `gemma4:e2b-it-qat` too, instead of `llama3.2:3b`.** The
+  same model as the Orin, because the host image decides this and not the board:
+  this Xavier runs a headless Yocto/meta-tegra userspace, which idles at a few
+  hundred MB rather than the 2.5-3 GB a JetPack desktop session costs, and so
+  leaves around 6 GB of the 8 GB free for Ollama. Expect 55-65% of the Orin's
+  tokens per second on it — roughly 14-16 against 25 — which is the LPDDR4x
+  bandwidth and not the model. Only the bare 7.2 GB `gemma4:e2b` tag remains out
+  of reach here, and `qwen3.5:2b-q4_K_M` (1.9 GB) is recorded as the fallback if
+  the board is ever reflashed to a desktop image. The compose file now also
+  records why the `-bf16` and `-nvfp4` tags in the same libraries are a trap on
+  this GPU: Volta has neither in hardware, so they are a larger download for a
+  slower path — and what the Yocto host means for the `/etc/nv_tegra_release`
+  mount and the missing `nvpmodel` the GPU Acceleration card looks for.
 - **The README explains how to pick a tag.** A new *Choosing a model* section
-  gives the per-board recommendation, the memory budget it comes from, and the
-  reason a 128K advertised context is not an invitation to raise `numCtx`. The
-  board comparison table gained a recommended-model row.
+  gives the per-board recommendation, the memory budget it comes from — host
+  image included, since that is what moves the number — and the reason a 128K
+  advertised context is not an invitation to raise `numCtx`. The board
+  comparison table gained recommended-model and host-image rows.
 
 ### Added
 
