@@ -86,11 +86,52 @@ services:
           # form. Add the device request back only if you have also run
           # `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
     entrypoint: /bin/sh
-    # Poll until the server accepts requests instead of sleeping a fixed
-    # interval: a slower Jetson start-up made `ollama pull` fail, which took
-    # the shell down through the && chain and restart-looped the container.
-    # A failed pull is also non-fatal now — cached models still serve.
-    command: -c "ollama serve & srv=$$!; trap 'kill -TERM $$srv 2>/dev/null' TERM INT; tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; n=0; until ollama list 2>/dev/null | grep -q . || [ $$n -ge 3 ]; do n=$$((n+1)); ollama pull gemma4:e2b && break; echo "model pull attempt $$n failed; retrying"; sleep $$((n*10)); done; (ollama list 2>/dev/null | grep -q . || echo 'no model available; serving nothing until one is pulled'); wait $$srv"
+    # List form with a block scalar, NOT a single quoted string. Compose
+    # word-splits a string command shell-style, and the inner double quotes of
+    # `echo "model pull attempt $n failed"` closed the outer argument: the
+    # script handed to `sh -c` was truncated mid-`until` loop, so every start
+    # died with `Syntax error: end of file unexpected (expecting "done")` and
+    # the container restart-looped. Nothing is split here, so the quoting inside
+    # is the shell's business alone.
+    #
+    # `$$` is Compose's escape for a literal `$`.
+    command:
+      - "-c"
+      - |
+        ollama serve &
+        srv=$$!
+        trap 'kill -TERM $$srv 2>/dev/null' TERM INT
+
+        # Poll until the server accepts requests rather than sleeping a fixed
+        # interval: a slower start-up made `ollama pull` fail, which took the
+        # shell down through the && chain and restart-looped the container.
+        tries=0
+        until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do
+          tries=$$((tries + 1))
+          sleep 1
+        done
+
+        # `ollama list` prints a "NAME ID SIZE MODIFIED" header even when no
+        # model is installed, so `grep -q .` matched on an empty store and this
+        # guard was always true: the pull below never ran once, and the warning
+        # at the end never printed either. Drop the header before testing.
+        have_model() {
+          ollama list 2>/dev/null | tail -n +2 | grep -q .
+        }
+
+        # A failed pull is non-fatal - cached models still serve.
+        n=0
+        until have_model || [ $$n -ge 3 ]; do
+          n=$$((n + 1))
+          ollama pull gemma4:e2b && break
+          echo "model pull attempt $$n failed; retrying"
+          sleep $$((n * 10))
+        done
+
+        have_model ||
+          echo "no model available; serving nothing until one is pulled"
+
+        wait $$srv
     healthcheck:
       test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
       interval: 30s
