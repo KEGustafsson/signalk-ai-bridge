@@ -51,10 +51,26 @@ function sseResponse(chunks) {
 /** Collects everything a streaming route writes, as parsed NDJSON lines. */
 function createStreamRecorder() {
   const chunks = [];
+  const listeners = {};
   return {
     headers: {},
     statusCode: 200,
     ended: false,
+    // Node sets this when the response has been completed by the server, which
+    // is how a client that hung up is told apart from one that got its answer.
+    writableFinished: false,
+    on(event, handler) {
+      listeners[event] = handler;
+    },
+    off(event) {
+      delete listeners[event];
+    },
+    /** The client's socket went away before the response finished. */
+    hangUp() {
+      if (listeners.close) {
+        listeners.close();
+      }
+    },
     setHeader(name, value) {
       this.headers[name] = value;
     },
@@ -68,6 +84,7 @@ function createStreamRecorder() {
     },
     end() {
       this.ended = true;
+      this.writableFinished = true;
     },
     json(payload) {
       chunks.push(`${JSON.stringify(payload)}\n`);
@@ -436,14 +453,7 @@ describe('POST /bridge/stream', () => {
     plugin.start({ warmupOnStart: false });
     const routes = registerRoutes(plugin);
 
-    const listeners = {};
-    const req = {
-      body: { toolId: 'ask-vessel-ai', prompt: 'Summarize the vessel state.' },
-      on(event, handler) {
-        listeners[event] = handler;
-      },
-      off() {}
-    };
+    const req = { body: { toolId: 'ask-vessel-ai', prompt: 'Summarize the vessel state.' } };
 
     const res = createStreamRecorder();
     let tokensSeen = 0;
@@ -451,7 +461,7 @@ describe('POST /bridge/stream', () => {
     res.write = (chunk) => {
       tokensSeen += 1;
       if (tokensSeen === 3) {
-        listeners.close();
+        res.hangUp();
       }
       return realWrite(chunk);
     };
@@ -465,6 +475,42 @@ describe('POST /bridge/stream', () => {
       res.lines().some((line) => line.type === 'error'),
       false
     );
+  });
+
+  // The regression this replaces: signalk-server runs on Node 26, where an
+  // IncomingMessage emits 'close' as soon as the request body has been fully
+  // received. The handler treated that as "the client left" and aborted every
+  // generation before it began, so the panel showed "Bridge stream ended
+  // without a result" for every question asked. Nothing in the mocks reproduced
+  // it, because they hand the handler a pre-parsed `req.body` and never fire
+  // the event a real socket does.
+  it('still answers when the request emits close after its body is received', async () => {
+    const plugin = createPlugin(createPluginHost(), {
+      ollamaClient: streamingClient(['All ', 'clear.'])
+    });
+    plugin.start({ warmupOnStart: false });
+    const routes = registerRoutes(plugin);
+
+    // Fired synchronously on registration: by the time the handler subscribes,
+    // a small POST body has already arrived in full, so Node has already
+    // completed the message. That is the ordering that broke this in the field.
+    const req = {
+      body: { toolId: 'ask-vessel-ai', prompt: 'Summarize the vessel state.' },
+      on(event, handler) {
+        if (event === 'close') {
+          handler();
+        }
+      },
+      off() {}
+    };
+
+    const res = createStreamRecorder();
+    await routes['POST /bridge/stream'](req, res);
+
+    const lines = res.lines();
+    const result = lines.find((line) => line.type === 'ask-vessel-ai-result');
+    assert.ok(result, `expected a result line, got ${JSON.stringify(lines)}`);
+    assert.match(result.response.answer, /All clear\./);
   });
 
   it('rejects a malformed body with 400 rather than a stream error line', async () => {
