@@ -72,6 +72,24 @@ for (const asset of [pkg.signalk.appIcon, ...pkg.signalk.screenshots]) {
   );
 }
 
+// tests_runnable in the Signal K plugin registry score is measured against the
+// published tarball, not against this checkout: the suite has to be shipped and
+// has to run there. Everything `npm test` reads therefore has to be covered by
+// "files", and scripts/run-tests.mjs has to tolerate an App Store install,
+// where devDependencies - TypeScript among them - are absent.
+for (const entry of ['scripts/run-tests.mjs', 'test', 'src', 'tsconfig.json', 'tsconfig.test.json']) {
+  assert.equal(fs.existsSync(entry), true, `Missing test-suite path: ${entry}`);
+  assert.ok(
+    pkg.files.some((published) => entry === published || entry.startsWith(`${published}/`)),
+    `"${entry}" is read by "npm test" but is not in package.json "files"`
+  );
+}
+assert.match(
+  fs.readFileSync('scripts/run-tests.mjs', 'utf8'),
+  /resolveTscBin/,
+  'scripts/run-tests.mjs must degrade to the node:test suites when typescript is not installed'
+);
+
 // signalk-server picks the container script tag from package.json's "type":
 // with "module" it emits <script type="module" src=".../remoteEntry.js">, so
 // remoteEntry.js must be the ESM container. Shipping the `var` IIFE under that

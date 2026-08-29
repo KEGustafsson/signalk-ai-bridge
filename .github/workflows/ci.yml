@@ -25,6 +25,30 @@ jobs:
       - run: npm run test
       - run: npm audit --omit=dev --audit-level=high
 
+  packaged-tests:
+    # The plugin registry measures the test suite against the published package,
+    # not against this checkout, and an App Store install carries production
+    # dependencies only. Pack the plugin, install it the way the App Store does
+    # and run its own tests there, so a "files" entry or a devDependency that
+    # quietly becomes load-bearing fails here rather than in the next score.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm run build
+      - run: npm pack --ignore-scripts
+      - name: Run the plugin's own tests from the packed tarball
+        run: |
+          mkdir -p "$RUNNER_TEMP/packaged"
+          tar xzf signalk-ai-bridge-*.tgz -C "$RUNNER_TEMP/packaged"
+          cd "$RUNNER_TEMP/packaged/package"
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          npm test
+
   container-scan:
     runs-on: ubuntu-latest
     # A hung test would otherwise burn the 360-minute default.
