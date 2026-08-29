@@ -164,7 +164,7 @@ this project uses [semantic versioning](https://semver.org/).
   availability cache in front of the first call. Three status polls cost ten
   backend round trips; they now cost six, with `/api/ps` still read live.
 
-- **Roughly half the prompt tokens.** Prompt evaluation is GPU work, so the
+- **About 20% fewer prompt characters.** Prompt evaluation is GPU work, so the
   context sent to the model is now compact JSON rather than two-space indented,
   numbers are rounded to 6 decimals, and the configured path list is no longer
   repeated alongside data that is already keyed by path — only paths that
