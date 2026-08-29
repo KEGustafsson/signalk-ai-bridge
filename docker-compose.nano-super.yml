@@ -120,10 +120,13 @@ services:
         # the exact question with an exit status, so neither trap applies.
         #
         # gemma4:e2b-it-qat, not gemma4:e2b. The plain tag is 7.2 GB on the
-        # Ollama library: E2B is 2.3B *effective* parameters but 5B total, and
-        # the per-layer embedding tables plus the 150M vision and 305M audio
-        # encoders are carried at a precision that four-bit weights do not
-        # shrink. 7.2 GB of weights cannot be GPU-resident in 8 GB of unified
+        # Ollama library even though it is labelled q4_K_M, and the arithmetic
+        # is worth doing: four-bit weights for E2B's 5B total parameters come to
+        # roughly 3 GB, so over half of that tag is something else. It is the
+        # parts four-bit quantization does not touch - the per-layer embedding
+        # tables that make those 5B parameters 2.3B effective, and the 150M
+        # vision and 305M audio encoders E2B carries for modalities this plugin
+        # never sends. 7.2 GB of weights cannot be GPU-resident in 8 GB of unified
         # memory shared with the OS and Signal K, so the plugin's tuner spends
         # three reloads shrinking num_ctx and still ends up partly on the
         # Cortex-A78AE cores - it is the weights that do not fit, and no context

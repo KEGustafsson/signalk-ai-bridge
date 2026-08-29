@@ -144,11 +144,13 @@ than every setting below it put together.
 | Xavier NX, 8 GB, desktop image | `qwen3.5:2b-q4_K_M` | 1.9 GB |
 
 **Quantization-aware training is why the Orin can run Gemma 4 at all.** The
-plain `gemma4:e2b` tag is 7.2 GB: E2B is 2.3B *effective* parameters but 5B
-total, and the per-layer embedding tables plus its vision and audio encoders are
-carried at a precision that four-bit weights do not shrink. That does not fit in
-8 GB of unified memory alongside the OS and Signal K, whatever `numCtx` is set
-to. The `-it-qat` build is 4.3 GB of the same model, trained expecting int4
+plain `gemma4:e2b` tag is 7.2 GB even though it is labelled `q4_K_M`. Four-bit
+weights for E2B's 5B total parameters would come to roughly 3 GB, so more than
+half of that tag is not quantized transformer weights at all: it is the parts
+four-bit quantization does not touch — the per-layer embedding tables that make
+those 5B parameters 2.3B *effective*, and the vision and audio encoders E2B
+carries for modalities this plugin never sends. 7.2 GB does not fit in 8 GB of
+unified memory alongside the OS and Signal K, whatever `numCtx` is set to. The `-it-qat` build is 4.3 GB of the same model, trained expecting int4
 rather than rounded down afterwards, and leaves room for the KV cache.
 
 **What the host image costs you matters more than the board.** Both Jetsons

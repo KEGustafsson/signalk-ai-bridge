@@ -13,9 +13,13 @@ this project uses [semantic versioning](https://semver.org/).
   file here is for a Jetson; only one of them is for an Orin Nano Super, and the
   name now says which board it configures rather than which vendor makes it.
 - **The Orin Nano Super pulls `gemma4:e2b-it-qat` instead of `gemma4:e2b`.** The
-  plain tag is 7.2 GB — E2B is 2.3B *effective* parameters but 5B total, and the
-  per-layer embedding tables and its vision and audio encoders are carried at a
-  precision four-bit weights do not shrink. That cannot be GPU-resident in 8 GB
+  plain tag is 7.2 GB even though it is labelled `q4_K_M`, and the gap is the
+  whole point: four-bit weights for E2B's 5B total parameters come to roughly
+  3 GB, so more than half of that tag is not quantized transformer weights at
+  all. It is what four-bit quantization does not touch — the per-layer embedding
+  tables that make those 5B parameters 2.3B *effective*, and the vision and
+  audio encoders E2B carries for modalities this plugin never sends. That cannot
+  be GPU-resident in 8 GB
   of unified memory shared with the OS and Signal K, so the tuner spent three
   reloads shrinking `num_ctx` and still finished partly on the Cortex-A78AE
   cores: it is the weights that do not fit, and no context window is small
