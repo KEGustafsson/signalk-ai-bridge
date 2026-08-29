@@ -9,7 +9,7 @@
 #
 # Xavier is supported up to JetPack 5.x (L4T 35.x, Ubuntu 20.04). JetPack 6
 # dropped Xavier, which is why this file exists separately from
-# docker-compose.jetson.yml — that one declares JETSON_JETPACK=6.
+# docker-compose.nano-super.yml — that one declares JETSON_JETPACK=6.
 #
 # TensorRT-LLM is NOT available on this board. It requires compute capability
 # 8.0 or newer and Xavier is 7.2, so docker-compose.tensorrt.yml and
@@ -130,7 +130,7 @@ services:
         # different model - anyone upgrading from an earlier compose file - kept
         # that one and never fetched the configured one. `ollama show` answers
         # the exact question with an exit status, so neither trap applies.
-        MODEL=llama3.2:3b
+        MODEL=qwen3.5:2b-q4_K_M
 
         have_model() {
           ollama show "$$MODEL" >/dev/null 2>&1
@@ -142,9 +142,28 @@ services:
         # 6.4 GiB resident - measured here at 3.4% on the GPU and 96.6% on the
         # Carmel cores, nearly eight minutes for a two-token answer. No context
         # window is small enough to fix that, because it is the weights that do
-        # not fit. llama3.2:3b is 1.9 GiB and stays GPU-resident with headroom
-        # to spare. Set SIGNALK_AI_BRIDGE_MODEL/the plugin's model field to
-        # match whatever you pull here.
+        # not fit, and the 4.3 GB QAT build the Orin file pulls does not fit
+        # either. Every Gemma 4 tag is out of reach on this board; the budget,
+        # not the family, is what rules them out.
+        #
+        # qwen3.5:2b-q4_K_M is 1.9 GB - the same footprint as the llama3.2:3b
+        # this file used to pull, two generations newer, and better at the
+        # structured-numeric summarising this plugin asks for. Stay at or below
+        # ~2.5 GB here; qwen3.5:0.8b (1.0 GB) is the fallback if 2b still
+        # reports a partial offload.
+        #
+        # Quantization format matters as much as size on Volta. sm_72 has no
+        # bf16 and no FP4 hardware, so the -bf16 and -nvfp4 tags in the same
+        # library are a larger download for a slower path. Q4_K_M and QAT q4_0
+        # GGUF are the formats this GPU actually executes.
+        #
+        # On the 16 GB Xavier NX module, raise the memory limit above to 14G and
+        # run gemma4:e2b-it-qat instead - the same model the Orin file pulls, at
+        # roughly 55-65% of its tokens per second.
+        #
+        # Set SIGNALK_AI_BRIDGE_MODEL/the plugin's model field to match whatever
+        # you pull here: the plugin's default names the Gemma 4 family, which is
+        # not what this board installs.
         #
         # A failed pull is non-fatal - any model already cached still serves.
         n=0

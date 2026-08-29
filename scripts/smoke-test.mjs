@@ -22,7 +22,7 @@ const requiredFiles = [
   'CHANGELOG.md',
   'LICENSE',
   'docker-compose.gemma.yml',
-  'docker-compose.jetson.yml',
+  'docker-compose.nano-super.yml',
   'docker-compose.tensorrt.yml',
   'docker-compose.xavier.yml',
   'scripts/build-trtllm-engine.sh',

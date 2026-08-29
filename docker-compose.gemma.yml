@@ -3,8 +3,8 @@
 # This file deliberately does NOT request a GPU, so it also works on hosts with
 # no NVIDIA runtime — which also means inference here runs on the CPU.
 #
-# On an NVIDIA Jetson Orin Nano Super use docker-compose.jetson.yml instead: it
-# enables the NVIDIA container runtime, flash attention and a quantized KV
+# On an NVIDIA Jetson Orin Nano Super use docker-compose.nano-super.yml instead:
+# it enables the NVIDIA container runtime, flash attention and a quantized KV
 # cache, which is what keeps the whole model resident on the GPU.
 
 services:
@@ -75,7 +75,12 @@ services:
         # different model - anyone upgrading from an earlier compose file - kept
         # that one and never fetched the configured one. `ollama show` answers
         # the exact question with an exit status, so neither trap applies.
-        MODEL=gemma4:e2b
+        #
+        # The quantization-aware-trained build: 4.3 GB against 7.2 GB for the
+        # plain gemma4:e2b tag, at close to the same answer quality. On the CPU
+        # path that is less memory to stream per token on every generation step,
+        # and it is what lets the same model also fit an 8 GB Jetson.
+        MODEL=gemma4:e2b-it-qat
 
         have_model() {
           ollama show "$$MODEL" >/dev/null 2>&1

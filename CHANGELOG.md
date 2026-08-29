@@ -7,6 +7,34 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`docker-compose.jetson.yml` is now `docker-compose.nano-super.yml`.** Every
+  file here is for a Jetson; only one of them is for an Orin Nano Super, and the
+  name now says which board it configures rather than which vendor makes it.
+- **The Orin Nano Super pulls `gemma4:e2b-it-qat` instead of `gemma4:e2b`.** The
+  plain tag is 7.2 GB — E2B is 2.3B *effective* parameters but 5B total, and the
+  per-layer embedding tables and its vision and audio encoders are carried at a
+  precision four-bit weights do not shrink. That cannot be GPU-resident in 8 GB
+  of unified memory shared with the OS and Signal K, so the tuner spent three
+  reloads shrinking `num_ctx` and still finished partly on the Cortex-A78AE
+  cores: it is the weights that do not fit, and no context window is small
+  enough to fix that. The quantization-aware-trained build is 4.3 GB of the same
+  model at close to the same answer quality. `docker-compose.gemma.yml` pulls it
+  too — on the CPU path it is less memory to stream per generated token.
+- **The Xavier NX pulls `qwen3.5:2b-q4_K_M` instead of `llama3.2:3b`.** The same
+  1.9 GB footprint, two generations newer, and better at the structured-numeric
+  summarising this plugin asks of a model. The 4.3 GB QAT build above does not
+  help this board — JetPack 5's desktop leaves Ollama around 3 GB, so every
+  Gemma 4 tag is out of reach and the budget, not the family, is what rules them
+  out. The compose file now also records why the `-bf16` and `-nvfp4` tags in
+  the same library are a trap here: Volta has neither in hardware, so they are a
+  larger download for a slower path.
+- **The README explains how to pick a tag.** A new *Choosing a model* section
+  gives the per-board recommendation, the memory budget it comes from, and the
+  reason a 128K advertised context is not an invitation to raise `numCtx`. The
+  board comparison table gained a recommended-model row.
+
 ### Added
 
 - **The board's GPU generation is now read and reported.** L4T has no
@@ -42,8 +70,8 @@ this project uses [semantic versioning](https://semver.org/).
   the script reaching `sh -c` was truncated mid-`until` loop and died with
   `Syntax error: end of file unexpected (expecting "done")`, over and over,
   before `ollama serve` ever ran. `docker-compose.xavier.yml`,
-  `docker-compose.jetson.yml` and `docker-compose.gemma.yml` carried the same
-  line. All three now pass the script as a YAML block scalar in list form, so
+  `docker-compose.nano-super.yml` and `docker-compose.gemma.yml` carried the
+  same line. All three now pass the script as a YAML block scalar in list form, so
   Compose does no splitting and the quoting is the shell's business alone.
 - **The compose files pulled the wrong model, or none at all.** The "do we
   already have a model?" guard was `ollama list | grep -q .`, which got the

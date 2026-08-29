@@ -20,7 +20,7 @@
     "assets",
     "CHANGELOG.md",
     "docker-compose.gemma.yml",
-    "docker-compose.jetson.yml",
+    "docker-compose.nano-super.yml",
     "docker-compose.xavier.yml",
     "docker-compose.tensorrt.yml"
   ],
