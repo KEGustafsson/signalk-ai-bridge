@@ -26,6 +26,7 @@ export interface AiBridgeResponse {
   readonly model: string;
   readonly createdAt: string;
   readonly usage?: AiTokenUsage;
+  readonly performance?: AiPerformance;
 }
 
 export interface AiChatMessage {
@@ -37,4 +38,69 @@ export interface AiRequestContext {
   readonly serverId?: string;
   readonly aiDataPaths?: readonly string[];
   readonly selectedData?: Record<string, unknown>;
+}
+
+export type AcceleratorState = 'gpu' | 'partial' | 'cpu' | 'not-loaded' | 'unknown';
+
+export interface JetsonPowerMode {
+  readonly id: number;
+  readonly name?: string;
+  readonly isMaximum: boolean;
+  readonly maximumId?: number;
+  readonly maximumName?: string;
+}
+
+export interface JetsonTelemetry {
+  readonly present: boolean;
+  readonly model?: string;
+  readonly l4tVersion?: string;
+  readonly powerMode?: JetsonPowerMode;
+  readonly gpuLoadPercent?: number;
+  readonly gpuClockHz?: number;
+  readonly gpuMaxClockHz?: number;
+  readonly gpuTemperatureC?: number;
+  readonly warnings?: readonly string[];
+  readonly message?: string;
+}
+
+export interface AcceleratorAutoTune {
+  readonly enabled: boolean;
+  readonly tuned: boolean;
+  readonly numCtx?: number;
+  readonly numGpu?: number;
+  readonly reason?: string;
+}
+
+export interface KvCacheHint {
+  /** True when the backend already runs a quantized KV cache. */
+  readonly quantized: boolean;
+  readonly savingBytes?: number;
+  readonly numCtx?: number;
+  readonly likelyCacheType?: string;
+  readonly observedOverheadBytes?: number;
+  readonly message: string;
+}
+
+export interface AcceleratorStatus {
+  /** False when the backend cannot report a CPU/GPU split (TensorRT-LLM). */
+  readonly supported: boolean;
+  readonly state: AcceleratorState;
+  readonly model?: string;
+  readonly totalBytes?: number;
+  readonly vramBytes?: number;
+  readonly vramRatio?: number;
+  readonly expiresAt?: string;
+  readonly loadedModels?: number;
+  readonly message: string;
+  readonly autoTune?: AcceleratorAutoTune;
+  readonly cache?: KvCacheHint;
+  readonly jetson?: JetsonTelemetry;
+}
+
+export interface AiPerformance {
+  readonly totalMs?: number;
+  readonly loadMs?: number;
+  readonly promptEvalMs?: number;
+  readonly evalMs?: number;
+  readonly tokensPerSecond?: number;
 }

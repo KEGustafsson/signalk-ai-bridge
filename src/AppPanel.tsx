@@ -1,8 +1,8 @@
 import React from 'react';
-import { executeBridgeRequest } from './bridgeRuntime.js';
+import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import type { AiChatMessage } from './types.js';
+import type { AcceleratorStatus, AiChatMessage } from './types.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -22,8 +22,16 @@ interface BackendStatus {
   readonly enabled: boolean;
   readonly baseUrl: string;
   readonly model: string;
+  readonly backend?: string;
   readonly requestTimeoutMs: number;
   readonly maxTokens?: number;
+  readonly numCtx?: number;
+  readonly configuredNumCtx?: number;
+  readonly numGpu?: number;
+  readonly numBatch?: number;
+  readonly numThread?: number;
+  readonly keepAlive?: string;
+  readonly accelerator?: AcceleratorStatus;
   readonly aiDataPaths?: readonly string[];
   readonly signalKSelfId?: string;
   readonly aiAvailable?: boolean;
@@ -74,8 +82,81 @@ function formatTimeoutLabel(timeoutMs: number | undefined): string {
   return timeoutMs === 0 ? 'Disabled' : `${timeoutMs} ms`;
 }
 
+function formatBytes(bytes: number | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+    return '0 B';
+  }
+
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const exponent = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const scaled = bytes / 1024 ** exponent;
+  return `${scaled.toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+}
+
+function formatBackendLabel(backend: string | undefined): string {
+  return backend === 'tensorrt-llm' ? 'TensorRT-LLM (CUDA engine)' : 'Ollama (llama.cpp CUDA)';
+}
+
+/** Short backend name for status lines. */
+function backendName(backend: string | undefined): string {
+  return backend === 'tensorrt-llm' ? 'TensorRT-LLM' : 'Ollama';
+}
+
+function isOllamaBackend(backend: string | undefined): boolean {
+  return backend !== 'tensorrt-llm';
+}
+
+interface AcceleratorPresentation {
+  readonly label: string;
+  readonly background: string;
+  readonly border: string;
+  readonly color: string;
+}
+
+function describeAccelerator(accelerator: AcceleratorStatus | undefined): AcceleratorPresentation {
+  switch (accelerator?.state) {
+    case 'gpu':
+      return { label: 'GPU accelerated', background: '#f0fdf4', border: '#86efac', color: '#166534' };
+    case 'partial':
+      return { label: 'Partly on CPU', background: '#fff7ed', border: '#fdba74', color: '#9a3412' };
+    case 'cpu':
+      return { label: 'CPU only', background: '#fef2f2', border: '#fca5a5', color: '#991b1b' };
+    case 'not-loaded':
+      return { label: 'Model not loaded', background: '#f8fafc', border: '#cbd5e1', color: '#475569' };
+    default:
+      return { label: 'Unknown', background: '#f8fafc', border: '#cbd5e1', color: '#475569' };
+  }
+}
+
+function formatClock(currentHz: number | undefined, maxHz: number | undefined): string {
+  if (typeof currentHz !== 'number' || !Number.isFinite(currentHz) || currentHz <= 0) {
+    return '';
+  }
+
+  const current = `${Math.round(currentHz / 1e6)} MHz`;
+  if (typeof maxHz !== 'number' || !Number.isFinite(maxHz) || maxHz <= 0) {
+    return ` at ${current}`;
+  }
+
+  return ` at ${current} of ${Math.round(maxHz / 1e6)} MHz`;
+}
+
+function formatThroughput(tokensPerSecond: number | undefined): string | undefined {
+  if (typeof tokensPerSecond !== 'number' || !Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) {
+    return undefined;
+  }
+
+  return `${tokensPerSecond.toFixed(1)} tokens/s`;
+}
+
 function shouldShowReadmeHelp(status: BackendStatus | null): boolean {
   if (!status) {
+    return false;
+  }
+
+  // The help below is the Ollama Docker Compose walkthrough; it would be wrong
+  // advice for a TensorRT-LLM server, which is set up entirely differently.
+  if (!isOllamaBackend(status.backend)) {
     return false;
   }
 
@@ -133,17 +214,24 @@ function getAskAiRequestText(result: AskVesselAiResult, fallbackPrompt: string):
 
 async function runTool(
   props: AppPanelProps,
-  aiInput: AiInput
+  aiInput: AiInput,
+  onToken: (text: string) => void
 ): Promise<ToolResult> {
-  return executeBridgeRequest(props, {
-    toolId: 'ask-vessel-ai',
-    prompt: aiInput.prompt
-  });
+  return streamBridgeRequest(
+    props,
+    {
+      toolId: 'ask-vessel-ai',
+      prompt: aiInput.prompt
+    },
+    onToken
+  );
 }
 
 export default function AppPanel(props: AppPanelProps) {
   const [toolResult, setToolResult] = React.useState<ToolResult | null>(null);
   const [isLoading, setIsLoading] = React.useState<boolean>(false);
+  // Text accumulated from the stream, shown until the final result arrives.
+  const [streamingAnswer, setStreamingAnswer] = React.useState<string>('');
   const [aiRequestLog, setAiRequestLog] = React.useState<AiRequestLogEntry[]>([]);
   const [backendStatus, setBackendStatus] = React.useState<BackendStatus | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
@@ -208,12 +296,17 @@ export default function AppPanel(props: AppPanelProps) {
     return () => {
       isActive = false;
     };
-  }, [props]);
+    // Not [props]: the host builds a fresh props object on every one of its own
+    // renders, so the effect refired and re-ran a status fetch that costs the
+    // inference server three round trips plus a full Jetson sysfs scan.
+  }, [props.bridgeFetch, props.bridgeEndpoint]);
 
   const onAskAi = React.useCallback(async () => {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
     setIsLoading(true);
+    setStreamingAnswer('');
+    setToolResult(null);
     const trimmedPrompt = aiInput.prompt.trim();
     setAiRequestLog((previous) => {
       const pendingEntry: AiRequestLogEntry = {
@@ -227,8 +320,14 @@ export default function AppPanel(props: AppPanelProps) {
     });
 
     try {
-      const result = await runTool(props, aiInput);
+      const result = await runTool(props, aiInput, (text) => {
+        setStreamingAnswer((previous) => previous + text);
+      });
+      // The result's answer is authoritative — it is the complete text the
+      // backend assembled, so the streamed preview is discarded rather than
+      // trusted as the final rendering.
       setToolResult(result);
+      setStreamingAnswer('');
       setAiRequestLog((previous) =>
         previous.map((entry) =>
           entry.id === requestId
@@ -247,14 +346,23 @@ export default function AppPanel(props: AppPanelProps) {
       );
     } finally {
       setIsLoading(false);
+      setStreamingAnswer('');
     }
   }, [props, aiInput]);
+
+  const acceleratorPresentation = React.useMemo(
+    () => describeAccelerator(backendStatus?.accelerator),
+    [backendStatus]
+  );
+  const jetson = backendStatus?.accelerator?.jetson;
+  const autoTune = backendStatus?.accelerator?.autoTune;
+  const cacheHint = backendStatus?.accelerator?.cache;
 
   return (
     <section style={{ padding: '1rem', fontFamily: 'system-ui, sans-serif' }}>
       <h2 style={{ marginTop: 0 }}>Signal K AI Bridge</h2>
       <p>
-        Embedded Admin UI panel for sending selected Signal K data to Ollama and reviewing the exact AI request.
+        Embedded Admin UI panel for sending selected Signal K data to a local AI backend and reviewing the exact AI request.
       </p>
       <div
         style={{
@@ -288,7 +396,7 @@ export default function AppPanel(props: AppPanelProps) {
             border: '1px solid #cbd5e1'
           }}
         >
-          <h3 style={{ marginTop: 0 }}>Ollama / Gemma</h3>
+          <h3 style={{ marginTop: 0 }}>{backendName(backendStatus?.backend)}</h3>
           <p style={{ margin: 0 }}>
             Backend: {backendStatus?.baseUrl ?? 'Unavailable'}
             <br />
@@ -306,7 +414,8 @@ export default function AppPanel(props: AppPanelProps) {
           </p>
           {backendStatus?.aiAvailable !== true ? (
             <p style={{ marginTop: '0.5rem', marginBottom: 0, color: '#475569' }}>
-              Ollama reachable: {backendStatus?.ollamaReachable === undefined ? 'Unavailable' : backendStatus.ollamaReachable ? 'Yes' : 'No'}
+              {backendName(backendStatus?.backend)} reachable:{' '}
+              {backendStatus?.ollamaReachable === undefined ? 'Unavailable' : backendStatus.ollamaReachable ? 'Yes' : 'No'}
               <br />
               Model available: {backendStatus?.modelAvailable === undefined ? 'Unavailable' : backendStatus.modelAvailable ? 'Yes' : 'No'}
               <br />
@@ -365,6 +474,115 @@ export default function AppPanel(props: AppPanelProps) {
           ) : (
             <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
           )}
+        </section>
+
+        <section
+          style={{
+            padding: '0.75rem',
+            borderRadius: '8px',
+            backgroundColor: acceleratorPresentation.background,
+            border: `1px solid ${acceleratorPresentation.border}`
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>GPU Acceleration</h3>
+          <p style={{ margin: 0 }}>
+            Runtime: {formatBackendLabel(backendStatus?.backend)}
+            <br />
+            Status:{' '}
+            <strong style={{ color: acceleratorPresentation.color }}>{acceleratorPresentation.label}</strong>
+            {backendStatus?.accelerator?.supported && backendStatus.accelerator.totalBytes ? (
+              <>
+                <br />
+                In GPU memory: {formatBytes(backendStatus.accelerator.vramBytes)} of{' '}
+                {formatBytes(backendStatus.accelerator.totalBytes)}
+              </>
+            ) : null}
+            <br />
+            Context window: {backendStatus?.numCtx ?? 'Unavailable'} tokens
+            {typeof backendStatus?.configuredNumCtx === 'number' &&
+            backendStatus.configuredNumCtx !== backendStatus.numCtx
+              ? ` (configured ${backendStatus.configuredNumCtx})`
+              : ''}
+            <br />
+            GPU layers: {backendStatus?.numGpu === undefined
+              ? 'Unavailable'
+              : backendStatus.numGpu < 0
+                ? 'Backend estimate'
+                : backendStatus.numGpu === 0
+                  ? 'CPU only'
+                  : backendStatus.numGpu >= 999
+                    ? 'All (forced)'
+                    : backendStatus.numGpu}
+            <br />
+            Keep loaded: {backendStatus?.keepAlive ?? 'Unavailable'}
+            {jetson?.present ? (
+              <>
+                <br />
+                Board: {jetson.model ?? 'Jetson'}
+                {jetson.l4tVersion ? ` (L4T ${jetson.l4tVersion})` : ''}
+                {jetson.powerMode ? (
+                  <>
+                    <br />
+                    Power mode: {jetson.powerMode.name ?? jetson.powerMode.id}
+                    {jetson.powerMode.isMaximum ? ' (maximum)' : ' (below maximum)'}
+                  </>
+                ) : null}
+                {typeof jetson.gpuLoadPercent === 'number' ? (
+                  <>
+                    <br />
+                    GPU load: {jetson.gpuLoadPercent}%
+                    {formatClock(jetson.gpuClockHz, jetson.gpuMaxClockHz)}
+                  </>
+                ) : null}
+                {typeof jetson.gpuTemperatureC === 'number' ? (
+                  <>
+                    <br />
+                    GPU temperature: {jetson.gpuTemperatureC} C
+                  </>
+                ) : null}
+              </>
+            ) : null}
+          </p>
+          {backendStatus?.accelerator?.message ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: acceleratorPresentation.color }}>
+              {backendStatus.accelerator.message}
+            </p>
+          ) : null}
+          {autoTune?.tuned && autoTune.reason ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Auto-tuned: {autoTune.reason}</p>
+          ) : null}
+          {cacheHint && !cacheHint.quantized ? (
+            <p
+              style={{
+                margin: '0.5rem 0 0 0',
+                padding: '0.5rem',
+                borderRadius: '6px',
+                backgroundColor: '#fff7ed',
+                border: '1px solid #fdba74',
+                color: '#9a3412'
+              }}
+            >
+              {cacheHint.message}
+            </p>
+          ) : null}
+          {cacheHint?.quantized ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>{cacheHint.message}</p>
+          ) : null}
+          {(jetson?.warnings ?? []).map((warning) => (
+            <p
+              key={warning}
+              style={{
+                margin: '0.5rem 0 0 0',
+                padding: '0.5rem',
+                borderRadius: '6px',
+                backgroundColor: '#fff7ed',
+                border: '1px solid #fdba74',
+                color: '#9a3412'
+              }}
+            >
+              {warning}
+            </p>
+          ))}
         </section>
       </div>
 
@@ -443,7 +661,7 @@ export default function AppPanel(props: AppPanelProps) {
       ) : null}
 
       <fieldset style={{ marginTop: '1rem', border: '1px solid #bfdbfe', borderRadius: '8px' }}>
-        <legend>Ollama vessel analysis</legend>
+        <legend>{backendName(backendStatus?.backend)} vessel analysis</legend>
         <div style={{ display: 'grid', gap: '0.5rem' }}>
           <textarea
             aria-label="AI prompt"
@@ -457,7 +675,7 @@ export default function AppPanel(props: AppPanelProps) {
           </button>
           {!canAskAi(backendStatus) ? (
             <p style={{ margin: 0, color: '#475569' }}>
-              Ask AI is disabled until Ollama and the configured model are available.
+              Ask AI is disabled until {backendName(backendStatus?.backend)} and the configured model are available.
             </p>
           ) : null}
         </div>
@@ -480,10 +698,21 @@ export default function AppPanel(props: AppPanelProps) {
               gap: '0.5rem'
             }}
           >
-            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>{getLoadingLabel(backendStatus)}</p>
-            <p style={{ margin: 0, color: '#475569' }}>
-              The request has been sent. The response will appear here as soon as the model finishes.
+            <p style={{ margin: 0, fontWeight: 600, color: '#1d4ed8' }}>
+              {streamingAnswer.length > 0 ? 'Streaming AI response...' : getLoadingLabel(backendStatus)}
             </p>
+            {streamingAnswer.length > 0 ? (
+              <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+                {streamingAnswer}
+                <span aria-hidden="true" style={{ color: '#1d4ed8' }}>
+                  {'\u2588'}
+                </span>
+              </p>
+            ) : (
+              <p style={{ margin: 0, color: '#475569' }}>
+                The request has been sent. The response will appear here as the model generates it.
+              </p>
+            )}
           </div>
         ) : toolResult?.type === 'ask-vessel-ai-result' ? (
           <div style={{ display: 'grid', gap: '0.75rem' }}>
@@ -508,6 +737,19 @@ export default function AppPanel(props: AppPanelProps) {
                 <>
                   <br />
                   Total tokens: {toolResult.response.usage.totalTokens}
+                </>
+              ) : null}
+              {formatThroughput(toolResult.response.performance?.tokensPerSecond) ? (
+                <>
+                  <br />
+                  Generation speed: {formatThroughput(toolResult.response.performance?.tokensPerSecond)}
+                </>
+              ) : null}
+              {typeof toolResult.response.performance?.loadMs === 'number' &&
+              toolResult.response.performance.loadMs > 0 ? (
+                <>
+                  <br />
+                  Model load: {toolResult.response.performance.loadMs} ms
                 </>
               ) : null}
             </p>

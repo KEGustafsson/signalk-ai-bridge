@@ -86,6 +86,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       maxTokens: 131072,
@@ -140,6 +141,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.*', 'notifications']
@@ -172,7 +174,12 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.context.selectedData['navigation.position.latitude'], 60.1);
     assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 5.4);
     assert.equal(bridgeResponse.body.context.selectedData.notifications['navigation.anchor'].state, 'alarm');
-    assert.match(capturedMessages[1].content, /selectedData/);
+    // The prompt carries the data keyed by path, with no second copy of the
+    // path list — every token here is prompt-eval work on the GPU.
+    assert.match(capturedMessages[1].content, /"data":/);
+    assert.match(capturedMessages[1].content, /navigation\.speedOverGround/);
+    assert.doesNotMatch(capturedMessages[1].content, /"aiDataPaths"/);
+    assert.doesNotMatch(capturedMessages[1].content, /\n  "/);
   });
 
   it('converts angle data from radians to degrees before sending it to AI', async () => {
@@ -199,6 +206,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.headingTrue', 'navigation.courseOverGroundTrue']
@@ -256,6 +264,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['environment.*']
@@ -338,6 +347,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4',
       baseUrl: 'http://localhost:11434'
     });
@@ -396,6 +406,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434'
     });
@@ -441,6 +452,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position', 'notifications']
@@ -468,7 +480,11 @@ describe('signalk-ai-bridge plugin', () => {
 
     assert.equal(queryResponse.statusCode, 200);
     assert.equal(queryResponse.body.answer, 'Prompt-only request worked.');
-    assert.match(capturedMessages[1].content, /selectedData/);
+    // The prompt carries the data keyed by path, with no second copy of the
+    // path list — every token here is prompt-eval work on the GPU.
+    assert.match(capturedMessages[1].content, /"data":/);
+    assert.doesNotMatch(capturedMessages[1].content, /"aiDataPaths"/);
+    assert.doesNotMatch(capturedMessages[1].content, /\n  "/);
     assert.match(capturedMessages[1].content, /navigation\.position/);
     assert.match(capturedMessages[1].content, /notifications/);
   });
@@ -494,6 +510,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position']
@@ -550,6 +567,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position', 'environment.wind.speedTrue']
@@ -599,6 +617,7 @@ describe('signalk-ai-bridge plugin', () => {
     });
 
     plugin.start({
+      warmupOnStart: false,
       model: 'gemma4:e2b',
       baseUrl: 'http://localhost:11434',
       aiDataPaths: ['navigation.position']
@@ -640,4 +659,235 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.response.answer, 'Anonymous local request worked.');
   });
 
+
+  it('reports GPU residency and accelerator settings on /ai/status', async () => {
+    const registeredRoutes = {};
+    const plugin = createPlugin(createPluginHost(), {
+      fetchImpl: async (url) => {
+        if (String(url).endsWith('/api/ps')) {
+          return new Response(
+            JSON.stringify({
+              models: [
+                {
+                  name: 'gemma4:e2b',
+                  size: 5000000000,
+                  size_vram: 5000000000,
+                  expires_at: '2026-04-11T10:30:00.000Z'
+                }
+              ]
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+
+        return new Response(JSON.stringify({ models: [{ name: 'gemma4:e2b' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    });
+
+    plugin.start({
+      warmupOnStart: false,
+      model: 'gemma4:e2b',
+      numCtx: 4096,
+      numGpu: 999,
+      keepAlive: '45m'
+    });
+
+    plugin.registerWithRouter({
+      get(path, handler) {
+        registeredRoutes[`GET ${path}`] = handler;
+      },
+      post(path, handler) {
+        registeredRoutes[`POST ${path}`] = handler;
+      }
+    });
+
+    const statusResponse = createResponseRecorder();
+    await registeredRoutes['GET /ai/status']({}, statusResponse);
+
+    assert.equal(statusResponse.statusCode, 200);
+    assert.equal(statusResponse.body.backend, 'ollama');
+    assert.equal(statusResponse.body.numCtx, 4096);
+    assert.equal(statusResponse.body.numGpu, 999);
+    assert.equal(statusResponse.body.keepAlive, '45m');
+    assert.equal(statusResponse.body.accelerator.state, 'gpu');
+    assert.equal(statusResponse.body.accelerator.vramBytes, 5000000000);
+  });
+
+  it('omits GPU residency when the inference host is unreachable', async () => {
+    const registeredRoutes = {};
+    const plugin = createPlugin(createPluginHost(), {
+      fetchImpl: async () => {
+        throw new Error('fetch failed');
+      }
+    });
+
+    plugin.start({ warmupOnStart: false });
+    plugin.registerWithRouter({
+      get(path, handler) {
+        registeredRoutes[`GET ${path}`] = handler;
+      },
+      post(path, handler) {
+        registeredRoutes[`POST ${path}`] = handler;
+      }
+    });
+
+    const statusResponse = createResponseRecorder();
+    await registeredRoutes['GET /ai/status']({}, statusResponse);
+
+    assert.equal(statusResponse.statusCode, 200);
+    assert.equal(statusResponse.body.ollamaReachable, false);
+    assert.equal(statusResponse.body.accelerator, undefined);
+  });
+
+  it('preloads the model on start so the first question does not pay the cold load', async () => {
+    const calls = [];
+    const statusMessages = [];
+    const plugin = createPlugin(
+      createPluginHost({
+        setPluginStatus(message) {
+          statusMessages.push(message);
+        }
+      }),
+      {
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [{ name: 'gemma4:e2b' }] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          return new Response(JSON.stringify({ done: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+      }
+    );
+
+    plugin.start({ model: 'gemma4:e2b', keepAlive: '30m' });
+
+    // start() must not block on the warm-up, so wait for it separately.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(calls.includes('http://localhost:11434/api/generate'));
+    assert.ok(statusMessages.some((message) => /preloaded/.test(message)));
+    plugin.stop();
+  });
+
+});
+
+describe('lifecycle gating', () => {
+  function makeHost() {
+    const statuses = [];
+    const errors = [];
+    return {
+      app: {
+        selfId: 'urn:mrn:signalk:uuid:test-self',
+        getSelfPath: () => undefined,
+        setPluginStatus: (text) => statuses.push(text),
+        setPluginError: (text) => errors.push(text)
+      },
+      statuses,
+      errors
+    };
+  }
+
+  function collectRoutes(plugin) {
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    return routes;
+  }
+
+  function recorder() {
+    return {
+      statusCode: 200,
+      body: undefined,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      },
+      setHeader() {},
+      write() {
+        return true;
+      },
+      end() {}
+    };
+  }
+
+  it('serves nothing, and reaches no backend, once stopped', async () => {
+    // Express cannot unmount a subrouter and signalk-server never tries, so a
+    // stopped plugin kept answering - and getConfig() fell back to
+    // normalizeAiConfig({}), whose defaults are enabled:true against
+    // http://localhost:11434. That is inference against a host the operator
+    // never configured, from a plugin they had switched off.
+    const host = makeHost();
+    const reached = [];
+    const plugin = createPlugin(host.app, {
+      ollamaClient: {
+        async chat() {
+          reached.push('chat');
+          return { message: { content: 'hi' } };
+        }
+      },
+      fetchImpl: async (url) => {
+        reached.push(String(url));
+        return new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    });
+    const routes = collectRoutes(plugin);
+
+    plugin.start({ model: 'my-model', baseUrl: 'http://ollama.local:11434', warmupOnStart: false });
+    plugin.stop();
+    reached.length = 0;
+
+    for (const route of ['GET /ai/status', 'POST /ai/query', 'POST /bridge/execute', 'POST /ai/retune']) {
+      const res = recorder();
+      await routes[route]({ body: { toolId: 'ask-vessel-ai', prompt: 'Status?' } }, res);
+      assert.equal(res.statusCode, 503, `${route} should refuse while stopped`);
+      assert.equal(res.body.error.code, 'disabled');
+    }
+
+    assert.deepEqual(reached, [], 'a stopped plugin must not contact any backend');
+  });
+
+  it('reports an unreachable backend as a plugin error, not as ready', async () => {
+    const host = makeHost();
+    const plugin = createPlugin(host.app, {
+      fetchImpl: async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:11434');
+      }
+    });
+
+    plugin.start({ warmupOnStart: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(host.errors.length, 1, 'the admin UI should be told the backend is down');
+    assert.match(host.errors[0], /could not reach the model/i);
+  });
+
+  it('exposes a password widget for the API key', () => {
+    const plugin = createPlugin(makeHost().app, {});
+    assert.equal(typeof plugin.uiSchema, 'function');
+    assert.equal(plugin.uiSchema().apiKey['ui:widget'], 'password');
+  });
 });

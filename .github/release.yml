@@ -1,0 +1,26 @@
+# Configures GitHub's auto-generated release notes so every published version
+# has per-version notes, per the signalk-server release-notes convention
+# (SignalK/signalk-server#2615).
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+    - title: Features
+      labels:
+        - enhancement
+        - feature
+    - title: Fixes
+      labels:
+        - bug
+        - fix
+    - title: Acceleration and performance
+      labels:
+        - performance
+        - cuda
+    - title: Other changes
+      labels:
+        - '*'

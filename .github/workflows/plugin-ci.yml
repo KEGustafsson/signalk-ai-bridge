@@ -1,0 +1,45 @@
+# Official Signal K plugin CI.
+#
+# Calls the canonical reusable workflow maintained in SignalK/signalk-server.
+# It validates the plugin the way the Signal K server and App Store actually
+# load it: package.json metadata, entry point, schema(), start/stop/restart
+# lifecycle, deprecated/internal API usage, npm pack contents, an
+# --ignore-scripts App Store install, and the plugin's own test suite — across
+# Linux x64/arm64, macOS, Windows (Node 22 and 24), and a live signalk-server
+# install.
+#
+# The Signal K plugin registry also reads the build/test commands declared here
+# when it scores the plugin, so these must stay in sync with package.json.
+name: signalk-plugin-ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-ci:
+    name: Signal K Plugin CI
+    uses: SignalK/signalk-server/.github/workflows/plugin-ci.yml@master
+    with:
+      # `npm run build` bundles the embedded webapp (Vite + Module Federation)
+      # and syncs the app icon into public/, which is what the packed tarball
+      # serves. `npm run test` type-checks the panel sources and runs the
+      # node:test suites for the plugin, the AI service and the accelerator
+      # configuration.
+      build-command: npm run build
+      test-command: npm run test
+      node-versions: '["22", "24"]'
+      # armv7 (Venus OS / Cerbo GX) runs under QEMU emulation and is disabled:
+      # this plugin needs an NVIDIA GPU on the inference host, so 32-bit ARM is
+      # not a target platform for it.
+      enable-armv7: false
+      # Install the packed plugin into a real signalk-server and assert it
+      # loads and starts.
+      enable-signalk-integration: true
+      signalk-server-versions: '["latest"]'

@@ -1,5 +1,8 @@
 # signalk-ai-bridge
 
+[![signalk-plugin-ci](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/plugin-ci.yml/badge.svg)](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/plugin-ci.yml)
+[![ci](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/ci.yml)
+
 `signalk-ai-bridge` is a Signal K plugin that adds an `Ask AI` panel to the Signal K web UI.
 
 It lets you send selected Signal K vessel data to a local Ollama model such as Gemma, then read the response directly in the browser.
@@ -30,6 +33,8 @@ With this plugin you can:
 - see a history of previous AI requests
 - inspect the actual request that was sent to the model
 - check whether Ollama and the configured model are available
+- watch the answer stream in as the model generates it
+- see whether the model is actually running on the GPU, and how fast it generates
 
 ## What You Need
 
@@ -49,21 +54,228 @@ With this plugin you can:
 
 ## Ollama With Docker Compose
 
-If you do not already have Ollama running, you can use the included compose file:
+If you do not already have Ollama running, you can use one of the included compose files:
 
-[`docker-compose.gemma.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.gemma.yml)
+| File | Use it for |
+| --- | --- |
+| [`docker-compose.gemma.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.gemma.yml) | Any host. Portable, no GPU requested, so inference runs on the CPU. |
+| [`docker-compose.jetson.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.jetson.yml) | NVIDIA Jetson Orin (JetPack 6). Ollama with the NVIDIA container runtime, flash attention and a quantized KV cache. |
+| [`docker-compose.xavier.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.xavier.yml) | NVIDIA Jetson Xavier NX (JetPack 5). Same, adjusted for the older JetPack. |
+| [`docker-compose.tensorrt.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.tensorrt.yml) | NVIDIA TensorRT-LLM served over the OpenAI API, for engines compiled ahead of time for the local GPU. |
 
-Start it with:
+Start one with:
 
 ```bash
 docker compose -f docker-compose.gemma.yml up -d
 ```
 
-This compose setup already pulls `gemma4:e2b` during startup, so you do not need to run a separate `ollama pull` command.
+The Ollama compose setups already pull `gemma4:e2b` during startup, so you do not need to run a separate `ollama pull` command.
 
 If Signal K runs on the host, the default Ollama URL `http://localhost:11434` is usually correct.
 
 If Signal K runs in another container, use an address reachable from that container, for example `http://ollama:11434` on a shared Docker network.
+
+## NVIDIA Jetson
+
+Tested targets are the Orin Nano Super (JetPack 6) and the Xavier NX developer
+kit (JetPack 5). The plugin itself is hardware-agnostic — it talks to Ollama over
+HTTP and never branches on the board — so anything Ollama runs on will work. What
+differs per board is the deployment file and what the telemetry can read.
+
+| | Orin Nano Super | Xavier NX |
+| --- | --- | --- |
+| Compute capability | 8.7 (Ampere) | 7.2 (Volta) |
+| Memory | 8 GB LPDDR5, 102 GB/s | 8 GB LPDDR4x, 59.7 GB/s |
+| JetPack | 6 (L4T 36.x) | 5.1.x (L4T 35.x) — JetPack 6 dropped Xavier |
+| Compose file | `docker-compose.jetson.yml` | `docker-compose.xavier.yml` |
+| Top power mode | `MAXN_SUPER` | highest wattage, usually `MODE_20W_6CORE` |
+| TensorRT-LLM | supported | **not supported** — needs compute capability 8.0+ |
+
+Generation is memory-bandwidth bound, so expect roughly 55-65% of the Orin Nano
+Super's tokens per second on a Xavier NX with the same model. The GPU tuning
+matters more there, not less: the same 8 GB budget with less bandwidth to make up
+for a spill to the CPU.
+
+Xavier NX has two NVDLA engines that Orin Nano lacks, but llama.cpp cannot use
+DLA — it is a fixed-function accelerator for convolutional networks — so it buys
+nothing for this workload.
+
+The plugin does no inference itself — all of the compute happens in Ollama or
+TensorRT-LLM. What the plugin controls is the shape of the request, and on a
+Jetson that shape decides whether the model runs on the GPU at all.
+
+The Orin Nano Super has 8 GB of LPDDR5 shared between CPU and GPU, so the KV
+cache competes with the model weights for the same bytes. llama.cpp reserves the
+KV cache from `num_ctx` up front; when the reservation no longer fits, it quietly
+moves layers back to the six Cortex-A78AE cores. The model still answers — just
+at a few tokens per second instead of tens, with nothing in the response saying
+why.
+
+### Maximizing GPU use
+
+The plugin does not accept whatever CPU/GPU split the backend estimates. On
+start it asks for **full offload** (`num_gpu` = all layers) and then measures
+what actually landed on the GPU. If any layer spilled to the CPU, it halves the
+context window — the KV cache is the part of the footprint the plugin controls,
+and it scales linearly with `num_ctx` — and loads again, up to three times.
+
+Only if the model still will not fit at the smallest context does it hand the
+split back to the backend's estimator, and say so. A model that genuinely cannot
+fit must still answer, on the CPU if that is all there is, rather than failing
+with an allocation error.
+
+The panel shows the tuned result, for example:
+
+> Context window: 4096 tokens (configured 8192)
+> GPU layers: All (forced)
+> Auto-tuned: Context window reduced to 4096 tokens so every layer fits in GPU memory.
+
+Turn this off with `gpuAutoTune` if you would rather pin the settings yourself.
+Setting `numGpu` explicitly always wins over the tuner, including `0`, which is
+useful for a CPU-vs-GPU comparison.
+
+### Is it actually accelerated?
+
+The `GPU Acceleration` card answers this directly. It reads Ollama's `/api/ps`
+and reports one of:
+
+- **GPU accelerated** — the whole model is resident in GPU memory.
+- **Partly on CPU** — some layers spilled; lower `numCtx` or use a smaller or
+  more heavily quantized model.
+- **CPU only** — no layers on the GPU; the container is missing the NVIDIA
+  runtime or the GPU device reservation.
+- **Model not loaded** — nothing resident yet; ask a question or leave
+  `warmupOnStart` enabled.
+
+Each AI response also reports `Generation speed` in tokens/second, which is the
+quickest independent confirmation.
+
+### Is the GPU running flat out?
+
+Residency is not the whole story: an Orin held in a 15 W power mode, or
+clock-capped by temperature, is fully GPU-resident and still delivering a
+fraction of its throughput. When Signal K runs on the Jetson itself, the same
+card reads the board's own sysfs and reports the model, JetPack/L4T version,
+`nvpmodel` power mode, GPU load, clock against maximum, and GPU temperature —
+with a warning and the exact command to run when any of them is holding the GPU
+back. When Signal K runs elsewhere, this section is simply absent.
+
+### Streaming
+
+Answers stream token by token over `POST /bridge/stream` (newline-delimited
+JSON), so the first words appear in a few hundred milliseconds instead of after
+the whole answer is generated. This does not make the GPU faster — it changes
+when you see the output. Both backends stream (Ollama's NDJSON and
+TensorRT-LLM's SSE), and the panel falls back to the blocking route
+automatically if streaming is unavailable.
+
+### Prompt size
+
+Prompt evaluation is GPU work, so the context sent to the model is kept tight:
+compact JSON rather than indented, numbers rounded to 6 decimals (finer than any
+sensor on a boat), and the data keyed by path instead of repeating the path list
+alongside it. Paths that produced no value are listed separately, so the model
+can still be explicit about what is missing. On a typical wildcard selection
+this is roughly half the tokens the plugin used to send, on every request.
+
+The context returned to the panel is unchanged — only what reaches the model is
+compacted.
+
+### Re-tuning without a restart
+
+The start-up tuner only ever shrinks the context window. If memory is freed
+later — another process exits, a smaller model is loaded — the reduced value
+persists for the life of the run. `POST /plugins/signalk-ai-bridge/ai/retune`
+discards the tuned state and measures the fit again. It is deliberately manual:
+re-tuning reloads the model, which is not something to do unprompted mid-voyage.
+
+### Squeezing the most out of the hardware
+
+Roughly in order of what they buy on an Orin Nano Super:
+
+1. `docker-compose.jetson.yml` — NVIDIA runtime, flash attention and a q8_0 KV
+   cache (`q4_0` halves the cache again if you need a larger context, at some
+   cost to answer quality). Without the runtime there is no GPU at all; the other two are what make
+   full residency achievable. If you run your own Ollama, the panel estimates
+   whether the KV cache is quantized and tells you what enabling it would free —
+   Ollama reports no configuration, so this is inferred from the resident
+   footprint rather than read.
+2. `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the panel names the id.
+3. Leave `gpuAutoTune` on, so full offload is driven rather than hoped for.
+4. `scripts/build-trtllm-engine.sh` — an INT4-AWQ TensorRT-LLM engine compiled
+   for SM 8.7. This is the ceiling: a plan built for this exact device, with the
+   Ampere Tensor cores doing four-bit matmuls.
+
+The same thing from the command line:
+
+```bash
+curl -s localhost:11434/api/ps | jq '.models[] | {name, size, size_vram}'
+```
+
+`size_vram` must equal `size`.
+
+### Host setup
+
+```bash
+sudo apt-get install -y nvidia-container-toolkit
+sudo systemctl restart docker
+sudo nvpmodel -m <id>   # the panel names the id for your board
+sudo jetson_clocks
+
+# Orin (JetPack 6)
+docker compose -f docker-compose.jetson.yml up -d
+# Xavier NX (JetPack 5)
+docker compose -f docker-compose.xavier.yml up -d
+```
+
+The power-mode id differs per board: Orin exposes `MAXN`/`MAXN_SUPER`, while
+Xavier NX names its modes by budget and core count with no MAXN at all. The
+plugin ranks them either way and names the id to switch to.
+
+### Suggested plugin settings on 8 GB
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `numCtx` | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
+| `maxTokens` | `2048` | Output budget only; it no longer resizes the KV cache. |
+| `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
+| `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
+| `numBatch` | `512` | Prompt-eval throughput on the Ampere GPU. |
+| `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
+| `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
+
+### TensorRT-LLM
+
+**Orin only.** TensorRT-LLM requires compute capability 8.0 or newer; Xavier NX
+is 7.2, so there is no engine to build or serve there. On Xavier, Ollama is the
+whole story.
+
+Set `backend` to `tensorrt-llm` and point `baseUrl` at an OpenAI-compatible
+NVIDIA server (`trtllm-serve` or a NIM container); `model` is the id reported by
+`GET /v1/models`, and `apiKey` is sent as a bearer token when set.
+
+TensorRT-LLM compiles a CUDA engine ahead of time for this GPU's SM version
+(8.7 on Orin) with a fixed maximum sequence length, so there is no runtime
+CPU/GPU split to get wrong — but `numCtx` must stay at or below the engine's
+`--max_seq_len`, because exceeding it is a request error rather than a silent
+fallback.
+
+Build the engine on the Jetson with
+[`scripts/build-trtllm-engine.sh`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/scripts/build-trtllm-engine.sh),
+which quantizes to INT4-AWQ and builds for SM 8.7:
+
+```bash
+docker run --rm -it --runtime nvidia \
+  -v "$PWD/trtllm_models:/models" \
+  -v "$PWD/trtllm_engines:/engines" \
+  -v "$PWD/scripts:/scripts" \
+  nvcr.io/nvidia/tensorrt-llm/release:latest \
+  bash /scripts/build-trtllm-engine.sh
+```
+
+The engine must be built on the target board — it needs the local driver and the
+GPU present, so it cannot be cross-built on a workstation. Calibration takes tens
+of minutes; the result is reused on every start.
 
 ## Normal Use
 
@@ -103,7 +315,39 @@ These are the settings most users will care about:
   Additional output randomness control
 
 - `maxTokens`
-  The output/context budget forwarded to Ollama
+  Maximum tokens the model may generate (`num_predict`). This does not size the
+  context window
+
+- `numCtx`
+  Context window in tokens (`num_ctx`). This is what sizes the KV cache, and
+  therefore whether the model stays resident on the GPU
+
+- `gpuAutoTune`
+  Force every layer onto the GPU on start and shrink `numCtx` until the whole
+  model is resident, falling back to the backend estimate only if it cannot fit
+
+- `numGpu`
+  Layers offloaded to the GPU (`num_gpu`). `-1` lets the auto-tuner drive; an
+  explicit value overrides it, with `0` forcing CPU-only and `999` full offload
+
+- `numBatch`
+  Tokens evaluated per GPU batch (`num_batch`)
+
+- `numThread`
+  CPU threads for anything not offloaded (`num_thread`). `0` lets the runtime choose
+
+- `keepAlive`
+  How long the model stays loaded between requests, for example `30m` or `-1` to
+  never unload
+
+- `warmupOnStart`
+  Preload the model when the plugin starts so the first question is not slow
+
+- `backend`
+  `ollama` (default) or `tensorrt-llm` for an OpenAI-compatible NVIDIA server
+
+- `apiKey`
+  Optional bearer token for a TensorRT-LLM or NIM backend
 
 ## Notes About Model Names
 
@@ -120,6 +364,15 @@ For local development:
 ```bash
 npm install
 npm run dev
+```
+
+To render the panel against the real plugin routes without a Signal K server,
+run the preview host in a second shell — `--stub` also stubs the inference
+backend, so no model is needed:
+
+```bash
+node scripts/preview-host.mjs --stub
+SIGNALK_AI_BRIDGE_DEV_TARGET=http://127.0.0.1:3100 npm run dev
 ```
 
 Useful checks:
@@ -140,3 +393,84 @@ To build the packaged web UI:
 ```bash
 npm run build
 ```
+
+## Testing on a Jetson Before a Release
+
+A pre-release branch has to be packed before it is installed. **Do not install
+this plugin straight from a git URL** — the embedded webapp is built by the
+`prepack` script, which npm does not run for git installs, so such an install
+ships an `index.html` referencing bundles that are not there and the `Ask AI`
+panel never loads.
+
+Build a tarball first, then install that:
+
+```bash
+git clone -b <branch> https://github.com/KEGustafsson/signalk-ai-bridge
+cd signalk-ai-bridge
+npm install
+npm pack                                 # runs the build; writes the .tgz
+```
+
+Then on the Jetson:
+
+```bash
+scp signalk-ai-bridge-*.tgz <jetson>:~
+ssh <jetson> 'cd ~/.signalk && npm install ~/signalk-ai-bridge-*.tgz'
+```
+
+Restart Signal K afterwards and the plugin appears in the plugin list. Cloning
+and packing on the Jetson itself works too; only the git-URL install is broken.
+
+(The obvious fix — moving the build to a `prepare` script, which npm *does* run
+for git installs — is not viable yet: npm 10 runs `prepare` even under
+`--ignore-scripts`, and its lifecycle banner on stdout breaks the `JSON.parse`
+of `npm pack --dry-run --json --ignore-scripts` in the official Signal K plugin
+CI's pack check. Upstream says the same thing in that workflow's own comments —
+"npm < 11 runs prepare here despite --ignore-scripts" — so this becomes safe to
+change once the CI matrix is on npm 11. Re-tested against npm 10.9.7: the check
+still fails with `Unexpected token 'v', "vite v6.4."...`.)
+
+### What to check once it is running
+
+1. Start the inference server for your board:
+   - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.jetson.yml up -d`
+   - Xavier NX (JetPack 5): `docker compose -f docker-compose.xavier.yml up -d`
+2. Raise the power mode: `sudo nvpmodel -m <id> && sudo jetson_clocks`. The panel
+   names the id when the current mode is capped. On Orin that is `MAXN_SUPER`;
+   Xavier NX has no MAXN mode at all, so the highest wattage and core count wins
+   — usually `MODE_20W_6CORE`.
+3. Open the plugin's web UI and read the `GPU Acceleration` card. It should say
+   **GPU accelerated**, with `In GPU memory` equal for both figures.
+4. Ask a question. `Generation speed` should be in the tens of tokens/second on a
+   4B-class model. Low single digits means the model is on the CPU regardless of
+   what anything else claims.
+5. If the card reports a partial offload, the auto-tuner has already shrunk the
+   context as far as it will go — try `q4_0` for `OLLAMA_KV_CACHE_TYPE`, or a
+   more heavily quantized model.
+
+`POST /plugins/signalk-ai-bridge/ai/retune` re-measures the fit if you free
+memory later without restarting the plugin.
+
+## Licence
+
+Apache-2.0. See [`LICENSE`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/LICENSE).
+
+## Continuous Integration
+
+Two workflows run on every push and pull request:
+
+- **`signalk-plugin-ci`** calls the canonical
+  [`SignalK/signalk-server` reusable plugin CI workflow](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml).
+  It validates the plugin the way the Signal K server and App Store actually
+  load it — package metadata, entry point, `schema()`, the start/stop/restart
+  lifecycle, deprecated and internal API usage, `npm pack` contents and an
+  `--ignore-scripts` App Store install — across Linux x64/arm64, macOS and
+  Windows on Node 22 and 24, plus a live `signalk-server` install. The armv7
+  (Venus OS / Cerbo GX) leg is disabled: this plugin targets hosts with an
+  NVIDIA GPU, not 32-bit ARM.
+- **`ci`** runs the repository's own smoke test, type check, unit tests and a
+  production `npm audit`.
+
+The build and test commands declared to the reusable workflow are also what the
+[Signal K plugin registry](https://signalk.org/signalk-plugin-registry/) reads
+when it scores the plugin, so they are asserted by `npm run lint`.

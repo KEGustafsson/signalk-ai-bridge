@@ -110,8 +110,14 @@ describe('queryAiModel', () => {
     assert.equal(capturedUrl, 'http://localhost:11434/api/chat');
     assert.match(capturedBody, /Summarize the vessel state\./);
     assert.match(capturedBody, /\"model\":\"gemma4\"/);
-    assert.match(capturedBody, /\"num_predict\":131072/);
-    assert.match(capturedBody, /\"num_ctx\":131072/);
+    assert.match(capturedBody, /\"num_predict\":2048/);
+    assert.match(capturedBody, /\"num_ctx\":8192/);
+    assert.match(capturedBody, /\"num_batch\":512/);
+    assert.match(capturedBody, /\"keep_alive\":\"30m\"/);
+    // Full offload is requested rather than left to Ollama's estimator, which
+    // tends to leave a few layers on the CPU. llama.cpp clamps this to the real
+    // layer count.
+    assert.match(capturedBody, /\"num_gpu\":999/);
     assert.equal(result.model, 'gemma4');
     assert.equal(result.usage.totalTokens, 22);
   });

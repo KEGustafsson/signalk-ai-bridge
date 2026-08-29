@@ -1,0 +1,99 @@
+# Ollama on an NVIDIA Jetson Orin Nano Super, with CUDA actually enabled.
+#
+# The difference from docker-compose.gemma.yml is that the GPU is not optional
+# here: the NVIDIA container runtime is requested, the Tegra release file is
+# mounted so Ollama detects JetPack, and the server-side accelerator flags are
+# set. Without these the container runs, answers questions, and quietly does all
+# of the work on the six Cortex-A78AE cores.
+#
+# Requirements on the host:
+#   - JetPack 6.x with nvidia-container-toolkit installed
+#     (`sudo apt-get install -y nvidia-container-toolkit`, then restart Docker)
+#   - `sudo nvpmodel -m 2 && sudo jetson_clocks` for MAXN SUPER clocks
+#
+# Start it with:
+#   docker compose -f docker-compose.jetson.yml up -d
+#
+# Verify the GPU is really being used:
+#   curl -s localhost:11434/api/ps | jq '.models[] | {name, size, size_vram}'
+#   (size_vram must equal size — the plugin's "GPU Acceleration" card shows the
+#   same thing, and says what to change when it does not.)
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    init: true
+    # Long enough for the server to flush and exit cleanly after SIGTERM.
+    stop_grace_period: 30s
+    runtime: nvidia
+    ports:
+      # Loopback only. Docker publishes to 0.0.0.0 by default AND bypasses
+      # the host firewall, which would put an unauthenticated Ollama API -
+      # including POST /api/pull and DELETE /api/delete - on the boat's LAN
+      # and any marina wifi it is bridged to. Signal K runs on this host, so
+      # loopback is all the plugin needs; use a shared Docker network to
+      # reach it from another container.
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+      # Lets Ollama identify the board as a Jetson and pick its CUDA runner.
+      - /etc/nv_tegra_release:/etc/nv_tegra_release:ro
+    environment:
+      - JETSON_JETPACK=6
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Fused attention kernels: less memory traffic and a smaller KV cache
+      # footprint on Ampere (Orin is SM 8.7).
+      - OLLAMA_FLASH_ATTENTION=1
+      # 8-bit KV cache roughly halves cache memory, which is what buys the
+      # headroom to keep every layer on the GPU inside 8 GB of unified memory.
+      # q4_0 halves it again — worth trying when the plugin's GPU Acceleration
+      # card still reports a partial offload at a context you need, at some cost
+      # to answer quality. Requires OLLAMA_FLASH_ATTENTION=1 either way.
+      - OLLAMA_KV_CACHE_TYPE=q8_0
+      # Keep the model resident between operator questions; reloading it from
+      # the Jetson's storage costs seconds.
+      - OLLAMA_KEEP_ALIVE=30m
+      # One model, one request at a time. Concurrency on a single 1024-core
+      # iGPU with shared memory trades latency for nothing.
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      # Headroom left free for the display/compositor and other CUDA users.
+      - OLLAMA_GPU_OVERHEAD=536870912
+      # Never spread one model across devices; there is one iGPU here and
+      # spreading only invites a partial CPU placement.
+      - OLLAMA_SCHED_SPREAD=0
+      # If Ollama still selects a CPU runner (check `docker logs ollama` for the
+      # runner it picks), force the CUDA one. The exact suffix depends on the
+      # image build, so it is left commented rather than guessed:
+      # - OLLAMA_LLM_LIBRARY=cuda_v12
+    deploy:
+      resources:
+        limits:
+          cpus: '6.0'
+          memory: 7G
+        reservations:
+          memory: 2G
+          # No `devices:` block here. Compose turns that into a --gpus device
+          # request, which on L4T needs CDI specs that `apt-get install
+          # nvidia-container-toolkit` - what the README and this header tell you
+          # to run - does not generate; the container then refuses to start with
+          # 'could not select device driver "nvidia" with capabilities: [[gpu]]'.
+          # Tegra is the exception where `runtime: nvidia` above is the supported
+          # form. Add the device request back only if you have also run
+          # `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
+    entrypoint: /bin/sh
+    # Poll until the server accepts requests instead of sleeping a fixed
+    # interval: a slower Jetson start-up made `ollama pull` fail, which took
+    # the shell down through the && chain and restart-looped the container.
+    # A failed pull is also non-fatal now — cached models still serve.
+    command: -c "ollama serve & srv=$$!; trap 'kill -TERM $$srv 2>/dev/null' TERM INT; tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; n=0; until ollama list 2>/dev/null | grep -q . || [ $$n -ge 3 ]; do n=$$((n+1)); ollama pull gemma4:e2b && break; echo "model pull attempt $$n failed; retrying"; sleep $$((n*10)); done; (ollama list 2>/dev/null | grep -q . || echo 'no model available; serving nothing until one is pulled'); wait $$srv"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s

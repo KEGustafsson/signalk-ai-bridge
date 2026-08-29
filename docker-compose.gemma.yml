@@ -1,29 +1,56 @@
+# Portable Ollama + Gemma setup that runs anywhere Docker does.
+#
+# This file deliberately does NOT request a GPU, so it also works on hosts with
+# no NVIDIA runtime — which also means inference here runs on the CPU.
+#
+# On an NVIDIA Jetson Orin Nano Super use docker-compose.jetson.yml instead: it
+# enables the NVIDIA container runtime, flash attention and a quantized KV
+# cache, which is what keeps the whole model resident on the GPU.
+
 services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     restart: unless-stopped
+    init: true
+    # Long enough for the server to flush and exit cleanly after SIGTERM.
+    stop_grace_period: 30s
     ports:
-      - "11434:11434"
+      # Loopback only. Docker publishes to 0.0.0.0 by default AND bypasses
+      # the host firewall, which would put an unauthenticated Ollama API -
+      # including POST /api/pull and DELETE /api/delete - on the boat's LAN
+      # and any marina wifi it is bridged to. Signal K runs on this host, so
+      # loopback is all the plugin needs; use a shared Docker network to
+      # reach it from another container.
+      - "127.0.0.1:11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
-#      - /etc/nv_tegra_release:/etc/nv_tegra_release
     environment:
       - OLLAMA_DEBUG=1
-#      - JETSON_JETPACK=6
-#      - CUDA_VISIBLE_DEVICES=0
+      # Keep the model loaded between operator questions. Harmless on CPU and
+      # a large latency win on any accelerated host.
+      - OLLAMA_KEEP_ALIVE=30m
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
     deploy:
       resources:
         limits:
           cpus: '4.0'
-          memory: 16G
+          # The Jetson files use 7G; this file is the "any host" one, and a
+          # limit above the host's RAM never engages - Ollama simply grows
+          # until the kernel OOM-killer picks a victim, usually Signal K.
+          memory: 6G
         reservations:
           memory: 2G
-#          devices:
-#            - driver: nvidia
-#              count: all
-#              capabilities: [gpu]
     entrypoint: /bin/sh
-    command: -c "ollama serve & sleep 5 && ollama pull gemma4:e2b && wait"
-
-
+    # Poll until the server accepts requests instead of sleeping a fixed
+    # interval: a slower Jetson start-up made `ollama pull` fail, which took
+    # the shell down through the && chain and restart-looped the container.
+    # A failed pull is also non-fatal now — cached models still serve.
+    command: -c "ollama serve & srv=$$!; trap 'kill -TERM $$srv 2>/dev/null' TERM INT; tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; n=0; until ollama list 2>/dev/null | grep -q . || [ $$n -ge 3 ]; do n=$$((n+1)); ollama pull gemma4:e2b && break; echo "model pull attempt $$n failed; retrying"; sleep $$((n*10)); done; (ollama list 2>/dev/null | grep -q . || echo 'no model available; serving nothing until one is pulled'); wait $$srv"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 120s

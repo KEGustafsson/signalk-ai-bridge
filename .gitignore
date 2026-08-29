@@ -6,3 +6,8 @@ npm-debug.log*
 .npm-cache/
 .__mf__temp/
 *.tgz
+
+# Local inference data created by the docker-compose files
+ollama_data/
+trtllm_models/
+trtllm_engines/
