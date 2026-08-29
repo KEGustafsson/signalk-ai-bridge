@@ -489,7 +489,14 @@ describe('review follow-ups', () => {
   });
 
   it('still says nothing for a backend that only looks local', async () => {
-    for (const baseUrl of ['http://127notanip:8000', 'http://12.7.0.1:8000', 'http://orin:8000']) {
+    // `127.example.com` is the one that matters: a prefix test on "127." calls
+    // it loopback, but it is an ordinary DNS name that can point anywhere.
+    for (const baseUrl of [
+      'http://127.example.com:8000',
+      'http://127notanip:8000',
+      'http://12.7.0.1:8000',
+      'http://orin:8000'
+    ]) {
       const report = await trtReport(xavierBoard, { baseUrl });
       assert.deepEqual(report.jetson.warnings, [], `${baseUrl} is not this host`);
     }
