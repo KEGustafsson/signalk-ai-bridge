@@ -13,7 +13,7 @@
 #   model    = the model id reported by GET /v1/models
 #
 # UNVERIFIED ON HARDWARE. This deployment has not been run on a Jetson. The
-# Ollama path (docker-compose.jetson.yml / .xavier.yml) is the supported one;
+# Ollama path (docker-compose.nano-super.yml / .xavier.yml) is the supported one;
 # treat this file and scripts/build-trtllm-engine.sh as a starting point.
 #
 # The tag is pinned deliberately. There is no `latest` tag in this repository -

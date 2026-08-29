@@ -7,9 +7,14 @@
 # plugin's GPU tuning matters more here, not less: the same 8 GB budget with
 # less bandwidth to make up for a CPU spill.
 #
-# Xavier is supported up to JetPack 5.x (L4T 35.x, Ubuntu 20.04). JetPack 6
-# dropped Xavier, which is why this file exists separately from
-# docker-compose.jetson.yml — that one declares JETSON_JETPACK=6.
+# Xavier is supported up to JetPack 5.x (L4T 35.x). JetPack 6 dropped Xavier,
+# which is why this file exists separately from docker-compose.nano-super.yml —
+# that one declares JETSON_JETPACK=6.
+#
+# The board this file is written for runs a headless Yocto/meta-tegra image
+# rather than the JetPack Ubuntu desktop. That is not cosmetic: it is what
+# leaves ~6 GB of the 8 GB free for Ollama instead of ~3, and therefore what
+# decides which model this file can pull. See the MODEL comment below.
 #
 # TensorRT-LLM is NOT available on this board. It requires compute capability
 # 8.0 or newer and Xavier is 7.2, so docker-compose.tensorrt.yml and
@@ -26,10 +31,20 @@
 # `docker logs ollama | grep -i runner`.
 #
 # Requirements on the host:
-#   - JetPack 5.1.x with nvidia-container-toolkit installed
+#   - An L4T 35.x userspace with nvidia-container-runtime available to Docker.
+#     On a JetPack image that is `apt-get install nvidia-container-toolkit`; on
+#     meta-tegra it is whatever the image already builds in.
+#   - /etc/nv_tegra_release present, since the mount below is one of the two
+#     ways Ollama picks the cuda_jetpack5 runner. meta-tegra normally generates
+#     it; if it is missing, Docker silently creates a directory at that path in
+#     the container and only JETSON_JETPACK=5 is left to select the runner —
+#     which is why both are set. Check with `docker logs ollama | grep -i runner`.
 #   - `sudo nvpmodel -m <id> && sudo jetson_clocks` for the top power mode; the
 #     plugin's GPU Acceleration card names the id (Xavier NX has no MAXN mode,
-#     so the highest wattage/core count wins — usually MODE_20W_6CORE).
+#     so the highest wattage/core count wins — usually MODE_20W_6CORE). A Yocto
+#     image may ship neither tool nor /etc/nvpmodel.conf; the telemetry treats
+#     those files as absent rather than failing, so the card simply omits the
+#     power-mode row there.
 #     Worth knowing why that one: on a Xavier NX every mode caps the GPU at the
 #     same 1109 MHz and gates the same TPC, so the mode does not buy GPU clock.
 #     What the three 20 W modes alone buy is EMC at 1866 MHz instead of 1600,
@@ -130,21 +145,38 @@ services:
         # different model - anyone upgrading from an earlier compose file - kept
         # that one and never fetched the configured one. `ollama show` answers
         # the exact question with an exit status, so neither trap applies.
-        MODEL=llama3.2:3b
+        MODEL=gemma4:e2b-it-qat
 
         have_model() {
           ollama show "$$MODEL" >/dev/null 2>&1
         }
 
-        # A smaller model than the Orin file pulls, and deliberately so. An
-        # 8 GB Xavier NX shares that memory with the OS and whatever else the
-        # boat runs, which in practice leaves Ollama around 3 GB. gemma4:e2b is
-        # 6.4 GiB resident - measured here at 3.4% on the GPU and 96.6% on the
-        # Carmel cores, nearly eight minutes for a two-token answer. No context
-        # window is small enough to fix that, because it is the weights that do
-        # not fit. llama3.2:3b is 1.9 GiB and stays GPU-resident with headroom
-        # to spare. Set SIGNALK_AI_BRIDGE_MODEL/the plugin's model field to
-        # match whatever you pull here.
+        # The same model the Orin file pulls, and it fits here for a reason
+        # worth stating: this board runs a headless Yocto/meta-tegra image, not
+        # the JetPack desktop. Idle RAM is a few hundred MB rather than the
+        # 2.5-3 GB a GNOME session costs, so roughly 6 GB of the 8 GB is free
+        # for Ollama after Signal K - room for 4.3 GB of weights, the KV cache,
+        # and the 512 MB reserved above, with about a gigabyte spare.
+        #
+        # Only the plain gemma4:e2b tag is out of reach. That one is 7.2 GB and
+        # was measured here at 6.4 GiB resident, 3.4% on the GPU and 96.6% on
+        # the Carmel cores, nearly eight minutes for a two-token answer. No
+        # context window is small enough to fix that: it is the weights that do
+        # not fit. Pull the -it-qat build, never the bare tag.
+        #
+        # Expect roughly 55-65% of the Orin Nano Super's tokens per second on
+        # the same model - about 14-16 against its 25. That is the LPDDR4x
+        # bandwidth, not the model choice, and it is the whole difference
+        # between these two files' hardware.
+        #
+        # If this board is ever reflashed to a JetPack desktop image, that 6 GB
+        # becomes about 3 and this tag stops fitting. The fallback then is
+        # qwen3.5:2b-q4_K_M (1.9 GB), and qwen3.5:0.8b (1.0 GB) below it.
+        #
+        # Quantization format matters as much as size on Volta. sm_72 has no
+        # bf16 and no FP4 hardware, so the -bf16 and -nvfp4 tags in the same
+        # libraries are a larger download for a slower path. Q4_K_M and QAT q4_0
+        # GGUF are the formats this GPU actually executes.
         #
         # A failed pull is non-fatal - any model already cached still serves.
         n=0

@@ -41,7 +41,7 @@ With this plugin you can:
 - a running Signal K server
 - this plugin installed in Signal K
 - a running Ollama server
-- a locally available Ollama model, for example `gemma4:e2b`
+- a locally available Ollama model, for example `gemma4:e2b-it-qat`
 
 ## Quick Start
 
@@ -59,7 +59,7 @@ If you do not already have Ollama running, you can use one of the included compo
 | File | Use it for |
 | --- | --- |
 | [`docker-compose.gemma.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.gemma.yml) | Any host. Portable, no GPU requested, so inference runs on the CPU. |
-| [`docker-compose.jetson.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.jetson.yml) | NVIDIA Jetson Orin (JetPack 6). Ollama with the NVIDIA container runtime, flash attention and a quantized KV cache. |
+| [`docker-compose.nano-super.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.nano-super.yml) | NVIDIA Jetson Orin Nano Super (JetPack 6). Ollama with the NVIDIA container runtime, flash attention and a quantized KV cache. |
 | [`docker-compose.xavier.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.xavier.yml) | NVIDIA Jetson Xavier NX (JetPack 5). Same, adjusted for the older JetPack. |
 | [`docker-compose.tensorrt.yml`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docker-compose.tensorrt.yml) | NVIDIA TensorRT-LLM served over the OpenAI API, for engines compiled ahead of time for the local GPU. |
 
@@ -69,7 +69,11 @@ Start one with:
 docker compose -f docker-compose.gemma.yml up -d
 ```
 
-The Ollama compose setups already pull `gemma4:e2b` during startup, so you do not need to run a separate `ollama pull` command.
+The Ollama compose setups pull a model during startup, so you do not need to run a
+separate `ollama pull` command. Which one depends on how much memory the board has
+left for it: `gemma4:e2b-it-qat` on any host with room for 4.3 GB of weights, and
+`qwen3.5:2b-q4_K_M` on an 8 GB Xavier NX, which does not have that room. See
+[Choosing a model](#choosing-a-model).
 
 If Signal K runs on the host, the default Ollama URL `http://localhost:11434` is usually correct.
 
@@ -87,7 +91,9 @@ differs per board is the deployment file and what the telemetry can read.
 | Compute capability | 8.7 (Ampere) | 7.2 (Volta) |
 | Memory | 8 GB LPDDR5, 102 GB/s | 8 GB LPDDR4x, 59.7 GB/s |
 | JetPack | 6 (L4T 36.x) | 5.1.x (L4T 35.x) — JetPack 6 dropped Xavier |
-| Compose file | `docker-compose.jetson.yml` | `docker-compose.xavier.yml` |
+| Host image | JetPack | headless Yocto/meta-tegra |
+| Compose file | `docker-compose.nano-super.yml` | `docker-compose.xavier.yml` |
+| Recommended model | `gemma4:e2b-it-qat` (4.3 GB) | `gemma4:e2b-it-qat` (4.3 GB) |
 | Top power mode | `MAXN_SUPER` | highest wattage, usually `MODE_20W_6CORE` |
 | TensorRT-LLM | supported | **not supported** — needs compute capability 8.0+ |
 
@@ -124,6 +130,52 @@ KV cache from `num_ctx` up front; when the reservation no longer fits, it quietl
 moves layers back to the six Cortex-A78AE cores. The model still answers — just
 at a few tokens per second instead of tens, with nothing in the response saying
 why.
+
+### Choosing a model
+
+The tuner can shrink the KV cache. It cannot shrink the weights, so the model
+tag is the one decision it cannot make for you, and the wrong tag costs more
+than every setting below it put together.
+
+| Board | Pull this | Weights |
+| --- | --- | --- |
+| Orin Nano Super, 8 GB | `gemma4:e2b-it-qat` | 4.3 GB |
+| Xavier NX, 8 GB, headless | `gemma4:e2b-it-qat` | 4.3 GB |
+| Xavier NX, 8 GB, desktop image | `qwen3.5:2b-q4_K_M` | 1.9 GB |
+
+**Quantization-aware training is why the Orin can run Gemma 4 at all.** The
+plain `gemma4:e2b` tag is 7.2 GB even though it is labelled `q4_K_M`. Four-bit
+weights for E2B's 5B total parameters would come to roughly 3 GB, so more than
+half of that tag is not quantized transformer weights at all: it is the parts
+four-bit quantization does not touch — the per-layer embedding tables that make
+those 5B parameters 2.3B *effective*, and the vision and audio encoders E2B
+carries for modalities this plugin never sends. 7.2 GB does not fit in 8 GB of
+unified memory alongside the OS and Signal K, whatever `numCtx` is set to. The `-it-qat` build is 4.3 GB of the same model, trained expecting int4
+rather than rounded down afterwards, and leaves room for the KV cache.
+
+**What the host image costs you matters more than the board.** Both Jetsons
+have the same 8 GB; what differs is how much is already spent when Ollama
+starts. A headless Yocto/meta-tegra Xavier idles at a few hundred MB and leaves
+around 6 GB free, so the 4.3 GB QAT build fits there as comfortably as on the
+Orin — just at 55-65% of its tokens per second, roughly 14-16 against 25. A
+JetPack desktop session costs 2.5-3 GB instead, which drops the ceiling to about
+2.5 GB of weights and makes `qwen3.5:2b-q4_K_M` (1.9 GB) the right answer. Check
+which case you are in with `free -h` before trusting the table above.
+
+**Format matters as much as size on Volta.** Xavier's sm_72 has no bf16 and no
+FP4 hardware, so the `-bf16` and `-nvfp4` tags in the same libraries are a larger
+download for a slower path. Q4_K_M and QAT q4_0 GGUF are what this GPU executes.
+
+**A long advertised context is not a reason to raise `numCtx`.** These models
+advertise 128K and 256K windows; the KV cache reserved for them is exactly what
+evicts layers to the CPU. Gemma 4 suffers less than most because its 4:1
+local-to-global attention ratio keeps the cache nearly flat as the window grows,
+but 8192 is still the right starting point on 8 GB.
+
+Whatever you pull, the plugin's `model` field has to name it. The default is the
+untagged `gemma4`, which resolves to any installed Gemma 4 tag, so both compose
+files here need no configuration. Pulling outside that family — the
+`qwen3.5:2b-q4_K_M` fallback above, say — means setting the field explicitly.
 
 ### Maximizing GPU use
 
@@ -207,7 +259,7 @@ re-tuning reloads the model, which is not something to do unprompted mid-voyage.
 
 Roughly in order of what they buy on an Orin Nano Super:
 
-1. `docker-compose.jetson.yml` — NVIDIA runtime, flash attention and a q8_0 KV
+1. `docker-compose.nano-super.yml` — NVIDIA runtime, flash attention and a q8_0 KV
    cache (`q4_0` halves the cache again if you need a larger context, at some
    cost to answer quality). Without the runtime there is no GPU at all; the other two are what make
    full residency achievable. If you run your own Ollama, the panel estimates
@@ -237,7 +289,7 @@ sudo nvpmodel -m <id>   # the panel names the id for your board
 sudo jetson_clocks
 
 # Orin (JetPack 6)
-docker compose -f docker-compose.jetson.yml up -d
+docker compose -f docker-compose.nano-super.yml up -d
 # Xavier NX (JetPack 5)
 docker compose -f docker-compose.xavier.yml up -d
 ```
@@ -317,7 +369,7 @@ These are the settings most users will care about:
   Ollama server URL. Default: `http://localhost:11434`
 
 - `model`
-  Ollama model name. Example: `gemma4:e2b`
+  Ollama model name. Example: `gemma4:e2b-it-qat`
 
 - `aiDataPaths`
   The Signal K self paths that will be sent to AI. You can use exact paths like `navigation.position` and simple wildcards like `navigation.*`
@@ -373,9 +425,11 @@ These are the settings most users will care about:
 
 The plugin defaults to the Gemma 4 family.
 
-If you configure `gemma4` but Ollama only has a tagged variant installed, such as `gemma4:e2b`, the plugin will try to resolve and use the installed tagged model automatically.
+If you configure `gemma4` but Ollama only has a tagged variant installed, such as `gemma4:e2b-it-qat`, the plugin will try to resolve and use the installed tagged model automatically. The default is deliberately untagged for this reason: it follows whichever Gemma 4 tag the board actually has.
 
-If you already know the exact installed model name, configuring that exact name is the clearest option.
+That resolution only works within a family. A board running `qwen3.5:2b-q4_K_M` shares no family name with `gemma4`, so its model field has to be set explicitly.
+
+If you already know the exact installed model name, configuring that exact name is the clearest option — and on an 8 GB board it is also the only way to be sure which tag you got, since `gemma4:e2b` and `gemma4:e2b-it-qat` differ by 2.9 GB of weights. See [Choosing a model](#choosing-a-model).
 
 ## Development
 
@@ -453,7 +507,7 @@ still fails with `Unexpected token 'v', "vite v6.4."...`.)
 ### What to check once it is running
 
 1. Start the inference server for your board:
-   - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.jetson.yml up -d`
+   - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.nano-super.yml up -d`
    - Xavier NX (JetPack 5): `docker compose -f docker-compose.xavier.yml up -d`
 2. Raise the power mode: `sudo nvpmodel -m <id> && sudo jetson_clocks`. The panel
    names the id when the current mode is capped. On Orin that is `MAXN_SUPER`;

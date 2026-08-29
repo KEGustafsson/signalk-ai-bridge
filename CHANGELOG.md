@@ -7,6 +7,44 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`docker-compose.jetson.yml` is now `docker-compose.nano-super.yml`.** Every
+  file here is for a Jetson; only one of them is for an Orin Nano Super, and the
+  name now says which board it configures rather than which vendor makes it.
+- **The Orin Nano Super pulls `gemma4:e2b-it-qat` instead of `gemma4:e2b`.** The
+  plain tag is 7.2 GB even though it is labelled `q4_K_M`, and the gap is the
+  whole point: four-bit weights for E2B's 5B total parameters come to roughly
+  3 GB, so more than half of that tag is not quantized transformer weights at
+  all. It is what four-bit quantization does not touch — the per-layer embedding
+  tables that make those 5B parameters 2.3B *effective*, and the vision and
+  audio encoders E2B carries for modalities this plugin never sends. That cannot
+  be GPU-resident in 8 GB
+  of unified memory shared with the OS and Signal K, so the tuner spent three
+  reloads shrinking `num_ctx` and still finished partly on the Cortex-A78AE
+  cores: it is the weights that do not fit, and no context window is small
+  enough to fix that. The quantization-aware-trained build is 4.3 GB of the same
+  model at close to the same answer quality. `docker-compose.gemma.yml` pulls it
+  too — on the CPU path it is less memory to stream per generated token.
+- **The Xavier NX pulls `gemma4:e2b-it-qat` too, instead of `llama3.2:3b`.** The
+  same model as the Orin, because the host image decides this and not the board:
+  this Xavier runs a headless Yocto/meta-tegra userspace, which idles at a few
+  hundred MB rather than the 2.5-3 GB a JetPack desktop session costs, and so
+  leaves around 6 GB of the 8 GB free for Ollama. Expect 55-65% of the Orin's
+  tokens per second on it — roughly 14-16 against 25 — which is the LPDDR4x
+  bandwidth and not the model. Only the bare 7.2 GB `gemma4:e2b` tag remains out
+  of reach here, and `qwen3.5:2b-q4_K_M` (1.9 GB) is recorded as the fallback if
+  the board is ever reflashed to a desktop image. The compose file now also
+  records why the `-bf16` and `-nvfp4` tags in the same libraries are a trap on
+  this GPU: Volta has neither in hardware, so they are a larger download for a
+  slower path — and what the Yocto host means for the `/etc/nv_tegra_release`
+  mount and the missing `nvpmodel` the GPU Acceleration card looks for.
+- **The README explains how to pick a tag.** A new *Choosing a model* section
+  gives the per-board recommendation, the memory budget it comes from — host
+  image included, since that is what moves the number — and the reason a 128K
+  advertised context is not an invitation to raise `numCtx`. The board
+  comparison table gained recommended-model and host-image rows.
+
 ### Added
 
 - **The board's GPU generation is now read and reported.** L4T has no
@@ -42,8 +80,8 @@ this project uses [semantic versioning](https://semver.org/).
   the script reaching `sh -c` was truncated mid-`until` loop and died with
   `Syntax error: end of file unexpected (expecting "done")`, over and over,
   before `ollama serve` ever ran. `docker-compose.xavier.yml`,
-  `docker-compose.jetson.yml` and `docker-compose.gemma.yml` carried the same
-  line. All three now pass the script as a YAML block scalar in list form, so
+  `docker-compose.nano-super.yml` and `docker-compose.gemma.yml` carried the
+  same line. All three now pass the script as a YAML block scalar in list form, so
   Compose does no splitting and the quoting is the shell's business alone.
 - **The compose files pulled the wrong model, or none at all.** The "do we
   already have a model?" guard was `ollama list | grep -q .`, which got the
