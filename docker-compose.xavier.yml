@@ -14,12 +14,27 @@
 # TensorRT-LLM is NOT available on this board. It requires compute capability
 # 8.0 or newer and Xavier is 7.2, so docker-compose.tensorrt.yml and
 # scripts/build-trtllm-engine.sh do not apply. Ollama is the whole story here.
+# The plugin's GPU Acceleration card says so directly if the backend is set to
+# tensorrt-llm on a pre-Ampere board, rather than reporting it unreachable.
+#
+# That is not a compromise: Ollama does run native CUDA on this GPU. The arm64
+# `ollama/ollama` image ships a `cuda_jetpack5` runner built with
+# CMAKE_CUDA_ARCHITECTURES "72;87", so there is real sm_72 SASS for Volta - not
+# PTX JIT, and not a CPU fallback. Ollama selects it two ways, and both are set
+# below: JETSON_JETPACK=5, and the /etc/nv_tegra_release mount, from which it
+# reads L4T R35 and maps that to jetpack5. Confirm which runner it chose with
+# `docker logs ollama | grep -i runner`.
 #
 # Requirements on the host:
 #   - JetPack 5.1.x with nvidia-container-toolkit installed
 #   - `sudo nvpmodel -m <id> && sudo jetson_clocks` for the top power mode; the
 #     plugin's GPU Acceleration card names the id (Xavier NX has no MAXN mode,
 #     so the highest wattage/core count wins — usually MODE_20W_6CORE).
+#     Worth knowing why that one: on a Xavier NX every mode caps the GPU at the
+#     same 1109 MHz and gates the same TPC, so the mode does not buy GPU clock.
+#     What the three 20 W modes alone buy is EMC at 1866 MHz instead of 1600,
+#     and token generation is memory-bandwidth bound — so the memory controller
+#     is the reason to be in a 20 W mode, not the shader clock.
 #
 # Start it with:
 #   docker compose -f docker-compose.xavier.yml up -d
@@ -49,10 +64,16 @@ services:
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      # Volta supports flash attention in llama.cpp, but without the Ampere
-      # tensor-core path it buys less than it does on Orin. It is still required
-      # for KV cache quantization below, which is the bigger win on 8 GB.
-      # Drop both if you see instability on this generation.
+      # Volta is the generation that introduced tensor cores, and llama.cpp uses
+      # them here: ggml-cuda/fattn.cu carries an explicit `cc == VOLTA` branch
+      # that dispatches to the MMA f16 kernels with Volta-specific tuning, and
+      # falls back to the tile kernel only for small batches. This is not a
+      # degraded path, it is a tuned one.
+      #
+      # Leave it on. Ollama only honours OLLAMA_KV_CACHE_TYPE when flash
+      # attention is enabled, so turning it off silently doubles the KV cache
+      # back to f16 — on the board with the least memory bandwidth to spare,
+      # that is what pushes layers back onto the Carmel cores.
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_KV_CACHE_TYPE=q8_0
       - OLLAMA_KEEP_ALIVE=30m
@@ -77,11 +98,67 @@ services:
           # form. Add the device request back only if you have also run
           # `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
     entrypoint: /bin/sh
-    # Poll until the server accepts requests instead of sleeping a fixed
-    # interval: a slower start-up made `ollama pull` fail, which took the shell
-    # down through the && chain and restart-looped the container. A failed pull
-    # is also non-fatal — cached models still serve.
-    command: -c "ollama serve & srv=$$!; trap 'kill -TERM $$srv 2>/dev/null' TERM INT; tries=0; until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do tries=$$((tries+1)); sleep 1; done; n=0; until ollama list 2>/dev/null | grep -q . || [ $$n -ge 3 ]; do n=$$((n+1)); ollama pull gemma4:e2b && break; echo "model pull attempt $$n failed; retrying"; sleep $$((n*10)); done; (ollama list 2>/dev/null | grep -q . || echo 'no model available; serving nothing until one is pulled'); wait $$srv"
+    # List form with a block scalar, NOT a single quoted string. Compose
+    # word-splits a string command shell-style, and the inner double quotes of
+    # `echo "model pull attempt $n failed"` closed the outer argument: the
+    # script handed to `sh -c` was truncated mid-`until` loop, so every start
+    # died with `Syntax error: end of file unexpected (expecting "done")` and
+    # the container restart-looped. Nothing is split here, so the quoting inside
+    # is the shell's business alone.
+    #
+    # `$$` is Compose's escape for a literal `$`.
+    command:
+      - "-c"
+      - |
+        ollama serve &
+        srv=$$!
+        trap 'kill -TERM $$srv 2>/dev/null' TERM INT
+
+        # Poll until the server accepts requests rather than sleeping a fixed
+        # interval: a slower start-up made `ollama pull` fail, which took the
+        # shell down through the && chain and restart-looped the container.
+        tries=0
+        until ollama list >/dev/null 2>&1 || [ $$tries -ge 60 ]; do
+          tries=$$((tries + 1))
+          sleep 1
+        done
+
+        # Ask about THIS model, not "is any model installed". Two ways to get
+        # that wrong, both of which shipped: `ollama list | grep -q .` matched
+        # the NAME/ID/SIZE/MODIFIED header on an empty store, so the pull never
+        # ran at all; and testing for any entry meant a box that already held a
+        # different model - anyone upgrading from an earlier compose file - kept
+        # that one and never fetched the configured one. `ollama show` answers
+        # the exact question with an exit status, so neither trap applies.
+        MODEL=llama3.2:3b
+
+        have_model() {
+          ollama show "$$MODEL" >/dev/null 2>&1
+        }
+
+        # A smaller model than the Orin file pulls, and deliberately so. An
+        # 8 GB Xavier NX shares that memory with the OS and whatever else the
+        # boat runs, which in practice leaves Ollama around 3 GB. gemma4:e2b is
+        # 6.4 GiB resident - measured here at 3.4% on the GPU and 96.6% on the
+        # Carmel cores, nearly eight minutes for a two-token answer. No context
+        # window is small enough to fix that, because it is the weights that do
+        # not fit. llama3.2:3b is 1.9 GiB and stays GPU-resident with headroom
+        # to spare. Set SIGNALK_AI_BRIDGE_MODEL/the plugin's model field to
+        # match whatever you pull here.
+        #
+        # A failed pull is non-fatal - any model already cached still serves.
+        n=0
+        until have_model || [ $$n -ge 3 ]; do
+          n=$$((n + 1))
+          ollama pull "$$MODEL" && break
+          echo "model pull attempt $$n failed; retrying"
+          sleep $$((n * 10))
+        done
+
+        have_model ||
+          echo "$$MODEL is not installed; point the plugin at a model that is"
+
+        wait $$srv
     healthcheck:
       test: ["CMD-SHELL", "ollama ps > /dev/null 2>&1 || exit 1"]
       interval: 30s

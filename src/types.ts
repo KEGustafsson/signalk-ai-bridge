@@ -50,10 +50,19 @@ export interface JetsonPowerMode {
   readonly maximumName?: string;
 }
 
+/** Read from the Tegra GPU's device-tree node name; there is no nvidia-smi on L4T. */
+export interface JetsonGpu {
+  /** Device-tree node, e.g. `gv11b` (Xavier) or `ga10b` (Orin). */
+  readonly node: string;
+  readonly architecture: string;
+  readonly computeCapability: number;
+}
+
 export interface JetsonTelemetry {
   readonly present: boolean;
   readonly model?: string;
   readonly l4tVersion?: string;
+  readonly gpu?: JetsonGpu;
   readonly powerMode?: JetsonPowerMode;
   readonly gpuLoadPercent?: number;
   readonly gpuClockHz?: number;

@@ -410,16 +410,33 @@ module.exports = function createPlugin(app, dependencies = {}) {
     // answering: without this the generation ran to completion for a closed
     // socket, holding the single Ollama slot the Jetson compose files configure
     // and queueing the next question behind it.
+    //
+    // Watch the RESPONSE, not the request. On Node 16 and newer an
+    // IncomingMessage emits 'close' as soon as the request body has been fully
+    // received - not when the client goes away - so listening on `req` aborted
+    // every stream the instant readJsonBody() drained the body, before
+    // generation had even started. writeLine() then suppressed every token and
+    // the final result, and the catch block stayed quiet because the signal
+    // said "the client left", so the panel got an empty stream and reported
+    // "Bridge stream ended without a result" for every single question.
+    // Measured on the Node 26 that signalk-server ships: 'close' fires during
+    // the body read, 100% of the time.
+    //
+    // `res` is the object whose lifetime actually tracks the client, and
+    // writableFinished separates a client that hung up mid-answer from a
+    // response we completed ourselves.
     const abortController = new AbortController();
-    const onClientGone = () => abortController.abort();
-    if (req && typeof req.on === 'function') {
-      req.on('close', onClientGone);
-      req.on('aborted', onClientGone);
+    const onClientGone = () => {
+      if (!res.writableFinished) {
+        abortController.abort();
+      }
+    };
+    if (res && typeof res.on === 'function') {
+      res.on('close', onClientGone);
     }
     const releaseClientListeners = () => {
-      if (req && typeof req.off === 'function') {
-        req.off('close', onClientGone);
-        req.off('aborted', onClientGone);
+      if (res && typeof res.off === 'function') {
+        res.off('close', onClientGone);
       }
     };
 

@@ -411,6 +411,105 @@ describe('review follow-ups', () => {
     assert.equal(report.state, 'gpu');
     assert.equal(report.jetson.present, false);
   });
+
+  // Selecting tensorrt-llm on a Xavier previously surfaced only "TensorRT-LLM is
+  // unreachable", which reads as "the container has not started yet" rather than
+  // "no such container can ever start on this GPU".
+  const xavierBoard = {
+    present: true,
+    model: 'NVIDIA Jetson Xavier NX Developer Kit',
+    gpu: { node: 'gv11b', architecture: 'Volta', computeCapability: 7.2 },
+    warnings: []
+  };
+  const orinBoard = {
+    present: true,
+    model: 'NVIDIA Jetson Orin Nano Super Developer Kit',
+    gpu: { node: 'ga10b', architecture: 'Ampere', computeCapability: 8.7 },
+    warnings: []
+  };
+
+  function trtReport(board, overrides = {}) {
+    return getAccelerationReport(
+      normalizeAiConfig({ backend: 'tensorrt-llm', baseUrl: 'http://localhost:8000', ...overrides }),
+      {
+        fetchImpl: async () => jsonResponse({ data: [] }),
+        jetsonTelemetry: async () => board
+      }
+    );
+  }
+
+  it('says TensorRT-LLM cannot run on a Volta board rather than reporting it unreachable', async () => {
+    const report = await trtReport(xavierBoard);
+
+    assert.match(report.jetson.warnings.join(' '), /compute capability 7\.2/);
+    assert.match(report.jetson.warnings.join(' '), /back to "ollama"/);
+  });
+
+  it('stays quiet about TensorRT-LLM on an Ampere board, where it is supported', async () => {
+    const report = await trtReport(orinBoard);
+
+    assert.deepEqual(report.jetson.warnings, []);
+  });
+
+  it('keeps the existing board warnings alongside the backend one', async () => {
+    const report = await trtReport({
+      ...xavierBoard,
+      warnings: ['GPU temperature is 91 C; sustained throughput will be thermally limited.']
+    });
+
+    assert.equal(report.jetson.warnings.length, 2);
+    assert.match(report.jetson.warnings[0], /91 C/);
+  });
+
+  // A Xavier running Signal K may legitimately ask an Orin elsewhere on the boat
+  // for TensorRT-LLM answers; the local GPU says nothing about that one.
+  it('does not blame the local GPU for a backend on another host', async () => {
+    const report = await trtReport(xavierBoard, { baseUrl: 'http://orin.local:8000' });
+
+    assert.deepEqual(report.jetson.warnings, []);
+  });
+
+  // 127.0.0.1 is not the only loopback address. Anything in 127.0.0.0/8 reaches
+  // this same host, and so does a bracketed IPv6 literal.
+  it('treats the whole loopback range as this host', async () => {
+    for (const baseUrl of [
+      'http://127.0.0.1:8000',
+      'http://127.0.0.2:8000',
+      'http://127.1.2.3:8000',
+      'http://localhost:8000',
+      'http://[::1]:8000'
+    ]) {
+      const report = await trtReport(xavierBoard, { baseUrl });
+      assert.match(
+        report.jetson.warnings.join(' '),
+        /compute capability 7\.2/,
+        `${baseUrl} should be recognised as local`
+      );
+    }
+  });
+
+  it('still says nothing for a backend that only looks local', async () => {
+    // `127.example.com` is the one that matters: a prefix test on "127." calls
+    // it loopback, but it is an ordinary DNS name that can point anywhere.
+    for (const baseUrl of [
+      'http://127.example.com:8000',
+      'http://127notanip:8000',
+      'http://12.7.0.1:8000',
+      'http://orin:8000'
+    ]) {
+      const report = await trtReport(xavierBoard, { baseUrl });
+      assert.deepEqual(report.jetson.warnings, [], `${baseUrl} is not this host`);
+    }
+  });
+
+  it('says nothing on the ollama backend, which does run on Volta', async () => {
+    const report = await getAccelerationReport(normalizeAiConfig({ model: 'gemma4:e2b' }), {
+      fetchImpl: async () => jsonResponse({ models: [] }),
+      jetsonTelemetry: async () => xavierBoard
+    });
+
+    assert.deepEqual(report.jetson.warnings, []);
+  });
 });
 
 describe('unit conversion', () => {
