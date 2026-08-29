@@ -5,6 +5,75 @@ All notable changes to `signalk-ai-bridge` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **The board's GPU generation is now read and reported.** L4T has no
+  nvidia-smi, so the Tegra GPU's device-tree node name (`gv11b` on Xavier,
+  `ga10b` on Orin, `gp10b`/`gm20b` on TX2/TX1) is the only thing on the board
+  that identifies the GPU. The telemetry maps it to an architecture and compute
+  capability, and the GPU Acceleration card shows both.
+- **Selecting TensorRT-LLM on a board that cannot run it now says so.**
+  TensorRT-LLM compiles for SM 8.0 and newer; on a Xavier (7.2) it is not a
+  setting to tune but an impossibility. The panel previously showed only
+  "TensorRT-LLM is unreachable", which reads as "the container has not started
+  yet" rather than "no such container can start here". The warning is raised
+  only for a loopback backend — a Xavier may legitimately ask an Orin elsewhere
+  on the boat for answers, and the local GPU says nothing about that one.
+
+### Fixed
+
+- **Every streamed question failed with "Bridge stream ended without a
+  result".** The stream route treated `req.on('close')` as a client-disconnect
+  signal, but on Node 16 and newer an `IncomingMessage` emits `close` as soon as
+  the request body has been fully received — not when the client goes away. On
+  the Node 26 that signalk-server ships, that fires while `readJsonBody()` is
+  still draining the body, so the abort signal was already set before generation
+  started: `writeLine()` suppressed every token *and* the final result, and the
+  catch block stayed silent because the signal claimed the client had left. The
+  panel therefore received a completely empty stream for every question. The
+  route now watches the response instead — `res` is the object whose lifetime
+  tracks the client, and `writableFinished` separates a client that hung up from
+  a response the server finished itself. Verified both ways on Node 26.
+- **Every Ollama compose file restart-looped and never started.** Compose
+  word-splits a string `command` shell-style, so the inner double quotes of
+  `echo "model pull attempt $n failed; retrying"` closed the outer argument:
+  the script reaching `sh -c` was truncated mid-`until` loop and died with
+  `Syntax error: end of file unexpected (expecting "done")`, over and over,
+  before `ollama serve` ever ran. `docker-compose.xavier.yml`,
+  `docker-compose.jetson.yml` and `docker-compose.gemma.yml` carried the same
+  line. All three now pass the script as a YAML block scalar in list form, so
+  Compose does no splitting and the quoting is the shell's business alone.
+- **The compose files never pulled a model, and never said so.** The
+  "do we already have a model?" guard was `ollama list | grep -q .`, but
+  `ollama list` prints a `NAME ID SIZE MODIFIED` header even on an empty store,
+  so the guard was unconditionally true: the pull loop was skipped entirely and
+  the `no model available` fallback never printed either. It was invisible until
+  the syntax error above was fixed, because the script had never run at all. The
+  header is now dropped before the test.
+- **`docker-compose.xavier.yml` talked operators out of flash attention.** The
+  comment claimed Volta lacked "the Ampere tensor-core path", but Volta is the
+  generation that introduced tensor cores and llama.cpp's `ggml-cuda/fattn.cu`
+  carries an explicit `cc == VOLTA` branch that uses them. Worse, the invitation
+  to "drop both if you see instability" would also have disabled
+  `OLLAMA_KV_CACHE_TYPE=q8_0`, since Ollama honours a quantized cache only with
+  flash attention on — doubling the KV cache on the board with the least
+  bandwidth to absorb a CPU spill.
+
+### Documented
+
+- **Why Ollama is the maximal path on Xavier NX, not a fallback.** The arm64
+  `ollama/ollama` image ships a `cuda_jetpack5` runner built with
+  `CMAKE_CUDA_ARCHITECTURES` `72;87`, so Volta gets native sm_72 SASS rather
+  than JIT-compiled PTX or a CPU runner, and the compose file selects it both
+  via `JETSON_JETPACK=5` and via the `/etc/nv_tegra_release` mount.
+- **Why a 20 W power mode matters on Xavier NX.** Every mode on that board caps
+  the GPU at the same 1109 MHz and gates the same TPC, so the mode buys no
+  shader clock at all. The three 20 W modes alone raise EMC from 1600 to
+  1866 MHz, and token generation is memory-bandwidth bound — the memory
+  controller is the entire reason to prefer them.
+
 ## [0.2.0-beta.1]
 
 ### Fixed

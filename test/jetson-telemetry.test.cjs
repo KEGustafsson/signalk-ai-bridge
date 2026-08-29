@@ -2,7 +2,11 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { findMaximumPowerMode, readJetsonTelemetry } = require('../lib/jetson-telemetry.cjs');
+const {
+  findMaximumPowerMode,
+  matchGpuArchitecture,
+  readJetsonTelemetry
+} = require('../lib/jetson-telemetry.cjs');
 
 const NVPMODEL_CONF = [
   '< PM_CONFIG DEFAULT=2 >',
@@ -80,7 +84,7 @@ const XAVIER_NVPMODEL_CONF = [
   '< POWER_MODEL ID=8 NAME=MODE_20W_6CORE >'
 ].join('\n');
 
-function xavierFixture(overrides = {}) {
+function xavierFixture(overrides = {}, directoryOverrides = {}) {
   const files = {
     '/etc/nv_tegra_release': '# R35 (release), REVISION: 4.1, GCID: 33958178, BOARD: t186ref',
     '/proc/device-tree/model': 'NVIDIA Jetson Xavier NX Developer Kit',
@@ -97,7 +101,8 @@ function xavierFixture(overrides = {}) {
     '/sys/devices': ['17000000.gv11b', 'platform'],
     '/sys/devices/platform': [],
     '/sys/class/devfreq': ['17000000.gv11b'],
-    '/sys/devices/virtual/thermal': ['thermal_zone0', 'thermal_zone2']
+    '/sys/devices/virtual/thermal': ['thermal_zone0', 'thermal_zone2'],
+    ...directoryOverrides
   };
   return { fsImpl: createFakeFs(files, directories) };
 }
@@ -274,5 +279,44 @@ describe('Jetson Xavier NX', () => {
   it('reports no maximum when modes carry neither MAXN nor a wattage', () => {
     assert.equal(findMaximumPowerMode(new Map([[0, 'CUSTOM'], [1, 'OTHER']])), undefined);
     assert.equal(findMaximumPowerMode(new Map()), undefined);
+  });
+});
+
+describe('Tegra GPU generation', () => {
+  it('reads compute capability from the Xavier device-tree node', async () => {
+    const result = await readJetsonTelemetry(xavierFixture());
+
+    assert.deepEqual(result.gpu, { node: 'gv11b', architecture: 'Volta', computeCapability: 7.2 });
+  });
+
+  it('reads compute capability from the Orin device-tree node', async () => {
+    const result = await readJetsonTelemetry(jetsonFixture());
+
+    assert.deepEqual(result.gpu, { node: 'ga10b', architecture: 'Ampere', computeCapability: 8.7 });
+  });
+
+  it('matches the node however L4T decorates it', () => {
+    assert.equal(matchGpuArchitecture('17000000.gv11b').architecture, 'Volta');
+    assert.equal(matchGpuArchitecture('gv11b').computeCapability, 7.2);
+    assert.equal(matchGpuArchitecture('ga10b.0').architecture, 'Ampere');
+    assert.equal(matchGpuArchitecture('gp10b').computeCapability, 6.2);
+  });
+
+  // The generic alias some releases expose alongside the real node carries no
+  // generation, and inventing one would be worse than reporting nothing.
+  it('declines to name a generation for the bare gpu alias', () => {
+    assert.equal(matchGpuArchitecture('gpu'), undefined);
+    assert.equal(matchGpuArchitecture('gpu.0'), undefined);
+    assert.equal(matchGpuArchitecture('3610000.usb'), undefined);
+  });
+
+  // /sys/devices carries both `gpu.0` and the generation-named node on a real
+  // Xavier, and readdir order between them is not something to depend on.
+  it('finds the generation even when the bare alias is listed first', async () => {
+    const result = await readJetsonTelemetry(
+      xavierFixture({}, { '/sys/devices': ['gpu.0', '17000000.gv11b', 'platform'] })
+    );
+
+    assert.equal(result.gpu.architecture, 'Volta');
   });
 });

@@ -520,6 +520,12 @@ export default function AppPanel(props: AppPanelProps) {
                 <br />
                 Board: {jetson.model ?? 'Jetson'}
                 {jetson.l4tVersion ? ` (L4T ${jetson.l4tVersion})` : ''}
+                {jetson.gpu ? (
+                  <>
+                    <br />
+                    GPU: {jetson.gpu.architecture}, compute capability {jetson.gpu.computeCapability}
+                  </>
+                ) : null}
                 {jetson.powerMode ? (
                   <>
                     <br />

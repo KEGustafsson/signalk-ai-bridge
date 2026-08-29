@@ -100,6 +100,20 @@ Xavier NX has two NVDLA engines that Orin Nano lacks, but llama.cpp cannot use
 DLA — it is a fixed-function accelerator for convolutional networks — so it buys
 nothing for this workload.
 
+Losing TensorRT-LLM does not mean losing CUDA on Xavier. The arm64 `ollama/ollama`
+image ships a `cuda_jetpack5` runner compiled with `CMAKE_CUDA_ARCHITECTURES`
+`72;87`, so Volta gets native sm_72 machine code rather than JIT-compiled PTX or a
+CPU fallback, and `docker-compose.xavier.yml` selects that runner both by
+`JETSON_JETPACK=5` and by the `/etc/nv_tegra_release` mount. Flash attention is a
+tuned path there too, not a degraded one: llama.cpp's `ggml-cuda/fattn.cu` has an
+explicit Volta branch that uses the tensor cores this generation introduced. Ollama
+with the settings in that file is the fastest thing this board can run — there is
+nothing further to move it to.
+
+If you point `backend` at `tensorrt-llm` on a pre-Ampere board anyway, the GPU
+Acceleration card now says the GPU is too old rather than reporting the server
+unreachable, which is the difference between "not started yet" and "cannot start".
+
 The plugin does no inference itself — all of the compute happens in Ollama or
 TensorRT-LLM. What the plugin controls is the shape of the request, and on a
 Jetson that shape decides whether the model runs on the GPU at all.
@@ -232,6 +246,12 @@ The power-mode id differs per board: Orin exposes `MAXN`/`MAXN_SUPER`, while
 Xavier NX names its modes by budget and core count with no MAXN at all. The
 plugin ranks them either way and names the id to switch to.
 
+On a Xavier NX the ranking lands on a 20 W mode, and it is worth knowing that
+the reason is memory rather than shaders: every mode on that board caps the GPU
+at the same 1109 MHz and gates the same TPC, so the mode buys no GPU clock at
+all. What the 20 W modes alone raise is EMC, from 1600 to 1866 MHz — and since
+token generation is memory-bandwidth bound, that is the whole of the difference.
+
 ### Suggested plugin settings on 8 GB
 
 | Setting | Value | Why |
@@ -240,7 +260,7 @@ plugin ranks them either way and names the id to switch to.
 | `maxTokens` | `2048` | Output budget only; it no longer resizes the KV cache. |
 | `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
 | `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
-| `numBatch` | `512` | Prompt-eval throughput on the Ampere GPU. |
+| `numBatch` | `512` | Prompt-eval throughput on the Jetson iGPU, Ampere or Volta. |
 | `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
 | `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
 
