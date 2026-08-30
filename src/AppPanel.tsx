@@ -2,7 +2,7 @@ import React from 'react';
 import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import type { AcceleratorStatus, AiChatMessage, AiHistoryStatus } from './types.js';
+import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -264,6 +264,11 @@ export default function AppPanel(props: AppPanelProps) {
   const [streamingAnswer, setStreamingAnswer] = React.useState<string>('');
   const [aiRequestLog, setAiRequestLog] = React.useState<AiRequestLogEntry[]>([]);
   const [backendStatus, setBackendStatus] = React.useState<BackendStatus | null>(null);
+  // The status route is polled once, on mount, and each poll costs the
+  // inference server three round trips plus a full Jetson sysfs scan - so the
+  // history card is refreshed from the answer itself, which carries the very
+  // context the bridge just recorded, rather than by asking the server again.
+  const [lastHistoryFetch, setLastHistoryFetch] = React.useState<AiHistoryFetchStatus | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -358,6 +363,16 @@ export default function AppPanel(props: AppPanelProps) {
       // trusted as the final rendering.
       setToolResult(result);
       setStreamingAnswer('');
+      if (result.type === 'ask-vessel-ai-result' && result.context?.history) {
+        const history = result.context.history;
+        setLastHistoryFetch({
+          at: new Date().toISOString(),
+          ok: typeof history.message !== 'string',
+          requestedPaths: history.requestedPaths,
+          seriesCount: history.series ? Object.keys(history.series).length : 0,
+          message: history.message
+        });
+      }
       setAiRequestLog((previous) =>
         previous.map((entry) =>
           entry.id === requestId
@@ -379,6 +394,10 @@ export default function AppPanel(props: AppPanelProps) {
       setStreamingAnswer('');
     }
   }, [props, aiInput]);
+
+  // Whichever is newer: this session's own answers, else whatever the server
+  // had recorded when the panel loaded.
+  const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
 
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),
@@ -536,12 +555,12 @@ export default function AppPanel(props: AppPanelProps) {
                   No history paths are configured, and no exact live paths were available to reuse.
                 </p>
               )}
-              {backendStatus.history.lastFetch ? (
-                <p style={{ margin: '0.5rem 0 0 0', color: backendStatus.history.lastFetch.ok ? '#166534' : '#b45309' }}>
-                  Last read {formatTimestamp(backendStatus.history.lastFetch.at)}:{' '}
-                  {backendStatus.history.lastFetch.ok
-                    ? `${backendStatus.history.lastFetch.seriesCount ?? 0} series returned`
-                    : backendStatus.history.lastFetch.message}
+              {historyFetch ? (
+                <p style={{ margin: '0.5rem 0 0 0', color: historyFetch.ok ? '#166534' : '#b45309' }}>
+                  Last read {formatTimestamp(historyFetch.at)}:{' '}
+                  {historyFetch.ok
+                    ? `${historyFetch.seriesCount ?? 0} series returned`
+                    : historyFetch.message}
                 </p>
               ) : (
                 <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>

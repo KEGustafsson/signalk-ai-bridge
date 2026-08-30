@@ -35,9 +35,12 @@ this project uses [semantic versioning](https://semver.org/).
   On a server with security enabled the read runs with the credentials of the
   operator who asked: their cookie or bearer token is forwarded from the request
   that reached the plugin, so the plugin cannot read history a user could not
-  read themselves. `/ai/status` and the panel's new `History Context` card
-  report the window, the paths and how the last read went, without making a
-  history request of their own on every poll.
+  read themselves. That forwarding stops at this machine — a cookie minted here
+  is replayable against another Signal K instance, so a `historyServerUrl`
+  pointing anywhere but loopback is never sent the operator's session and takes
+  a credential of its own in `historyApiKey` instead. `/ai/status` and the
+  panel's new `History Context` card report the window, the paths and how the
+  last read went, without making a history request of their own on every poll.
 
 - **The board's GPU generation is now read and reported.** L4T has no
   nvidia-smi, so the Tegra GPU's device-tree node name (`gv11b` on Xavier,

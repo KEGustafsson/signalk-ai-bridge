@@ -518,7 +518,12 @@ answer "is it rising?" at a fraction of the tokens.
   proportional to what fits in the prompt
 
 - `historySamples`
-  Points per path that reach the model. Default 12
+  Points per path that reach the model. Default 12, minimum 2 — a single point
+  is not a series, and the live snapshot already carries the newest value
+
+- `historyApiKey`
+  Bearer token for a history server that is not this machine. Leave blank for
+  local history, or for an unauthenticated remote one
 
 - `historyProvider`
   A specific provider plugin id. Blank uses the server's default provider
@@ -540,6 +545,12 @@ their cookie or bearer token arrives on the request that reached the plugin and
 is forwarded to the history read. History is therefore read with exactly the
 access the operator already has — the plugin cannot read history a user could not
 read themselves.
+
+That holds for **this** server only. A cookie minted here is replayable against
+another Signal K instance, so the operator's session is forwarded to a loopback
+target and nowhere else. A `historyServerUrl` pointing at another host is never
+sent it; give that host a credential issued for itself in `historyApiKey`, or
+leave it blank if it needs none.
 
 ## Notes About Model Names
 

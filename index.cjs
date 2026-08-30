@@ -34,6 +34,7 @@ const {
   DEFAULT_HISTORY_TIMEOUT_MS,
   MAX_HISTORY_PATHS,
   MAX_HISTORY_SAMPLES,
+  MIN_HISTORY_SAMPLES,
   authHeadersFromRequest,
   normalizeHistoryConfig,
   resolveHistoryBaseUrl,
@@ -255,10 +256,17 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'History samples per path',
         description:
-          'How many points per path reach the model. Points are picked evenly across the window and always include its first and last, with min, max, first, last and average sent alongside.',
+          'How many points per path reach the model. Points are picked evenly across the window and always include its first and last, with min, max, first, last and average sent alongside. Two is the minimum: a single point is not a series, and the live snapshot already carries the newest value.',
         default: DEFAULT_HISTORY_SAMPLES,
-        minimum: 1,
+        minimum: MIN_HISTORY_SAMPLES,
         maximum: MAX_HISTORY_SAMPLES
+      },
+      historyApiKey: {
+        type: 'string',
+        title: 'History API key (remote servers only)',
+        description:
+          'Bearer token for a history server that is not this machine. The operator\'s own session is forwarded only to this server on localhost — a cookie minted here is replayable against another Signal K instance, so a remote host is never sent it and needs a credential issued for itself. Leave blank for local history, or for an unauthenticated remote one.',
+        default: ''
       },
       historyProvider: {
         type: 'string',
@@ -634,6 +642,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
   // token is on screen in cleartext and echoed back on every config page load.
   const uiSchema = () => ({
     apiKey: { 'ui:widget': 'password' },
+    historyApiKey: { 'ui:widget': 'password' },
     systemPrompt: { 'ui:widget': 'textarea' }
   });
 

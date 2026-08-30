@@ -111,8 +111,12 @@ describe('history configuration', () => {
     assert.equal(config.historyDurationSeconds, 3600);
   });
 
-  it('clamps the sample budget', () => {
-    assert.equal(normalizeHistoryConfig({ historySamples: 0 }, {}).historySamples, 1);
+  // A single point is not a series, and the live snapshot in the same prompt
+  // already carries the newest value - so the floor is two, which is also what
+  // "the samples always include both ends of the window" needs to be true.
+  it('clamps the sample budget, and keeps room for both ends', () => {
+    assert.equal(normalizeHistoryConfig({ historySamples: 0 }, {}).historySamples, 2);
+    assert.equal(normalizeHistoryConfig({ historySamples: 1 }, {}).historySamples, 2);
     assert.equal(normalizeHistoryConfig({ historySamples: 100000 }, {}).historySamples, 200);
   });
 
@@ -237,6 +241,44 @@ describe('history payload summary', () => {
     assert.equal(summary.max, 99);
   });
 
+  // Min and max of the wind over the same window is a legitimate pair to ask
+  // for, and keying on the path alone let the second column overwrite the first.
+  it('keeps two aggregations of the same path apart', () => {
+    const { series } = summarizeHistoryPayload(
+      {
+        values: [
+          { path: 'environment.wind.speedApparent', method: 'min' },
+          { path: 'environment.wind.speedApparent', method: 'max' }
+        ],
+        data: [['2026-04-11T09:00:00.000Z', 3, 9], ['2026-04-11T09:05:00.000Z', 4, 11]]
+      },
+      ['environment.wind.speedApparent:min', 'environment.wind.speedApparent:max'],
+      12
+    );
+
+    assert.deepEqual(Object.keys(series), [
+      'environment.wind.speedApparent:min',
+      'environment.wind.speedApparent:max'
+    ]);
+    assert.equal(series['environment.wind.speedApparent:min'].last, 4);
+    assert.equal(series['environment.wind.speedApparent:max'].last, 11);
+  });
+
+  // The ordinary case keeps the plain path, so a series is keyed exactly like
+  // its live counterpart in the same prompt.
+  it('keys an unambiguous series by its path alone', () => {
+    const { series } = summarizeHistoryPayload(
+      {
+        values: [{ path: 'environment.wind.speedApparent', method: 'average' }],
+        data: [['2026-04-11T09:00:00.000Z', 7]]
+      },
+      ['environment.wind.speedApparent:average'],
+      12
+    );
+
+    assert.deepEqual(Object.keys(series), ['environment.wind.speedApparent']);
+  });
+
   it('reads a provider that omits the values header', () => {
     const { series } = summarizeHistoryPayload(
       { data: [['2026-04-11T09:00:00.000Z', 12.6]] },
@@ -282,6 +324,69 @@ describe('collectHistoryContext', () => {
       'navigation.speedOverGround:average',
       'navigation.courseOverGroundTrue'
     ]);
+  });
+
+  // A cookie minted by this server is replayable against another Signal K
+  // instance, so it must never leave this machine.
+  it('sends the operator session to a loopback server only', async () => {
+    const calls = [];
+    await collectHistoryContext(
+      {},
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'https://other-boat.example'
+      }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token', authorization: 'Bearer local-session' } }
+    );
+
+    assert.match(calls[0].url, /^https:\/\/other-boat\.example\//);
+    assert.equal(calls[0].init.headers.cookie, undefined);
+    assert.equal(calls[0].init.headers.authorization, undefined);
+  });
+
+  it('gives a remote history server its own credential', async () => {
+    const calls = [];
+    await collectHistoryContext(
+      {},
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'https://other-boat.example',
+        historyApiKey: 'remote-token'
+      }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token' } }
+    );
+
+    assert.equal(calls[0].init.headers.authorization, 'Bearer remote-token');
+    assert.equal(calls[0].init.headers.cookie, undefined);
+  });
+
+  it('says what a remote server that rejects the request needs', async () => {
+    const history = await collectHistoryContext(
+      {},
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'https://other-boat.example'
+      }),
+      { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) }
+    );
+
+    assert.match(history.message, /History API key/i);
+  });
+
+  // The only header field a provider controls the length of, and it is counted
+  // against the prompt budget it shares with the series it labels.
+  it('caps the context label a provider returns', async () => {
+    const history = await collectHistoryContext(
+      {},
+      historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+      {
+        fetchImpl: historyFetch({ ...SAMPLE_PAYLOAD, context: 'vessels.'.padEnd(5000, 'x') })
+      }
+    );
+
+    assert.ok(history.context.length <= 120, `context was ${history.context.length} characters`);
   });
 
   it('explains a missing history provider instead of failing the question', async () => {
