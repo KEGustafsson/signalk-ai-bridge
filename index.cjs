@@ -27,7 +27,7 @@ const {
   retuneOffload,
   warmUpModel
 } = require('./lib/ai-service.cjs');
-const { createBridgeService } = require('./lib/bridge-service.cjs');
+const { createBridgeService, normalizeAiDataPaths } = require('./lib/bridge-service.cjs');
 const {
   DEFAULT_HISTORY_DURATION,
   DEFAULT_HISTORY_SAMPLES,
@@ -286,7 +286,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'History request timeout (ms)',
         description:
-          'How long to wait for the History API before answering from live data alone. Kept short on purpose: this runs before the model sees the question.',
+          'How long to wait for the History API before answering from live data alone. Kept short on purpose: this runs before the model sees the question. Set to 0 to disable the timeout.',
         default: DEFAULT_HISTORY_TIMEOUT_MS,
         minimum: 0,
         maximum: 120000
@@ -308,7 +308,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
     return {
       enabled: config.historyEnabled,
-      paths: resolveHistoryPaths(config),
+      // The same fallback the bridge applies: an unset `aiDataPaths` means the
+      // default live paths, and those are what an empty history list reuses.
+      paths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) }),
       durationSeconds: window.durationSeconds,
       resolutionSeconds: window.resolutionSeconds,
       samples: config.historySamples,

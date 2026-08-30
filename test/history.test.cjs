@@ -264,6 +264,29 @@ describe('history payload summary', () => {
     assert.equal(series['environment.wind.speedApparent:max'].last, 11);
   });
 
+  // A bare request next to an aggregated one of the same path is keyed apart
+  // too - and the bare one must not ALSO be reported unavailable, or the model
+  // is told the path is missing right next to that path's own series.
+  it('does not report a bare duplicate of an aggregated path as unavailable', () => {
+    const { series, unavailablePaths } = summarizeHistoryPayload(
+      {
+        values: [
+          { path: 'environment.wind.speedApparent' },
+          { path: 'environment.wind.speedApparent', method: 'max' }
+        ],
+        data: [['2026-04-11T09:00:00.000Z', 5, 8], ['2026-04-11T09:05:00.000Z', 6, 9]]
+      },
+      ['environment.wind.speedApparent', 'environment.wind.speedApparent:max'],
+      12
+    );
+
+    assert.deepEqual(unavailablePaths, []);
+    assert.deepEqual(Object.keys(series), [
+      'environment.wind.speedApparent#1',
+      'environment.wind.speedApparent:max'
+    ]);
+  });
+
   // The ordinary case keeps the plain path, so a series is keyed exactly like
   // its live counterpart in the same prompt.
   it('keys an unambiguous series by its path alone', () => {
@@ -277,6 +300,48 @@ describe('history payload summary', () => {
     );
 
     assert.deepEqual(Object.keys(series), ['environment.wind.speedApparent']);
+  });
+
+  // The arithmetic mean of headings 350 and 10 is 180 - due south, for a
+  // vessel pointing a few degrees either side of north. When a direction
+  // series crosses the wrap, its mean is taken on the circle and the min/max,
+  // which would describe the arc the vessel never pointed through, are
+  // withheld rather than reported wrong.
+  it('averages a north-crossing heading on the circle, not the number line', () => {
+    const d = (deg) => (deg * Math.PI) / 180;
+    const { series } = summarizeHistoryPayload(
+      {
+        values: [{ path: 'navigation.headingTrue' }],
+        data: [['t1', d(350)], ['t2', d(10)], ['t3', d(355)], ['t4', d(5)]]
+      },
+      ['navigation.headingTrue'],
+      12
+    );
+
+    const heading = series['navigation.headingTrue'];
+    assert.equal(heading.average, 0);
+    assert.equal(heading.min, undefined);
+    assert.equal(heading.max, undefined);
+    assert.equal(heading.first, 350);
+    assert.equal(heading.last, 5);
+  });
+
+  it('keeps ordinary statistics for a heading that stays inside half the circle', () => {
+    const d = (deg) => (deg * Math.PI) / 180;
+    const { series } = summarizeHistoryPayload(
+      {
+        values: [{ path: 'navigation.headingTrue' }],
+        data: [['t1', d(88)], ['t2', d(92)], ['t3', d(90)]]
+      },
+      ['navigation.headingTrue'],
+      12
+    );
+
+    const heading = series['navigation.headingTrue'];
+    assert.deepEqual(
+      { min: heading.min, max: heading.max, average: heading.average },
+      { min: 88, max: 92, average: 90 }
+    );
   });
 
   it('reads a provider that omits the values header', () => {
@@ -618,6 +683,46 @@ describe('the plugin with history enabled', () => {
     assert.equal(statusResponse.body.history.serverUrl, 'http://localhost:3000');
     assert.equal(statusResponse.body.history.lastFetch.ok, true);
     assert.equal(statusResponse.body.history.lastFetch.seriesCount, 2);
+
+    plugin.stop();
+  });
+
+  // "Leave history paths empty to reuse the live paths" has to hold on a
+  // default install too: with `aiDataPaths` unset the snapshot falls back to
+  // the built-in list, and history reuses that same fallback rather than
+  // requesting nothing and claiming no live paths existed.
+  it('reuses the default live paths when neither path list is configured', async () => {
+    const calls = [];
+    const plugin = createPlugin(createHost(), {
+      fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }),
+      ollamaClient: {
+        chat: async () => ({
+          model: 'gemma4:e2b',
+          created_at: '2026-04-11T10:00:00.000Z',
+          message: { role: 'assistant', content: 'Holding course and speed.' },
+          done: true
+        })
+      }
+    });
+
+    plugin.start({ warmupOnStart: false, historyEnabled: true });
+
+    const routes = registerRoutes(plugin);
+    const response = createResponseRecorder();
+    await routes['POST /bridge/execute'](
+      { body: { toolId: 'ask-vessel-ai', prompt: 'How has our speed been?' } },
+      response
+    );
+
+    const historyCall = calls.find((call) => call.url.includes('/signalk/v2/api/history'));
+    assert.ok(historyCall, 'expected a History API request');
+    const requested = new URL(historyCall.url).searchParams.get('paths').split(',');
+    assert.ok(requested.includes('navigation.speedOverGround'));
+    assert.equal(response.body.context.history.message, undefined);
+
+    const statusResponse = createResponseRecorder();
+    await routes['GET /ai/status']({}, statusResponse);
+    assert.ok(statusResponse.body.history.paths.includes('navigation.speedOverGround'));
 
     plugin.stop();
   });
