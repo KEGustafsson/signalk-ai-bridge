@@ -121,6 +121,15 @@ describe('GPU offload tuning', () => {
   it('recognises the allocation failures worth retrying', () => {
     assert.equal(isOutOfMemoryError(new Error('CUDA error: out of memory')), true);
     assert.equal(isOutOfMemoryError(new Error('failed to allocate CUDA0 buffer')), true);
+    // cublasCreate fails with NOT_INITIALIZED when the runtime cannot allocate
+    // its workspace - on unified-memory Jetsons this IS the OOM signature.
+    assert.equal(
+      isOutOfMemoryError(
+        new Error('an error was encountered while running the model: CUDA error: CUBLAS_STATUS_NOT_INITIALIZED')
+      ),
+      true
+    );
+    assert.equal(isOutOfMemoryError(new Error('CUBLAS_STATUS_ALLOC_FAILED')), true);
     assert.equal(isOutOfMemoryError(new Error('model not found')), false);
   });
 });
