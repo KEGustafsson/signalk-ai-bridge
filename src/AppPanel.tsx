@@ -66,6 +66,21 @@ function getStatusEndpoint(props: AppPanelProps): string {
   return '/plugins/signalk-ai-bridge/ai/status';
 }
 
+function getHistoryPathsEndpoint(props: AppPanelProps): string {
+  if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
+    return props.bridgeEndpoint.replace(/\/bridge\/execute$/, '/history/paths');
+  }
+
+  return '/plugins/signalk-ai-bridge/history/paths';
+}
+
+interface HistoryPathsState {
+  readonly status: 'idle' | 'loading' | 'loaded';
+  readonly paths: readonly string[];
+  readonly windowSeconds?: number;
+  readonly message?: string;
+}
+
 function formatTimestamp(value: string | undefined): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     return 'Unavailable';
@@ -269,6 +284,12 @@ export default function AppPanel(props: AppPanelProps) {
   // history card is refreshed from the answer itself, which carries the very
   // context the bridge just recorded, rather than by asking the server again.
   const [lastHistoryFetch, setLastHistoryFetch] = React.useState<AiHistoryFetchStatus | null>(null);
+  // The picker is fetch-on-demand: the listing is a provider database query,
+  // so it runs when the operator asks for it, never on a render pass.
+  const [historyPathsState, setHistoryPathsState] = React.useState<HistoryPathsState>({ status: 'idle', paths: [] });
+  const [pickedPaths, setPickedPaths] = React.useState<Record<string, boolean>>({});
+  const [pathFilter, setPathFilter] = React.useState('');
+  const [copyNotice, setCopyNotice] = React.useState<string | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -398,6 +419,63 @@ export default function AppPanel(props: AppPanelProps) {
   // Whichever is newer: this session's own answers, else whatever the server
   // had recorded when the panel loaded.
   const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
+
+  const onBrowseHistoryPaths = React.useCallback(async () => {
+    const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') {
+      return;
+    }
+
+    setHistoryPathsState({ status: 'loading', paths: [] });
+    setCopyNotice(null);
+    try {
+      const response = await fetchImpl(getHistoryPathsEndpoint(props), {
+        method: 'GET',
+        credentials: 'include'
+      });
+      const payload = (await response.json()) as {
+        paths?: readonly string[];
+        windowSeconds?: number;
+        message?: string;
+        error?: { message?: string };
+      };
+      const paths = Array.isArray(payload.paths) ? payload.paths : [];
+      setHistoryPathsState({
+        status: 'loaded',
+        paths,
+        windowSeconds: payload.windowSeconds,
+        message: payload.message ?? payload.error?.message
+      });
+      // Pre-tick what the plugin already uses, so the selection starts from
+      // the current configuration instead of from nothing.
+      const configured = new Set(
+        (backendStatus?.history?.paths ?? []).map((path) => path.split(':')[0])
+      );
+      setPickedPaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
+    } catch (error) {
+      setHistoryPathsState({
+        status: 'loaded',
+        paths: [],
+        message: error instanceof Error ? error.message : 'Could not reach the plugin.'
+      });
+    }
+  }, [props, backendStatus]);
+
+  const onCopyPickedPaths = React.useCallback(async () => {
+    const picked = historyPathsState.paths.filter((path) => pickedPaths[path]);
+    if (picked.length === 0) {
+      setCopyNotice('Nothing selected.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(picked.join('\n'));
+      setCopyNotice(
+        `Copied ${picked.length} path${picked.length === 1 ? '' : 's'} - paste them into the plugin settings under "History paths".`
+      );
+    } catch {
+      setCopyNotice('Clipboard unavailable - select and copy the list manually.');
+    }
+  }, [historyPathsState, pickedPaths]);
 
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),
@@ -575,6 +653,102 @@ export default function AppPanel(props: AppPanelProps) {
               signalk-parquet.
             </p>
           )}
+
+          <div style={{ marginTop: '0.75rem' }}>
+            <button
+              type="button"
+              onClick={onBrowseHistoryPaths}
+              disabled={historyPathsState.status === 'loading'}
+              style={{
+                padding: '0.35rem 0.75rem',
+                borderRadius: '6px',
+                border: '1px solid #94a3b8',
+                background: '#ffffff',
+                color: '#0f172a',
+                cursor: historyPathsState.status === 'loading' ? 'wait' : 'pointer'
+              }}
+            >
+              {historyPathsState.status === 'loading' ? 'Reading History API…' : 'Browse recorded paths'}
+            </button>
+            {historyPathsState.status === 'loaded' ? (
+              historyPathsState.message ? (
+                <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{historyPathsState.message}</p>
+              ) : historyPathsState.paths.length === 0 ? (
+                <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>
+                  The History API answered, but no paths have recorded data in the last{' '}
+                  {formatSeconds(historyPathsState.windowSeconds)}.
+                </p>
+              ) : (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <p style={{ margin: 0, color: '#475569' }}>
+                    {historyPathsState.paths.length} path{historyPathsState.paths.length === 1 ? '' : 's'} with recorded
+                    data in the last {formatSeconds(historyPathsState.windowSeconds)}. Tick the ones the model should
+                    see, copy them, and paste into the plugin settings under <code>History paths</code>.
+                  </p>
+                  {historyPathsState.paths.length > 8 ? (
+                    <input
+                      type="text"
+                      value={pathFilter}
+                      onChange={(event: { target: { value: string } }) => setPathFilter(event.target.value)}
+                      placeholder="Filter paths…"
+                      style={{
+                        marginTop: '0.5rem',
+                        padding: '0.3rem 0.5rem',
+                        borderRadius: '6px',
+                        border: '1px solid #cbd5e1',
+                        width: '100%',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  ) : null}
+                  <div
+                    style={{
+                      marginTop: '0.5rem',
+                      maxHeight: '14rem',
+                      overflowY: 'auto',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: '6px',
+                      padding: '0.35rem 0.5rem',
+                      background: '#ffffff'
+                    }}
+                  >
+                    {historyPathsState.paths
+                      .filter((path) => path.toLowerCase().includes(pathFilter.trim().toLowerCase()))
+                      .map((path) => (
+                        <label key={path} style={{ display: 'block', padding: '0.1rem 0', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(pickedPaths[path])}
+                            onChange={(event: { target: { checked: boolean } }) =>
+                              setPickedPaths((previous) => ({ ...previous, [path]: event.target.checked }))
+                            }
+                            style={{ marginRight: '0.4rem' }}
+                          />
+                          <code>{path}</code>
+                        </label>
+                      ))}
+                  </div>
+                  <p style={{ margin: '0.5rem 0 0 0' }}>
+                    <button
+                      type="button"
+                      onClick={onCopyPickedPaths}
+                      style={{
+                        padding: '0.35rem 0.75rem',
+                        borderRadius: '6px',
+                        border: '1px solid #94a3b8',
+                        background: '#ffffff',
+                        color: '#0f172a',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Copy {historyPathsState.paths.filter((path) => pickedPaths[path]).length} selected
+                    </button>
+                    {copyNotice ? <span style={{ marginLeft: '0.5rem', color: '#475569' }}>{copyNotice}</span> : null}
+                  </p>
+                </div>
+              )
+            ) : null}
+          </div>
         </section>
 
         <section

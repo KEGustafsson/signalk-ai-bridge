@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const createPlugin = require('../index.cjs');
 const {
   authHeadersFromRequest,
+  listHistoryPaths,
   buildValuesUrl,
   collectHistoryContext,
   normalizeHistoryConfig,
@@ -605,6 +606,60 @@ describe('collectHistoryContext', () => {
   });
 });
 
+// The panel's picker: what has the provider actually recorded?
+describe('listHistoryPaths', () => {
+  it('lists, trims, dedupes and sorts the recorded paths', async () => {
+    const calls = [];
+    const result = await listHistoryPaths(
+      { config: { settings: { port: 3000 } } },
+      historyConfig({ historyDuration: 'PT15M' }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          calls.push({ url: String(url), init });
+          return jsonResponse(['b.path', ' a.path ', 'a.path', 42, '']);
+        }
+      },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token' } }
+    );
+
+    // Discovery wants breadth: at least a day, whatever the question window is.
+    assert.equal(calls[0].url, 'http://localhost:3000/signalk/v2/api/history/paths?duration=86400');
+    assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
+    assert.deepEqual(result.paths, ['a.path', 'b.path']);
+    assert.equal(result.windowSeconds, 86400);
+    assert.equal(result.message, undefined);
+  });
+
+  it('keeps the operator session off a remote server here too', async () => {
+    const calls = [];
+    await listHistoryPaths(
+      {},
+      historyConfig({ historyServerUrl: 'https://other-boat.example', historyApiKey: 'remote-token' }),
+      { fetchImpl: async (url, init = {}) => (calls.push({ url: String(url), init }), jsonResponse([])) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token' } }
+    );
+
+    assert.equal(calls[0].init.headers.cookie, undefined);
+    assert.equal(calls[0].init.headers.authorization, 'Bearer remote-token');
+  });
+
+  it('explains a missing provider instead of throwing', async () => {
+    const result = await listHistoryPaths({}, historyConfig(), {
+      fetchImpl: async () => new Response('Not found', { status: 404 })
+    });
+
+    assert.deepEqual(result.paths, []);
+    assert.match(result.message, /no history provider/i);
+
+    const down = await listHistoryPaths({}, historyConfig(), {
+      fetchImpl: async () => {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:3000');
+      }
+    });
+    assert.match(down.message, /unreachable/i);
+  });
+});
+
 describe('history in the prompt', () => {
   it('explains the sample shape only when there is history', () => {
     const config = { systemPrompt: 'system' };
@@ -881,6 +936,34 @@ describe('the plugin with history enabled', () => {
       /Client closed the connection/
     );
     assert.equal(chatCalled, false);
+  });
+
+  it('serves the recorded-path listing to the panel picker', async () => {
+    const plugin = createPlugin(createHost(), {
+      fetchImpl: async (url) => {
+        if (String(url).includes('/signalk/v2/api/history/paths')) {
+          return jsonResponse(['environment.wind.speedApparent', 'navigation.speedOverGround']);
+        }
+        return jsonResponse({ models: [] });
+      }
+    });
+
+    // Not gated on historyEnabled: browsing what a provider records is how an
+    // operator decides whether enabling history is worth it.
+    plugin.start({ warmupOnStart: false });
+
+    const routes = registerRoutes(plugin);
+    const response = createResponseRecorder();
+    await routes['GET /history/paths']({ headers: { cookie: 'JAUTHENTICATION=token' } }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body.paths, ['environment.wind.speedApparent', 'navigation.speedOverGround']);
+    assert.equal(response.body.windowSeconds, 86400);
+
+    plugin.stop();
+    const stopped = createResponseRecorder();
+    await routes['GET /history/paths']({ headers: {} }, stopped);
+    assert.equal(stopped.statusCode, 503);
   });
 
   it('asks for no history at all when the setting is off', async () => {

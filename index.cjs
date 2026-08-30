@@ -36,6 +36,7 @@ const {
   MAX_HISTORY_SAMPLES,
   MIN_HISTORY_SAMPLES,
   authHeadersFromRequest,
+  listHistoryPaths,
   normalizeHistoryConfig,
   resolveHistoryBaseUrl,
   resolveHistoryPaths,
@@ -481,6 +482,34 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
+   * Paths the History API has recorded, for the panel's picker.
+   *
+   * Deliberately not gated on historyEnabled: browsing what a provider records
+   * is how an operator decides whether enabling history is worth it. Failures
+   * arrive as a message in a 200 body - the picker shows the reason instead of
+   * the card breaking on a status code.
+   */
+  const historyPathsHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      const config = getConfig();
+      const result = await listHistoryPaths(app, config, dependencies, {
+        authHeaders: authHeadersFromRequest(req)
+      });
+      res.status(200).json(result);
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'unknown',
+          message: error instanceof Error ? error.message : 'Unknown history failure.'
+        }
+      });
+    }
+  };
+
+  /**
    * Re-measure the GPU fit and report the result.
    *
    * The start-up tuner never grows its context window back, so this is how an
@@ -723,6 +752,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/bridge/execute', bridgeExecuteHandler);
       router.post('/bridge/stream', bridgeStreamHandler);
       router.post('/ai/retune', retuneHandler);
+      router.get('/history/paths', historyPathsHandler);
       routesRegistered = true;
     },
     stop: () => {

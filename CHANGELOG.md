@@ -45,6 +45,15 @@ this project uses [semantic versioning](https://semver.org/).
   same holds for a provider that is slow, down, or has no data for the window —
   the read is bounded by its own short timeout, separate from the model's.
 
+  The panel's `History Context` card carries a **Browse recorded paths**
+  picker: one press asks the History API which paths actually have recorded
+  data (over at least the last day), lists them with a filter and checkboxes
+  pre-ticked to the current configuration, and copies the selection ready to
+  paste into the `historyPaths` setting — so choosing paths starts from what
+  the provider records instead of from guesswork. The listing goes through
+  the plugin (`GET /history/paths`), so the same endpoint resolution and
+  credential scoping apply as for the reads themselves.
+
   On a server with security enabled the read runs with the credentials of the
   operator who asked: their cookie or bearer token is forwarded from the request
   that reached the plugin, so the plugin cannot read history a user could not

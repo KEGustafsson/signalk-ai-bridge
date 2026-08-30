@@ -396,7 +396,8 @@ In the web UI you will see:
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
 - `AI Path Selection`: which Signal K paths are currently sent to AI
-- `History Context`: the history window, paths, and how the last history read went
+- `History Context`: the history window, paths, how the last history read went,
+  and a **Browse recorded paths** picker listing what the History API has data for
 - `AI Response`: the latest answer from the model
 - `Ask AI History`: previous prompts and results
 
@@ -528,7 +529,11 @@ answer "is it rising?" at a fraction of the tokens.
   an aggregation method, for example `navigation.speedOverGround:average` or
   `environment.wind.speedApparent:max` (`average`, `min`, `max`, `first`, `last`,
   `mid`, `middle_index`, `sma`, `ema`). Leave empty to reuse the exact paths from
-  `aiDataPaths`. At most 12 paths are requested
+  `aiDataPaths`. At most 12 paths are requested. To see what your provider has
+  actually recorded, press **Browse recorded paths** in the panel's History
+  Context card — it lists every path with data in the last day (or your window,
+  if longer), lets you tick the ones the model should see, and copies them
+  ready to paste into this setting
 
 - `historyDuration`
   How far back to look: `PT1H`, `P1D`, `30m`, or a plain number of seconds.
