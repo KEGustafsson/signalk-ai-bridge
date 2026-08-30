@@ -29,14 +29,17 @@ services:
     stop_grace_period: 30s
     runtime: nvidia
     ports:
-      # Published on all interfaces so a Signal K server on another machine
-      # can reach it. Ollama has no authentication - anyone who can reach the
-      # port can run inference, pull models and delete them - and Docker
-      # bypasses the host firewall for published ports, so on a boat that
-      # bridges to marina or other untrusted wifi, scope this to one address:
-      #   - "192.168.1.10:11434:11434"  (this host's LAN address)
-      #   - "127.0.0.1:11434:11434"     (Signal K on this host only)
-      - "11434:11434"
+      # Published on all interfaces by default so a Signal K server on
+      # another machine works out of the box. Ollama has no authentication -
+      # anyone who can reach the port can run inference, pull models and
+      # delete them - and Docker bypasses the host firewall for published
+      # ports, so the bind address is the scoping tool. On a boat that
+      # bridges to marina or other untrusted wifi, narrow it without editing
+      # this file by setting OLLAMA_BIND (in the shell or a .env beside this
+      # file) to this host's LAN address, or to 127.0.0.1 when Signal K runs
+      # on this host only:
+      #   OLLAMA_BIND=192.168.1.10 docker compose -f <this file> up -d
+      - "${OLLAMA_BIND:-0.0.0.0}:11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
       # Lets Ollama identify the board as a Jetson and pick its CUDA runner.

@@ -105,17 +105,19 @@ plugin's reachability probe runs there, not in your browser.
 The compose files publish Ollama on all interfaces so that case works out of the
 box. Be deliberate about what that exposes: Ollama has no authentication — anyone
 who can reach the port can run inference, pull models and delete them — and
-Docker bypasses the host firewall for published ports, so the `ports:` bind is
+Docker bypasses the host firewall for published ports, so the bind address is
 the scoping tool. On a machine that ever bridges to marina or other untrusted
-wifi, narrow it to one address, as the comment beside the line shows:
+wifi, narrow it with `OLLAMA_BIND` — no file edit needed:
 
-```yaml
-    ports:
-      - "192.168.1.10:11434:11434"   # this host's LAN address
-      # or "127.0.0.1:11434:11434" when Signal K runs on this host only
+```bash
+# this host's LAN address, so only that network reaches it
+OLLAMA_BIND=192.168.1.10 docker compose -f docker-compose.xavier.yml up -d
+
+# loopback only, when Signal K runs on this host
+OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d
 ```
 
-then `docker compose -f <file> up -d` to recreate the container.
+Put `OLLAMA_BIND=…` in a `.env` file beside the compose file to make it stick.
 
 ## NVIDIA Jetson
 
