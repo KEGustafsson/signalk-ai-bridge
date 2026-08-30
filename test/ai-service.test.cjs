@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const {
   buildAiMessages,
   normalizeAiConfig,
-  queryAiModel
+  queryAiModel,
+  streamAiModel
 } = require('../lib/ai-service.cjs');
 
 describe('normalizeAiConfig', () => {
@@ -212,5 +213,165 @@ describe('queryAiModel', () => {
       }),
       (error) => error && error.code === 'validation-failed'
     );
+  });
+});
+
+// gemma4:e2b-it-qat - the model the compose files pull - declares Ollama's
+// `thinking` capability. Left on, the model routed its reasoning into
+// `message.thinking` and, with a full vessel context, spent its entire
+// num_predict budget there: `content` came back empty and the operator saw
+// "AI backend returned an empty response" from a backend that was fine.
+describe('thinking models', () => {
+  function tagsResponse(capabilities) {
+    return new Response(
+      JSON.stringify({
+        models: [
+          {
+            name: 'gemma4:e2b-it-qat',
+            details: { family: 'gemma4', families: ['gemma4'] },
+            ...(capabilities ? { capabilities } : {})
+          }
+        ]
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  function chatResponse(message) {
+    return new Response(
+      JSON.stringify({
+        model: 'gemma4:e2b-it-qat',
+        created_at: '2026-04-11T10:00:00.000Z',
+        message,
+        done: true
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  it('disables thinking for a model that declares the capability', async () => {
+    let chatBody;
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat' }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return tagsResponse(['completion', 'tools', 'thinking', 'vision']);
+          }
+          chatBody = JSON.parse(String(init.body));
+          return chatResponse({ role: 'assistant', content: 'Five knots.' });
+        }
+      }
+    );
+
+    assert.equal(chatBody.think, false);
+  });
+
+  // Some models cannot switch reasoning off and reject the parameter, and an
+  // older Ollama reports no capabilities at all - both read as "don't send it".
+  it('sends no think parameter when the model does not declare the capability', async () => {
+    let chatBody;
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat' }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return tagsResponse(undefined);
+          }
+          chatBody = JSON.parse(String(init.body));
+          return chatResponse({ role: 'assistant', content: 'Five knots.' });
+        }
+      }
+    );
+
+    assert.ok(!('think' in chatBody));
+  });
+
+  it('names the remedy when every output token went into reasoning', async () => {
+    await assert.rejects(
+      queryAiModel(
+        { prompt: 'How fast are we going?', context: { selectedData: {} } },
+        normalizeAiConfig({ model: 'gemma4:e2b-it-qat' }),
+        {
+          fetchImpl: async (url) => {
+            if (String(url).endsWith('/api/tags')) {
+              // The server predates capabilities, so think:false was not sent.
+              return tagsResponse(undefined);
+            }
+            return chatResponse({ role: 'assistant', content: '', thinking: 'Let me reason about the vessel...' });
+          }
+        }
+      ),
+      /output budget on reasoning.*Max output tokens/s
+    );
+  });
+
+  // The default configuration is the untagged `gemma4`; the capability lives
+  // on the installed tag the family match resolves it to.
+  it('resolves an untagged model name before checking the capability', async () => {
+    let chatBody;
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat' }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return tagsResponse(['completion', 'thinking']);
+          }
+          chatBody = JSON.parse(String(init.body));
+          return chatResponse({ role: 'assistant', content: 'Five knots.' });
+        }
+      }
+    );
+    assert.equal(chatBody.think, false);
+
+    // And via the family match, the way the shipped default reaches the tag.
+    let untaggedBody;
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4' }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return tagsResponse(['completion', 'thinking']);
+          }
+          untaggedBody = JSON.parse(String(init.body));
+          return chatResponse({ role: 'assistant', content: 'Five knots.' });
+        }
+      }
+    );
+    assert.equal(untaggedBody.think, false);
+  });
+
+  it('disables thinking on the streaming path too', async () => {
+    let chatRequest;
+    await streamAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat' }),
+      {
+        fetchImpl: async (url) => {
+          assert.ok(String(url).endsWith('/api/tags'), `unexpected fetch: ${url}`);
+          return tagsResponse(['completion', 'thinking']);
+        },
+        ollamaClient: {
+          async chat(request) {
+            chatRequest = request;
+            return (async function* generate() {
+              yield {
+                model: 'gemma4:e2b-it-qat',
+                created_at: '2026-04-11T10:00:00.000Z',
+                message: { role: 'assistant', content: 'Five knots.' },
+                done: true
+              };
+            })();
+          }
+        }
+      },
+      () => {}
+    );
+
+    assert.equal(chatRequest.think, false);
   });
 });

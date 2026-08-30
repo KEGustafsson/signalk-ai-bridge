@@ -7,6 +7,19 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [0.2.0-beta.1]
 
+### Fixed
+
+- **Thinking models no longer answer with nothing.** `gemma4:e2b-it-qat` — the
+  model the compose files pull — declares Ollama's `thinking` capability, so it
+  routed its reasoning into a separate field and, with a full vessel context,
+  spent its entire output budget there: the answer came back empty and the
+  panel reported "AI backend returned an empty response" from a backend that
+  was fine. Chat requests now pass `think: false` when the installed model
+  declares the capability (resolved through the same family matching the
+  model name uses, so the untagged default is covered), and an answer that is
+  still empty while reasoning was produced says what happened and names the
+  remedy instead of the opaque message.
+
 ### Added
 
 - **Historical context from the Signal K History API.** `getSelfPath` answers
