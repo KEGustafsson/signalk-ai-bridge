@@ -7,6 +7,24 @@
 
 It lets you send selected Signal K vessel data to a local Ollama model such as Gemma, then read the response directly in the browser.
 
+## Two Parts, Both Installed Manually
+
+This project has two separate parts, and **both must be in place before anything works**:
+
+1. **The Signal K plugin** — `signalk-ai-bridge`, installed into your Signal K server
+   (Signal K App Store, or manually from this repository). It provides the `Ask AI`
+   panel and the plugin configuration.
+2. **The AI container** — a separate AI server (Ollama, or TensorRT-LLM) that you run
+   yourself, on the same host or on another machine on the network. This project does
+   not ship or start it for you; see
+   [Ollama With Docker Compose](#ollama-with-docker-compose) for ready-made compose files.
+
+Neither part installs the other. The plugin only talks to the AI server over HTTP, so
+you install and start the AI container separately, then point the plugin at its URL in
+the plugin configuration. If the AI server is not running, or the plugin is not
+configured with its address and a model that server has, the `Ask AI` panel will not
+return answers.
+
 ## Experimental Plugin
 
 This is an experimental study plugin.
