@@ -9,6 +9,36 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- **Historical context from the Signal K History API.** `getSelfPath` answers
+  "what is true now", which leaves every trend question — has the wind been
+  building, did the batteries recover overnight, were we making way an hour ago
+  — unanswerable from the live data model alone. With `historyEnabled` on, the
+  plugin now reads `GET /signalk/v2/api/history/values` before each question and
+  puts a summary of each series (min, max, first, last, average, and evenly
+  spaced samples that always keep both ends of the window) in the same prompt as
+  the live snapshot. Paths may carry an aggregation method
+  (`navigation.speedOverGround:average`), the window and resolution are
+  configurable, and a blank resolution is derived from the window and the sample
+  budget so the provider is not asked for a day of one-second samples to then
+  throw all but twelve away. Angles are converted from radians to degrees the
+  same way the live snapshot is, so the two cannot disagree about which way the
+  boat was pointing. History has its own share of the prompt budget: a series
+  that will not fit loses its samples before it is dropped, because the summary
+  statistics still answer "is it rising?".
+
+  History is an enrichment, never a precondition: a server with no history
+  provider installed answers 404, and the question is still answered from live
+  data with the context saying plainly that the history was unavailable. The
+  same holds for a provider that is slow, down, or has no data for the window —
+  the read is bounded by its own short timeout, separate from the model's.
+
+  On a server with security enabled the read runs with the credentials of the
+  operator who asked: their cookie or bearer token is forwarded from the request
+  that reached the plugin, so the plugin cannot read history a user could not
+  read themselves. `/ai/status` and the panel's new `History Context` card
+  report the window, the paths and how the last read went, without making a
+  history request of their own on every poll.
+
 - **The board's GPU generation is now read and reported.** L4T has no
   nvidia-smi, so the Tegra GPU's device-tree node name (`gv11b` on Xavier,
   `ga10b` on Orin, `gp10b`/`gm20b` on TX2/TX1) is the only thing on the board

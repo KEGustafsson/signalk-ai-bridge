@@ -2,7 +2,7 @@ import React from 'react';
 import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import type { AcceleratorStatus, AiChatMessage } from './types.js';
+import type { AcceleratorStatus, AiChatMessage, AiHistoryStatus } from './types.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -33,6 +33,7 @@ interface BackendStatus {
   readonly keepAlive?: string;
   readonly accelerator?: AcceleratorStatus;
   readonly aiDataPaths?: readonly string[];
+  readonly history?: AiHistoryStatus;
   readonly signalKSelfId?: string;
   readonly aiAvailable?: boolean;
   readonly ollamaReachable?: boolean;
@@ -72,6 +73,35 @@ function formatTimestamp(value: string | undefined): string {
 
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : value;
+}
+
+/** `5400` -> `1 h 30 min`, for a window an operator typed as `PT1H30M`. */
+function formatSeconds(seconds: number | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return 'Unavailable';
+  }
+
+  const units: ReadonlyArray<readonly [number, string]> = [
+    [86400, 'd'],
+    [3600, 'h'],
+    [60, 'min'],
+    [1, 's']
+  ];
+
+  const parts: string[] = [];
+  let remaining = Math.round(seconds);
+  for (const [size, label] of units) {
+    const amount = Math.floor(remaining / size);
+    if (amount > 0) {
+      parts.push(`${amount} ${label}`);
+      remaining -= amount * size;
+    }
+    if (parts.length === 2) {
+      break;
+    }
+  }
+
+  return parts.join(' ');
 }
 
 function formatTimeoutLabel(timeoutMs: number | undefined): string {
@@ -473,6 +503,58 @@ export default function AppPanel(props: AppPanelProps) {
             </ul>
           ) : (
             <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
+          )}
+        </section>
+
+        <section
+          style={{
+            padding: '0.75rem',
+            borderRadius: '8px',
+            backgroundColor: '#f8fafc',
+            border: '1px solid #cbd5e1'
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>History Context</h3>
+          {backendStatus?.history?.enabled ? (
+            <>
+              <p style={{ margin: 0 }}>
+                Window: last {formatSeconds(backendStatus.history.durationSeconds)}, one point per{' '}
+                {formatSeconds(backendStatus.history.resolutionSeconds)}, up to {backendStatus.history.samples} sample
+                {backendStatus.history.samples === 1 ? '' : 's'} per path
+                <br />
+                Source: {backendStatus.history.serverUrl}
+                {backendStatus.history.provider ? ` (provider ${backendStatus.history.provider})` : ''}
+              </p>
+              {backendStatus.history.paths.length > 0 ? (
+                <ul style={{ margin: '0.35rem 0 0 0', paddingLeft: '1.1rem' }}>
+                  {backendStatus.history.paths.map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p style={{ margin: '0.35rem 0 0 0' }}>
+                  No history paths are configured, and no exact live paths were available to reuse.
+                </p>
+              )}
+              {backendStatus.history.lastFetch ? (
+                <p style={{ margin: '0.5rem 0 0 0', color: backendStatus.history.lastFetch.ok ? '#166534' : '#b45309' }}>
+                  Last read {formatTimestamp(backendStatus.history.lastFetch.at)}:{' '}
+                  {backendStatus.history.lastFetch.ok
+                    ? `${backendStatus.history.lastFetch.seriesCount ?? 0} series returned`
+                    : backendStatus.history.lastFetch.message}
+                </p>
+              ) : (
+                <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>
+                  History is read when a question is asked; nothing has been read yet.
+                </p>
+              )}
+            </>
+          ) : (
+            <p style={{ margin: 0 }}>
+              Disabled. Enable <code>historyEnabled</code> in the plugin settings to also send recent history from the
+              Signal K History API, which needs a history provider plugin such as signalk-to-influxdb2 or
+              signalk-parquet.
+            </p>
           )}
         </section>
 

@@ -34,10 +34,59 @@ export interface AiChatMessage {
   readonly content: string;
 }
 
+/** One historical series, as summarized for the model. */
+export interface AiHistorySeries {
+  /** Aggregation the History API applied, e.g. `average`. */
+  readonly method?: string;
+  /** Non-null points the provider returned, before down-sampling. */
+  readonly count: number;
+  readonly min?: number;
+  readonly max?: number;
+  readonly first?: number;
+  readonly last?: number;
+  readonly average?: number;
+  /** `[ISO timestamp, value]`, oldest first. Absent when trimmed to fit. */
+  readonly samples?: ReadonlyArray<readonly [string | undefined, unknown]>;
+}
+
+export interface AiHistoryContext {
+  readonly from: string;
+  readonly to: string;
+  readonly resolutionSeconds: number;
+  readonly requestedPaths?: readonly string[];
+  readonly context?: string;
+  readonly provider?: string;
+  readonly series?: Record<string, AiHistorySeries>;
+  readonly unavailablePaths?: readonly string[];
+  /** Present when history could not be read, or came back empty. */
+  readonly message?: string;
+}
+
 export interface AiRequestContext {
   readonly serverId?: string;
   readonly aiDataPaths?: readonly string[];
   readonly selectedData?: Record<string, unknown>;
+  readonly history?: AiHistoryContext;
+}
+
+/** The last history read, as reported by `/ai/status`. */
+export interface AiHistoryFetchStatus {
+  readonly at: string;
+  readonly ok: boolean;
+  readonly requestedPaths?: readonly string[];
+  readonly seriesCount?: number;
+  readonly message?: string;
+}
+
+export interface AiHistoryStatus {
+  readonly enabled: boolean;
+  readonly paths: readonly string[];
+  readonly durationSeconds: number;
+  readonly resolutionSeconds: number;
+  readonly samples: number;
+  readonly serverUrl: string;
+  readonly provider?: string;
+  readonly lastFetch?: AiHistoryFetchStatus;
 }
 
 export type AcceleratorState = 'gpu' | 'partial' | 'cpu' | 'not-loaded' | 'unknown';

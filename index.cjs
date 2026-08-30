@@ -28,6 +28,18 @@ const {
   warmUpModel
 } = require('./lib/ai-service.cjs');
 const { createBridgeService } = require('./lib/bridge-service.cjs');
+const {
+  DEFAULT_HISTORY_DURATION,
+  DEFAULT_HISTORY_SAMPLES,
+  DEFAULT_HISTORY_TIMEOUT_MS,
+  MAX_HISTORY_PATHS,
+  MAX_HISTORY_SAMPLES,
+  authHeadersFromRequest,
+  normalizeHistoryConfig,
+  resolveHistoryBaseUrl,
+  resolveHistoryPaths,
+  resolveWindow
+} = require('./lib/history-service.cjs');
 
 module.exports = function createPlugin(app, dependencies = {}) {
   let pluginOptions = {};
@@ -56,7 +68,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   const getConfig = () => ({
     ...normalizeAiConfig(pluginOptions),
-    ...normalizeServerConfig(pluginOptions)
+    ...normalizeServerConfig(pluginOptions),
+    ...normalizeHistoryConfig(pluginOptions)
   });
 
   const schema = () => ({
@@ -204,10 +217,100 @@ module.exports = function createPlugin(app, dependencies = {}) {
         items: {
           type: 'string',
           title: 'Signal K path'
+        }      },
+      historyEnabled: {
+        type: 'boolean',
+        title: 'Include history from the Signal K History API',
+        description:
+          'Also send recent history for the paths below, read from the server\'s History API (/signalk/v2/api/history). Requires a history provider plugin such as signalk-to-influxdb2 or signalk-parquet; without one the plugin says the history was unavailable and answers from live data alone.',
+        default: false
+      },
+      historyPaths: {
+        type: 'array',
+        title: 'History paths',
+        description:
+          'Signal K paths to read history for. Wildcards are not supported here — the History API takes explicit paths. A path may carry an aggregation method, for example navigation.speedOverGround:average or environment.wind.speedApparent:max (average, min, max, first, last, mid, middle_index, sma, ema). Leave empty to reuse the exact paths from "AI data paths". At most ' + MAX_HISTORY_PATHS + ' paths are requested.',
+        uniqueItems: true,
+        default: [],
+        items: {
+          type: 'string',
+          title: 'Signal K path'
         }
+      },
+      historyDuration: {
+        type: 'string',
+        title: 'History window',
+        description:
+          'How far back to look, as an ISO 8601 duration (PT15M, PT1H, P1D), a shorthand (30m, 2h), or a plain number of seconds. Capped at 31 days.',
+        default: DEFAULT_HISTORY_DURATION
+      },
+      historyResolution: {
+        type: 'string',
+        title: 'History resolution',
+        description:
+          'Size of each aggregation window, for example 1m or 300. Leave blank to derive it from the window and the sample budget, which is what keeps the request proportional to what actually fits in the prompt.',
+        default: ''
+      },
+      historySamples: {
+        type: 'integer',
+        title: 'History samples per path',
+        description:
+          'How many points per path reach the model. Points are picked evenly across the window and always include its first and last, with min, max, first, last and average sent alongside.',
+        default: DEFAULT_HISTORY_SAMPLES,
+        minimum: 1,
+        maximum: MAX_HISTORY_SAMPLES
+      },
+      historyProvider: {
+        type: 'string',
+        title: 'History provider (optional)',
+        description:
+          'Plugin id of a specific history provider, for example signalk-parquet. Leave blank to use the server default.',
+        default: ''
+      },
+      historyServerUrl: {
+        type: 'string',
+        title: 'Signal K server URL (optional)',
+        description:
+          'Where to reach the History API. Leave blank to call this server on localhost. Set it for history served by another Signal K instance, or when this server runs behind TLS with a certificate localhost cannot verify.',
+        default: ''
+      },
+      historyTimeoutMs: {
+        type: 'integer',
+        title: 'History request timeout (ms)',
+        description:
+          'How long to wait for the History API before answering from live data alone. Kept short on purpose: this runs before the model sees the question.',
+        default: DEFAULT_HISTORY_TIMEOUT_MS,
+        minimum: 0,
+        maximum: 120000
       }
     }
   });
+
+  /**
+   * History configuration as it will actually be used, plus how the last read
+   * went.
+   *
+   * Reporting the last outcome rather than probing keeps /ai/status free: the
+   * panel polls it on every render pass, and a probe there would put a database
+   * query behind each of those polls for information that only changes when a
+   * question is asked.
+   */
+  const describeHistory = (config) => {
+    const window = resolveWindow(config);
+
+    return {
+      enabled: config.historyEnabled,
+      paths: resolveHistoryPaths(config),
+      durationSeconds: window.durationSeconds,
+      resolutionSeconds: window.resolutionSeconds,
+      samples: config.historySamples,
+      // Redacted for the same reason baseUrl is: an operator may have put
+      // credentials in the URL of a remote Signal K server.
+      serverUrl: redactUrl(resolveHistoryBaseUrl(app, config)),
+      ...(config.historyProvider ? { provider: config.historyProvider } : {}),
+      lastFetch: bridgeService.getHistoryStatus()
+    };
+  };
 
   // One place for code -> HTTP, so /ai/query and the bridge routes cannot drift
   // apart the way they had (only one of them mapped `disabled` and `timeout`).
@@ -271,6 +374,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         keepAlive: config.keepAlive,
         gpuAutoTune: config.gpuAutoTune,
         aiDataPaths: config.aiDataPaths,
+        history: describeHistory(config),
         signalKSelfId: typeof app.selfId === 'string' ? app.selfId : undefined,
         aiAvailable: availability.available,
         ollamaReachable: availability.backendReachable,
@@ -296,7 +400,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
-      const payload = await bridgeService.buildAiPayload(body, config);
+      const payload = await bridgeService.buildAiPayload(body, config, {
+        authHeaders: authHeadersFromRequest(req)
+      });
       const result = await queryAiModel(payload, config, dependencies);
       res.status(200).json(result);
     } catch (error) {
@@ -335,7 +441,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
-      const result = await bridgeService.executeTool(body, config);
+      const result = await bridgeService.executeTool(body, config, {
+        authHeaders: authHeadersFromRequest(req)
+      });
       res.status(200).json(result);
     } catch (error) {
       const statusCode =
@@ -473,7 +581,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
         (text) => {
           writeLine({ type: 'token', text });
         },
-        abortController.signal
+        abortController.signal,
+        { authHeaders: authHeadersFromRequest(req) }
       );
 
       // streamTool reports a bad request by *returning* an error result rather
