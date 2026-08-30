@@ -7,22 +7,21 @@
 
 It lets you send selected Signal K vessel data to a local Ollama model such as Gemma, then read the response directly in the browser.
 
-## Two Parts
-
-This project has two separate parts, and **both must be in place before anything works**:
-
-1. **The Signal K plugin** — `signalk-ai-bridge`. Normally installed from the Signal K
-   App Store, like any other Signal K plugin. It provides the `Ask AI` panel and the
-   plugin configuration.
-2. **The AI container** — a separate AI server (Ollama, or TensorRT-LLM). This one has
-   to be installed and started manually, on the same host or on another machine on the
-   network. The App Store install does not bring it along; see
-   [Ollama With Docker Compose](#ollama-with-docker-compose) for ready-made compose files.
-
-Neither part installs the other. The plugin only talks to the AI server over HTTP, so
-you install and start the AI container yourself, then point the plugin at its URL in the
-plugin configuration. If the AI server is not running, or the plugin is not configured
-with its address and a model that server has, the `Ask AI` panel will not return answers.
+> **⚠️ Read first — this project needs two separate parts, and you need both.**
+>
+> 1. **`signalk-ai-bridge` plugin** (this repository) — installed from the
+>    **Signal K App Store** into your Signal K server. It adds the `Ask AI` panel,
+>    collects the selected Signal K paths and sends them to the AI server.
+> 2. **AI container** ([`docker-compose.gemma.yml`](docker-compose.gemma.yml) and the
+>    other compose files) — a separate Ollama or TensorRT-LLM service, on the same
+>    host or elsewhere on the network, that owns the GPU and runs the model. It is
+>    **not** part of the App Store install and **must be deployed manually**.
+>
+> Installing the plugin alone is not enough: you also have to bring up the container
+> yourself and point the plugin at its URL and a model that server has. With only the
+> plugin there is nothing to answer; with only the container nothing reaches Signal K.
+> See [Quick Start](#quick-start) and
+> [Ollama With Docker Compose](#ollama-with-docker-compose) for the setup of each part.
 
 ## Experimental Plugin
 
