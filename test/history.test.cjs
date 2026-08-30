@@ -163,6 +163,17 @@ describe('history endpoint resolution', () => {
     assert.equal(window.resolutionSeconds, 60);
   });
 
+  // A month at one-second resolution is 2.7 million rows for a summary that
+  // keeps a dozen points per path. The row bound outranks even an explicit
+  // resolution.
+  it('bounds the rows one request may ask for, whatever the resolution says', () => {
+    const window = resolveWindow(historyConfig({ historyDuration: 'P31D', historyResolution: '1' }));
+    assert.ok(
+      window.durationSeconds / window.resolutionSeconds <= 5000,
+      `window asks for ${window.durationSeconds / window.resolutionSeconds} rows`
+    );
+  });
+
   it('builds a values request with the documented parameters', () => {
     const config = historyConfig({ historyProvider: 'signalk-parquet' });
     const window = resolveWindow(config);
@@ -197,9 +208,13 @@ describe('history payload summary', () => {
 
     // Signal K carries the course in radians; the live snapshot in the same
     // prompt is in degrees, and a series that disagreed with it would read as
-    // a hard turn that never happened.
+    // a hard turn that never happened. This course went 0 to 180 - the
+    // antipodal case - so the aggregate stats are withheld (see the dedicated
+    // angle tests below) while the converted samples stay.
     const course = series['navigation.courseOverGroundTrue'];
-    assert.equal(course.max, 180);
+    assert.deepEqual(course.samples[0], ['2026-04-11T09:00:00.000Z', 0]);
+    assert.deepEqual(course.samples[1], ['2026-04-11T09:30:00.000Z', 180]);
+    assert.equal(course.average, undefined);
     // The null third row is a gap in the data, not a value.
     assert.equal(course.count, 2);
   });
@@ -342,6 +357,77 @@ describe('history payload summary', () => {
       { min: heading.min, max: heading.max, average: heading.average },
       { min: 88, max: 92, average: 90 }
     );
+  });
+
+  // Directions exactly 180 apart are the antipodal case: 0 and 180 have no
+  // mean heading (90 and 270 are equally "right"), and arithmetic reported 90
+  // - due east - with full confidence. No average at all is the honest answer.
+  it('reports no mean for antipodal headings instead of inventing one', () => {
+    const d = (deg) => (deg * Math.PI) / 180;
+    const { series } = summarizeHistoryPayload(
+      { values: [{ path: 'navigation.headingTrue' }], data: [['t1', d(0)], ['t2', d(180)]] },
+      ['navigation.headingTrue'],
+      12
+    );
+
+    const heading = series['navigation.headingTrue'];
+    assert.equal(heading.average, undefined);
+    assert.equal(heading.min, undefined);
+    assert.equal(heading.max, undefined);
+    assert.equal(heading.first, 0);
+    assert.equal(heading.last, 180);
+  });
+
+  // The History API does not promise response order, and a provider may omit
+  // a path it has nothing for. Columns are matched to requested specs by their
+  // declared path, so a dropped first column no longer shifts every spec one
+  // column left.
+  it('matches columns by declared path when the provider omits a leading one', () => {
+    const { series, unavailablePaths } = summarizeHistoryPayload(
+      {
+        values: [{ path: 'navigation.speedOverGround' }],
+        data: [['2026-04-11T09:00:00.000Z', 5.4]]
+      },
+      ['environment.wind.speedApparent', 'navigation.speedOverGround'],
+      12
+    );
+
+    assert.equal(series['navigation.speedOverGround'].last, 5.4);
+    assert.deepEqual(unavailablePaths, ['environment.wind.speedApparent']);
+  });
+
+  it('matches columns by declared path when the provider reorders them', () => {
+    const { series } = summarizeHistoryPayload(
+      {
+        values: [{ path: 'navigation.courseOverGroundTrue' }, { path: 'navigation.speedOverGround' }],
+        data: [['2026-04-11T09:00:00.000Z', Math.PI, 5.4]]
+      },
+      ['navigation.speedOverGround', 'navigation.courseOverGroundTrue'],
+      12
+    );
+
+    // Each series is converted by what the provider says the column is:
+    // the course column stays a course (radians to degrees) even though it
+    // arrived where the speed was requested.
+    assert.equal(series['navigation.courseOverGroundTrue'].last, 180);
+    assert.equal(series['navigation.speedOverGround'].last, 5.4);
+  });
+
+  // Spreading a column into Math.min threw RangeError past ~125k values, and
+  // the outer catch dressed that crash up as "history unavailable".
+  it('summarizes a very large column without overflowing the call stack', () => {
+    const rows = Array.from({ length: 200000 }, (unused, index) => [`t${index}`, index]);
+    const { series } = summarizeHistoryPayload(
+      { values: [{ path: 'electrical.batteries.house.voltage' }], data: rows },
+      ['electrical.batteries.house.voltage'],
+      5
+    );
+
+    const summary = series['electrical.batteries.house.voltage'];
+    assert.equal(summary.count, 200000);
+    assert.equal(summary.min, 0);
+    assert.equal(summary.max, 199999);
+    assert.equal(summary.samples.length, 5);
   });
 
   it('reads a provider that omits the values header', () => {
