@@ -327,8 +327,10 @@ describe('thinking models', () => {
     );
     assert.equal(chatBody.think, false);
 
-    // And via the family match, the way the shipped default reaches the tag.
-    let untaggedBody;
+    // And via the family match, the way the shipped default reaches the tag:
+    // the bare name 404s, the retry runs against the resolved tag, and the
+    // thinking decision is recomputed for it.
+    const chatBodies = [];
     await queryAiModel(
       { prompt: 'How fast are we going?', context: { selectedData: {} } },
       normalizeAiConfig({ model: 'gemma4' }),
@@ -337,12 +339,22 @@ describe('thinking models', () => {
           if (String(url).endsWith('/api/tags')) {
             return tagsResponse(['completion', 'thinking']);
           }
-          untaggedBody = JSON.parse(String(init.body));
+          chatBodies.push(JSON.parse(String(init.body)));
+          if (chatBodies.length === 1) {
+            return new Response(JSON.stringify({ error: "model 'gemma4' not found" }), {
+              status: 404,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
           return chatResponse({ role: 'assistant', content: 'Five knots.' });
         }
       }
     );
-    assert.equal(untaggedBody.think, false);
+
+    assert.equal(chatBodies.length, 2);
+    assert.equal(chatBodies[0].model, 'gemma4');
+    assert.equal(chatBodies[1].model, 'gemma4:e2b-it-qat');
+    assert.equal(chatBodies[1].think, false);
   });
 
   it('disables thinking on the streaming path too', async () => {

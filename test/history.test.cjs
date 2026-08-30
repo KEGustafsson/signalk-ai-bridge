@@ -630,6 +630,17 @@ describe('listHistoryPaths', () => {
     assert.equal(result.message, undefined);
   });
 
+  it('asks the configured provider, the one the values read will use', async () => {
+    const calls = [];
+    await listHistoryPaths(
+      {},
+      historyConfig({ historyProvider: 'signalk-parquet' }),
+      { fetchImpl: async (url, init = {}) => (calls.push(String(url)), jsonResponse([])) }
+    );
+
+    assert.match(calls[0], /[?&]provider=signalk-parquet\b/);
+  });
+
   it('keeps the operator session off a remote server here too', async () => {
     const calls = [];
     await listHistoryPaths(
