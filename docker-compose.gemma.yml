@@ -16,20 +16,14 @@ services:
     # Long enough for the server to flush and exit cleanly after SIGTERM.
     stop_grace_period: 30s
     ports:
-      # Loopback only. Docker publishes to 0.0.0.0 by default AND bypasses
-      # the host firewall, which would put an unauthenticated Ollama API -
-      # including POST /api/pull and DELETE /api/delete - on the boat's LAN
-      # and any marina wifi it is bridged to. Signal K runs on this host, so
-      # loopback is all the plugin needs; use a shared Docker network to
-      # reach it from another container.
-      - "127.0.0.1:11434:11434"
-      # Signal K on ANOTHER machine? Publish on this host's LAN address
-      # instead - the interface bind is the scoping tool here, because Docker
-      # bypasses the host firewall for published ports. Anyone who can reach
-      # the port can run inference, pull models and delete them, so bind the
-      # one interface the Signal K host is on, never "11434:11434" (all
-      # interfaces) on a machine that ever bridges to untrusted wifi:
-      #   - "192.168.1.10:11434:11434"
+      # Published on all interfaces so a Signal K server on another machine
+      # can reach it. Ollama has no authentication - anyone who can reach the
+      # port can run inference, pull models and delete them - and Docker
+      # bypasses the host firewall for published ports, so on a boat that
+      # bridges to marina or other untrusted wifi, scope this to one address:
+      #   - "192.168.1.10:11434:11434"  (this host's LAN address)
+      #   - "127.0.0.1:11434:11434"     (Signal K on this host only)
+      - "11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
     environment:
