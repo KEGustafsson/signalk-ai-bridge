@@ -855,6 +855,34 @@ describe('the plugin with history enabled', () => {
     plugin.stop();
   });
 
+  // The operator leaving while the history read is in flight must not start a
+  // generation: both backends send the model request before their first
+  // in-stream abort check, so the guard has to run before dispatch.
+  it('starts no model request when the client left during the history read', async () => {
+    const { normalizeAiConfig, streamAiModel } = require('../lib/ai-service.cjs');
+    const controller = new AbortController();
+    controller.abort();
+
+    let chatCalled = false;
+    await assert.rejects(
+      streamAiModel(
+        { prompt: 'How has our speed been?', context: {}, signal: controller.signal },
+        normalizeAiConfig({}, {}),
+        {
+          ollamaClient: {
+            async chat() {
+              chatCalled = true;
+              return (async function* generate() {})();
+            }
+          }
+        },
+        () => {}
+      ),
+      /Client closed the connection/
+    );
+    assert.equal(chatCalled, false);
+  });
+
   it('asks for no history at all when the setting is off', async () => {
     const plugin = createPlugin(createHost(), {
       fetchImpl: async (url) => {
