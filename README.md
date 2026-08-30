@@ -97,6 +97,25 @@ If Signal K runs on the host, the default Ollama URL `http://localhost:11434` is
 
 If Signal K runs in another container, use an address reachable from that container, for example `http://ollama:11434` on a shared Docker network.
 
+If Signal K runs on **another machine**, the compose files need one edit first: they
+publish Ollama on `127.0.0.1` only, so the API answers `localhost` on its own host
+and refuses everything else — including the plugin's probe, which fails with
+"Could not reach Ollama". That is deliberate: Ollama has no authentication, anyone
+who can reach the port can run inference, pull models and delete them, and Docker
+bypasses the host firewall for published ports, so the interface bind is the
+scoping tool. Change the `ports:` line to publish on the one LAN address the
+Signal K machine can reach, as the comment beside it shows:
+
+```yaml
+    ports:
+      - "192.168.1.10:11434:11434"   # this host's LAN address, not 0.0.0.0
+```
+
+then `docker compose -f <file> up -d` to recreate the container, verify with
+`curl http://<that-address>:11434/api/tags` **from the Signal K machine**, and set
+the plugin's Ollama URL to the same address. Avoid `"11434:11434"` (all
+interfaces) on a machine that ever bridges to marina or other untrusted wifi.
+
 ## NVIDIA Jetson
 
 Tested targets are the Orin Nano Super (JetPack 6) and the Xavier NX developer

@@ -23,6 +23,13 @@ services:
       # loopback is all the plugin needs; use a shared Docker network to
       # reach it from another container.
       - "127.0.0.1:11434:11434"
+      # Signal K on ANOTHER machine? Publish on this host's LAN address
+      # instead - the interface bind is the scoping tool here, because Docker
+      # bypasses the host firewall for published ports. Anyone who can reach
+      # the port can run inference, pull models and delete them, so bind the
+      # one interface the Signal K host is on, never "11434:11434" (all
+      # interfaces) on a machine that ever bridges to untrusted wifi:
+      #   - "192.168.1.10:11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
     environment:
