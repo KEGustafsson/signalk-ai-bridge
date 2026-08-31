@@ -9,16 +9,28 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
-- **The out-of-memory retry now shrinks the batch as well as the context.**
-  `num_ctx` sizes the KV cache, but `num_batch` sizes the prompt-eval compute
-  buffers, and those scale with the batch: on an 8 GB Jetson at `num_batch`
-  2048 they are the dominant allocation, so a retry that halved only the
-  context freed nothing that mattered and failed exactly like the first
-  attempt. Both are halved now. An out-of-memory failure that survives that
-  retry no longer surfaces the bare "CUDA error: out of memory" either — the
-  message names the two settings that decide the allocation and the values the
-  failed attempt used, so the next step is a number to lower rather than a web
-  search.
+- **The out-of-memory retry keeps shrinking until something fits.** `num_ctx`
+  sizes the KV cache, but `num_batch` sizes the prompt-eval compute buffers,
+  and those scale with the batch: on an 8 GB Jetson at `num_batch` 2048 they
+  are the dominant allocation, so a retry that halved only the context freed
+  nothing that mattered and failed exactly like the first attempt. Both knobs
+  are halved now, and up to three times rather than once — one halving of a
+  2048 batch still asks for four times the backend's own default. The retry
+  also no longer depends on "Auto-tune GPU offload": that switch governs the
+  start-up probe that picks the layer split, not whether a question that has
+  already failed for memory deserves a cheaper second attempt, and gating it
+  meant an operator who pinned their own split got the raw CUDA error and no
+  recovery at all. An out-of-memory failure that survives the ladder no longer
+  surfaces the bare "CUDA error: out of memory" either — the message names the
+  two settings that decide the allocation and the values the smallest attempt
+  used, so the next step is a number to lower rather than a web search.
+
+- **A batch wider than the context window is no longer requested.** `num_batch`
+  is clamped to `num_ctx` before the request goes out. llama.cpp sizes the
+  prompt-eval buffers from `num_batch` but never has more than `num_ctx` tokens
+  to put in them, so the configured default of 2048 against a shrunken
+  1024-token window was asking the GPU for memory no prompt could ever use —
+  on the exact path where the allocation was already failing.
 
 - **Thinking models no longer answer with nothing.** `gemma4:e2b-it-qat` — the
   model the compose files pull — declares Ollama's `thinking` capability, so it

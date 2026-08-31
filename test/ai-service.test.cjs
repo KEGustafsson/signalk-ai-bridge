@@ -456,14 +456,90 @@ describe('out-of-memory retry', () => {
       ),
       (error) => {
         assert.match(error.message, /ran out of memory even after retrying smaller/);
-        // The values the failed attempt actually used, so the operator knows
+        // The values the smallest attempt actually used, so the operator knows
         // what to lower from.
-        assert.match(error.message, /context window 4096/);
-        assert.match(error.message, /batch size 1024/);
+        assert.match(error.message, /context window 1024/);
+        assert.match(error.message, /batch size 256/);
         assert.match(error.message, /num_ctx/);
         assert.match(error.message, /num_batch/);
         return true;
       }
     );
+  });
+
+  it('keeps halving until something fits rather than giving up after one try', async () => {
+    const chatBodies = [];
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat', numCtx: 8192, numBatch: 2048 }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          chatBodies.push(JSON.parse(String(init.body)));
+          return chatBodies.length < 3 ? oomResponse() : okResponse();
+        }
+      }
+    );
+
+    assert.deepEqual(
+      chatBodies.map((body) => [body.options.num_ctx, body.options.num_batch]),
+      [
+        [8192, 2048],
+        [4096, 1024],
+        [2048, 512]
+      ]
+    );
+  });
+
+  it('retries smaller even when the operator pinned the offload settings', async () => {
+    const chatBodies = [];
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat', numCtx: 8192, numBatch: 2048, gpuAutoTune: false }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          chatBodies.push(JSON.parse(String(init.body)));
+          return chatBodies.length === 1 ? oomResponse() : okResponse();
+        }
+      }
+    );
+
+    assert.equal(chatBodies.length, 2);
+    assert.equal(chatBodies[1].options.num_ctx, 4096);
+    assert.equal(chatBodies[1].options.num_batch, 1024);
+  });
+
+  it('never asks for a batch wider than the context window', async () => {
+    const chatBodies = [];
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat', numCtx: 1024, numBatch: 2048 }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          chatBodies.push(JSON.parse(String(init.body)));
+          return okResponse();
+        }
+      }
+    );
+
+    assert.equal(chatBodies[0].options.num_ctx, 1024);
+    assert.equal(chatBodies[0].options.num_batch, 1024);
   });
 });

@@ -458,7 +458,11 @@ These are the settings most users will care about:
   explicit value overrides it, with `0` forcing CPU-only and `999` full offload
 
 - `numBatch`
-  Tokens evaluated per GPU batch (`num_batch`)
+  Tokens evaluated per GPU batch (`num_batch`). This sizes the prompt-eval
+  compute buffers, so on a small unified-memory board it is usually the first
+  setting to lower when a question fails with `CUDA error: out of memory` — 512
+  is the backend's own default and a safe starting point. Values above `numCtx`
+  are clamped to it
 
 - `numThread`
   CPU threads for anything not offloaded (`num_thread`). `0` lets the runtime choose
