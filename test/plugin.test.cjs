@@ -296,6 +296,144 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.context.selectedData['environment.wind.speedApparent'], 8.2);
   });
 
+  // Both path lists left the settings schema: they are chosen against what the
+  // vessel publishes, which the settings form cannot show and the panel can.
+  describe('path selection from the panel', () => {
+    function createSavingPlugin(overrides = {}) {
+      const saved = [];
+      const host = createPluginHost();
+      const plugin = createPlugin(
+        {
+          ...host,
+          savePluginOptions: (options, callback) => {
+            saved.push(options);
+            callback(null);
+          },
+          ...overrides
+        },
+        {
+          fetchImpl: async () =>
+            new Response(JSON.stringify({ models: [] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            })
+        }
+      );
+
+      plugin.start({ warmupOnStart: false });
+      const routes = {};
+      plugin.registerWithRouter({
+        get(path, handler) {
+          routes[`GET ${path}`] = handler;
+        },
+        post(path, handler) {
+          routes[`POST ${path}`] = handler;
+        }
+      });
+      return { plugin, routes, saved };
+    }
+
+    it('no longer offers the two path lists as plugin settings', () => {
+      const plugin = createPlugin(createPluginHost(), {});
+      const properties = plugin.schema().properties;
+
+      assert.ok(!('aiDataPaths' in properties));
+      assert.ok(!('historyPaths' in properties));
+      // The rest of the history settings stay in the form.
+      assert.ok('historyEnabled' in properties);
+      assert.ok('historyDuration' in properties);
+    });
+
+    it('stores a selection and applies it to the running plugin', async () => {
+      const { plugin, routes, saved } = createSavingPlugin();
+
+      const response = createResponseRecorder();
+      await routes['POST /paths/selection'](
+        {
+          headers: {},
+          body: { aiDataPaths: ['navigation.*', ' navigation.* ', 'notifications'], historyPaths: ['navigation.speedOverGround'] }
+        },
+        response
+      );
+
+      assert.equal(response.statusCode, 200);
+      // Trimmed and deduplicated on the way in.
+      assert.deepEqual(response.body.aiDataPaths, ['navigation.*', 'notifications']);
+      assert.deepEqual(saved[0].aiDataPaths, ['navigation.*', 'notifications']);
+      assert.deepEqual(saved[0].historyPaths, ['navigation.speedOverGround']);
+
+      // Applied without waiting for a restart: the status route reports it.
+      const status = createResponseRecorder();
+      await routes['GET /ai/status']({}, status);
+      assert.deepEqual(status.body.aiDataPaths, ['navigation.*', 'notifications']);
+
+      plugin.stop();
+    });
+
+    it('rejects a body that selects nothing at all', async () => {
+      const { plugin, routes } = createSavingPlugin();
+
+      const response = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { nothing: true } }, response);
+
+      assert.equal(response.statusCode, 400);
+      assert.equal(response.body.error.code, 'validation-failed');
+      plugin.stop();
+    });
+
+    // The selection decides what vessel data leaves the boat, so on a secured
+    // server it takes a login with write access - not merely a reachable route.
+    it('refuses an anonymous change when the server has security enabled', async () => {
+      const { plugin, routes, saved } = createSavingPlugin({
+        securityStrategy: { isDummy: () => false, getLoginStatus: () => ({ status: 'notLoggedIn' }) }
+      });
+
+      const anonymous = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['navigation.*'] } }, anonymous);
+      assert.equal(anonymous.statusCode, 401);
+      assert.equal(anonymous.body.error.code, 'unauthorized');
+
+      const readOnly = createResponseRecorder();
+      await routes['POST /paths/selection'](
+        { headers: {}, skPrincipal: { permissions: 'readonly' }, body: { aiDataPaths: ['navigation.*'] } },
+        readOnly
+      );
+      assert.equal(readOnly.statusCode, 401);
+      assert.equal(saved.length, 0);
+
+      const admin = createResponseRecorder();
+      await routes['POST /paths/selection'](
+        { headers: {}, skPrincipal: { permissions: 'admin' }, body: { aiDataPaths: ['navigation.*'] } },
+        admin
+      );
+      assert.equal(admin.statusCode, 200);
+      assert.equal(saved.length, 1);
+
+      plugin.stop();
+    });
+
+    it('says so when the server cannot store plugin settings', async () => {
+      const host = createPluginHost();
+      const plugin = createPlugin({ ...host, savePluginOptions: undefined }, {});
+      plugin.start({ warmupOnStart: false });
+      const routes = {};
+      plugin.registerWithRouter({
+        get(path, handler) {
+          routes[`GET ${path}`] = handler;
+        },
+        post(path, handler) {
+          routes[`POST ${path}`] = handler;
+        }
+      });
+
+      const response = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['navigation.*'] } }, response);
+      assert.equal(response.statusCode, 501);
+
+      plugin.stop();
+    });
+  });
+
   // The panel's live-path picker: what does this vessel actually publish?
   it('lists the live Signal K paths at both granularities for the picker', async () => {
     const registeredRoutes = {};

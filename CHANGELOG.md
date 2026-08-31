@@ -22,14 +22,23 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
-- **Both path selections can be browsed from the panel.** Choosing what the
-  model sees was guesswork against a vessel's live tree and a provider's
-  recordings alike. The `AI Path Selection` card now carries a **Browse
-  available paths** picker listing what this vessel actually publishes — branch
-  wildcards first, then the individual leaves they cover — and the `History
-  Context` card the same for recorded paths. Both pre-tick the current
-  configuration, filter as you type, and copy the selection ready to paste into
-  the plugin settings.
+### Changed
+
+- **Both path selections moved out of the settings form and into the web app.**
+  A path list is chosen against what the vessel actually publishes and what a
+  history provider has actually recorded — neither of which a settings form can
+  show — so `aiDataPaths` and `historyPaths` are no longer plugin settings. The
+  `AI Path Selection` card now carries a **Browse available paths** picker
+  listing what this vessel publishes (branch wildcards first, then the
+  individual leaves they cover), and `History Context` the same for recorded
+  paths. Both pre-tick the current selection, filter as you type, and save
+  straight through to the plugin's stored options, so a restart and a config
+  backup carry them like any other setting and the next question uses them
+  immediately. On a server with security enabled, saving takes a login with
+  write access: the selection decides what vessel data leaves the boat for the
+  inference host, which is a write, not a preference.
+
+### Added
 
 - **Historical context from the Signal K History API.** `getSelfPath` answers
   "what is true now", which leaves every trend question — has the wind been

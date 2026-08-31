@@ -395,10 +395,11 @@ In the web UI you will see:
 
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
-- `AI Path Selection`: which Signal K paths are currently sent to AI, with a
-  **Browse available paths** picker listing what this vessel publishes
-- `History Context`: the history window, paths, how the last history read went,
-  and a **Browse recorded paths** picker listing what the History API has data for
+- `AI Path Selection`: which Signal K paths are sent to AI. **Browse available
+  paths** lists what this vessel publishes; tick and save — this is where the
+  selection is made, not in the plugin settings
+- `History Context`: the history window, how the last read went, and **Browse
+  recorded paths** — tick and save the paths the History API has data for
 - `AI Response`: the latest answer from the model
 - `Ask AI History`: previous prompts and results
 
@@ -414,14 +415,15 @@ These are the settings most users will care about:
 - `model`
   Ollama model name. Example: `gemma4:e2b-it-qat`
 
-- `aiDataPaths`
-  The Signal K self paths that will be sent to AI. You can use exact paths like
-  `navigation.position` and simple wildcards like `navigation.*`. Press **Browse
-  available paths** in the panel's `AI Path Selection` card to see what this
-  vessel is publishing — branch wildcards first, then the individual leaves they
-  cover — tick what the model should see, and copy them ready to paste here.
-  Prefer a wildcard for a whole branch: it is flattened, unit-converted and
-  budgeted leaf by leaf, where a bare branch name is sent as one raw subtree
+- **AI data paths** — chosen in the web app, not here
+  Open the plugin's web app, press **Browse available paths** in the `AI Path
+  Selection` card, tick what the model should see, and save. The picker lists
+  what this vessel is actually publishing — branch wildcards first, then the
+  individual leaves they cover — which is why the choice lives there and not in
+  this settings form. Prefer a wildcard for a whole branch: it is flattened,
+  unit-converted and budgeted leaf by leaf, where a bare branch name is sent as
+  one raw subtree. On a server with security enabled, saving needs a login with
+  write access
 
 - `historyEnabled`
   Also send recent history for the selected paths, read from the Signal K
@@ -531,16 +533,14 @@ answer "is it rising?" at a fraction of the tokens.
 - `historyEnabled`
   Off by default. Turn it on once a history provider is recording
 
-- `historyPaths`
-  Explicit Signal K paths — the History API takes no wildcards. A path may carry
-  an aggregation method, for example `navigation.speedOverGround:average` or
-  `environment.wind.speedApparent:max` (`average`, `min`, `max`, `first`, `last`,
-  `mid`, `middle_index`, `sma`, `ema`). Leave empty to reuse the exact paths from
-  `aiDataPaths`. At most 12 paths are requested. To see what your provider has
-  actually recorded, press **Browse recorded paths** in the panel's History
-  Context card — it lists every path with data in the last day (or your window,
-  if longer), lets you tick the ones the model should see, and copies them
-  ready to paste into this setting
+- **History paths** — chosen in the web app, not here
+  Press **Browse recorded paths** in the panel's `History Context` card: it
+  lists every path your provider has data for in the last day (or your window,
+  if longer), and saves what you tick. The History API takes no wildcards, so
+  these are explicit paths; a path may carry an aggregation method, for example
+  `navigation.speedOverGround:average` (`average`, `min`, `max`, `first`,
+  `last`, `mid`, `middle_index`, `sma`, `ema`). Select none to reuse the exact
+  paths from the AI data path selection. At most 12 paths are requested
 
 - `historyDuration`
   How far back to look: `PT1H`, `P1D`, `30m`, or a plain number of seconds.

@@ -43,6 +43,11 @@ const {
   resolveWindow
 } = require('./lib/history-service.cjs');
 
+// A selection is prompt material: every path is prompt-eval work on the GPU,
+// and the context budget drops what does not fit anyway. Wildcards mean a
+// handful of entries covers a whole vessel.
+const MAX_SELECTED_AI_PATHS = 100;
+
 module.exports = function createPlugin(app, dependencies = {}) {
   let pluginOptions = {};
   let routesRegistered = false;
@@ -204,40 +209,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
           'Optional bearer token sent to an OpenAI-compatible backend. Leave blank for a local Ollama or unauthenticated trtllm-serve.',
         default: ''
       },
-      aiDataPaths: {
-        type: 'array',
-        title: 'AI data paths',
-        description:
-          'Signal K self paths to collect and send to AI. Exact paths and simple wildcards ending in .* are supported. You can type your own paths, for example navigation.position, navigation.*, environment.wind.speedApparent, or notifications.',
-        uniqueItems: true,
-        default: [
-          'navigation.position',
-          'navigation.speedOverGround',
-          'navigation.courseOverGroundTrue',
-          'notifications'
-        ],
-        items: {
-          type: 'string',
-          title: 'Signal K path'
-        }      },
       historyEnabled: {
         type: 'boolean',
         title: 'Include history from the Signal K History API',
         description:
-          'Also send recent history for the paths below, read from the server\'s History API (/signalk/v2/api/history). Requires a history provider plugin such as signalk-to-influxdb2 or signalk-parquet; without one the plugin says the history was unavailable and answers from live data alone.',
+          'Also send recent history for the selected paths, read from the server\'s History API (/signalk/v2/api/history). Requires a history provider plugin such as signalk-to-influxdb2 or signalk-parquet; without one the plugin says the history was unavailable and answers from live data alone. Choose the paths in the plugin\'s web app, under History Context.',
         default: false
-      },
-      historyPaths: {
-        type: 'array',
-        title: 'History paths',
-        description:
-          'Signal K paths to read history for. Wildcards are not supported here — the History API takes explicit paths. A path may carry an aggregation method, for example navigation.speedOverGround:average or environment.wind.speedApparent:max (average, min, max, first, last, mid, middle_index, sma, ema). Leave empty to reuse the exact paths from "AI data paths". At most ' + MAX_HISTORY_PATHS + ' paths are requested.',
-        uniqueItems: true,
-        default: [],
-        items: {
-          type: 'string',
-          title: 'Signal K path'
-        }
       },
       historyDuration: {
         type: 'string',
@@ -476,6 +453,130 @@ module.exports = function createPlugin(app, dependencies = {}) {
               ? error.code
               : 'unknown',
           message: error instanceof Error ? error.message : 'Unknown bridge failure.'
+        }
+      });
+    }
+  };
+
+  /**
+   * May this request change the path selection?
+   *
+   * The selection decides what vessel data leaves the boat for the inference
+   * host, so it is a write, not a preference. On a server with security
+   * enabled that means an authenticated principal with more than read access;
+   * on a server with security off - a single-user boat network, which is the
+   * common Signal K setup - there is no identity to check and the route is as
+   * open as the rest of the server already is.
+   */
+  const isSelectionWriteAllowed = (req) => {
+    const strategy = app && app.securityStrategy;
+    if (!strategy || (typeof strategy.isDummy === 'function' && strategy.isDummy())) {
+      return true;
+    }
+
+    const principal = req && req.skPrincipal;
+    if (principal) {
+      const permissions = String(principal.permissions || '').toLowerCase();
+      return permissions === 'admin' || permissions === 'readwrite';
+    }
+
+    // Older strategies expose the session only through getLoginStatus.
+    if (typeof strategy.getLoginStatus === 'function') {
+      try {
+        const status = strategy.getLoginStatus(req) || {};
+        return status.status === 'loggedIn' && status.readOnlyAccess !== true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  };
+
+  /** A path list from the panel: strings, trimmed, deduplicated, bounded. */
+  const normalizeSelection = (value, limit) => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const cleaned = value
+      .map((item) => String(item == null ? '' : item).trim())
+      .filter((item) => item.length > 0 && item.length <= 200);
+    return [...new Set(cleaned)].slice(0, limit);
+  };
+
+  /**
+   * Store the path selections the panel made.
+   *
+   * These two lists left the plugin's settings schema: a path list is chosen
+   * against what the vessel actually publishes, which the settings form cannot
+   * show and the panel's pickers can. They are still stored as plugin options,
+   * so a restart and a config backup carry them like any other setting.
+   */
+  const saveSelectionHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+
+    if (!isSelectionWriteAllowed(req)) {
+      res.status(401).json({
+        error: {
+          code: 'unauthorized',
+          message: 'Changing the path selection requires a Signal K login with write access.'
+        }
+      });
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(req);
+      const aiDataPaths = normalizeSelection(body && body.aiDataPaths, MAX_SELECTED_AI_PATHS);
+      const historyPaths = normalizeSelection(body && body.historyPaths, MAX_HISTORY_PATHS);
+
+      if (aiDataPaths === undefined && historyPaths === undefined) {
+        res.status(400).json({
+          error: {
+            code: 'validation-failed',
+            message: 'Send aiDataPaths, historyPaths, or both, as arrays of Signal K paths.'
+          }
+        });
+        return;
+      }
+
+      const updated = {
+        ...pluginOptions,
+        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
+        ...(historyPaths === undefined ? {} : { historyPaths })
+      };
+
+      if (typeof app.savePluginOptions !== 'function') {
+        res.status(501).json({
+          error: {
+            code: 'unknown',
+            message: 'This Signal K server does not let plugins store their own settings.'
+          }
+        });
+        return;
+      }
+
+      await new Promise((resolve, reject) => {
+        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+      });
+
+      // Applied to the running plugin as well as stored, so the next question
+      // uses the new selection without waiting for a restart.
+      pluginOptions = updated;
+
+      const config = getConfig();
+      res.status(200).json({
+        aiDataPaths: normalizeAiDataPaths(config),
+        historyPaths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) })
+      });
+    } catch (error) {
+      const statusCode = error && error.code === 'validation-failed' ? 400 : 500;
+      res.status(statusCode).json({
+        error: {
+          code: error && error.code === 'validation-failed' ? 'validation-failed' : 'unknown',
+          message: error instanceof Error ? error.message : 'Could not save the path selection.'
         }
       });
     }
@@ -777,6 +878,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/ai/retune', retuneHandler);
       router.get('/history/paths', historyPathsHandler);
       router.get('/signalk/paths', selfPathsHandler);
+      router.post('/paths/selection', saveSelectionHandler);
       routesRegistered = true;
     },
     stop: () => {
