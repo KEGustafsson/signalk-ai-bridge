@@ -9,6 +9,17 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- **The out-of-memory retry now shrinks the batch as well as the context.**
+  `num_ctx` sizes the KV cache, but `num_batch` sizes the prompt-eval compute
+  buffers, and those scale with the batch: on an 8 GB Jetson at `num_batch`
+  2048 they are the dominant allocation, so a retry that halved only the
+  context freed nothing that mattered and failed exactly like the first
+  attempt. Both are halved now. An out-of-memory failure that survives that
+  retry no longer surfaces the bare "CUDA error: out of memory" either — the
+  message names the two settings that decide the allocation and the values the
+  failed attempt used, so the next step is a number to lower rather than a web
+  search.
+
 - **Thinking models no longer answer with nothing.** `gemma4:e2b-it-qat` — the
   model the compose files pull — declares Ollama's `thinking` capability, so it
   routed its reasoning into a separate field and, with a full vessel context,

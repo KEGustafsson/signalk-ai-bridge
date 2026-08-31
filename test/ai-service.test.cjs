@@ -387,3 +387,83 @@ describe('thinking models', () => {
     assert.equal(chatRequest.think, false);
   });
 });
+
+// A Xavier with num_batch 2048 sees the compute buffers, not the KV cache, as
+// the dominant allocation - so a retry that only halved num_ctx failed exactly
+// like the first attempt and handed the operator a bare CUDA error.
+describe('out-of-memory retry', () => {
+  function oomResponse() {
+    return new Response(
+      JSON.stringify({ error: 'an error was encountered while running the model: CUDA error: out of memory' }),
+      { status: 500, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  function okResponse() {
+    return new Response(
+      JSON.stringify({
+        model: 'gemma4:e2b-it-qat',
+        created_at: '2026-04-11T10:00:00.000Z',
+        message: { role: 'assistant', content: 'Five knots.' },
+        done: true
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  }
+
+  it('retries with both the context and the batch halved', async () => {
+    const chatBodies = [];
+    await queryAiModel(
+      { prompt: 'How fast are we going?', context: { selectedData: {} } },
+      normalizeAiConfig({ model: 'gemma4:e2b-it-qat', numCtx: 8192, numBatch: 2048 }),
+      {
+        fetchImpl: async (url, init = {}) => {
+          if (String(url).endsWith('/api/tags')) {
+            return new Response(JSON.stringify({ models: [] }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+          chatBodies.push(JSON.parse(String(init.body)));
+          return chatBodies.length === 1 ? oomResponse() : okResponse();
+        }
+      }
+    );
+
+    assert.equal(chatBodies.length, 2);
+    assert.equal(chatBodies[0].options.num_ctx, 8192);
+    assert.equal(chatBodies[0].options.num_batch, 2048);
+    assert.equal(chatBodies[1].options.num_ctx, 4096);
+    assert.equal(chatBodies[1].options.num_batch, 1024);
+  });
+
+  it('names the settings that decide the allocation when the retry also fails', async () => {
+    await assert.rejects(
+      queryAiModel(
+        { prompt: 'How fast are we going?', context: { selectedData: {} } },
+        normalizeAiConfig({ model: 'gemma4:e2b-it-qat', numCtx: 8192, numBatch: 2048 }),
+        {
+          fetchImpl: async (url) => {
+            if (String(url).endsWith('/api/tags')) {
+              return new Response(JSON.stringify({ models: [] }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' }
+              });
+            }
+            return oomResponse();
+          }
+        }
+      ),
+      (error) => {
+        assert.match(error.message, /ran out of memory even after retrying smaller/);
+        // The values the failed attempt actually used, so the operator knows
+        // what to lower from.
+        assert.match(error.message, /context window 4096/);
+        assert.match(error.message, /batch size 1024/);
+        assert.match(error.message, /num_ctx/);
+        assert.match(error.message, /num_batch/);
+        return true;
+      }
+    );
+  });
+});
