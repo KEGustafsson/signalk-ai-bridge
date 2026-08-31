@@ -174,7 +174,16 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.context.selectedData['navigation.position.latitude'], 60.1);
     // 5.4 m/s in knots: speeds reach the model in the units an operator reads.
     assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 10.497);
-    assert.equal(bridgeResponse.body.context.selectedData.notifications['navigation.anchor'].state, 'alarm');
+    // Notifications are flattened whatever shape selects them - here the bare
+    // branch name, which is what the plugin's own default selection uses. As
+    // one nested object they could only be dropped from the prompt whole,
+    // taking live alarms with them, and neither the normal-notification
+    // trimming nor the "no alarm data" note could see inside them.
+    assert.equal(
+      bridgeResponse.body.context.selectedData['notifications.navigation.anchor.state'],
+      'alarm'
+    );
+    assert.equal(bridgeResponse.body.context.selectedData.notifications, undefined);
     // The prompt carries the data keyed by path, with no second copy of the
     // path list — every token here is prompt-eval work on the GPU.
     assert.match(capturedMessages[1].content, /"data":/);

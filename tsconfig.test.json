@@ -31,6 +31,8 @@
     "src/policyChannel.ts",
     "src/policyChannel.test.ts",
     "src/pathAccess.ts",
-    "src/pathAccess.test.ts"
+    "src/pathAccess.test.ts",
+    "src/pathSelection.ts",
+    "src/pathSelection.test.ts"
   ]
 }

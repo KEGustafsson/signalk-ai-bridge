@@ -3,6 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
+import { withUnlistedSelection } from './pathSelection.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -141,15 +142,6 @@ const pickerButtonStyle = {
  * picker cannot express "remove it" either - only what it showed can be
  * unticked.
  */
-function withUnlistedSelection(
-  picked: readonly string[],
-  listed: readonly string[],
-  configured: readonly string[] | undefined
-): string[] {
-  const shown = new Set(listed);
-  return [...picked, ...(configured ?? []).filter((path) => !shown.has(path))];
-}
-
 /**
  * Write a path selection through to the plugin's stored options.
  *
