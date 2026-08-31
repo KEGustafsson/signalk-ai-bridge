@@ -589,6 +589,133 @@ describe('unit conversion', () => {
   });
 });
 
+describe('notification pruning', () => {
+  const { createBridgeService } = require('../lib/bridge-service.cjs');
+
+  function notificationsFor(model) {
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: (path) => path.split('.').reduce((node, key) => (node ? node[key] : undefined), model)
+    };
+    return createBridgeService(app, {})
+      .buildAiPayload({ prompt: 'x' }, { aiDataPaths: ['notifications.*'], ...normalizeAiConfig({}) })
+      .then((payload) => payload.context.selectedData);
+  }
+
+  const notification = (state, message) => ({
+    value: {
+      state,
+      message,
+      id: 'e6f1c0a2-0000-4000-8000-000000000000',
+      method: ['visual', 'sound'],
+      status: {
+        silenced: false,
+        acknowledged: false,
+        canSilence: true,
+        canAcknowledge: true,
+        canClear: false
+      }
+    }
+  });
+
+  it('keeps a normal notification to its state alone', async () => {
+    // Its message, silenced and acknowledged are the same constants on every
+    // normal notification, and a working vessel has dozens: measured aboard,
+    // 43 of them flattened to 14,730 characters - more than the whole prompt
+    // context budget, which is how alarms got dropped from questions about
+    // alarms.
+    const data = await notificationsFor({
+      notifications: { propulsion: { engine: { oilTemperature: notification('normal', 'Value is within normal range') } } }
+    });
+
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.state'], 'normal');
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.message'], undefined);
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.status.silenced'], undefined);
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.status.acknowledged'], undefined);
+  });
+
+  it('keeps everything about an alarm that is not normal', async () => {
+    const data = await notificationsFor({
+      notifications: { environment: { bilge: notification('alarm', 'Bilge water detected') } }
+    });
+
+    assert.equal(data['notifications.environment.bilge.state'], 'alarm');
+    assert.equal(data['notifications.environment.bilge.message'], 'Bilge water detected');
+    // Whether anyone has silenced or acknowledged an active alarm is exactly
+    // the sort of thing an operator asks about.
+    assert.equal(data['notifications.environment.bilge.status.silenced'], false);
+    assert.equal(data['notifications.environment.bilge.status.acknowledged'], false);
+  });
+
+  it('leaves a notification with no state alone, because unknown is not normal', async () => {
+    const data = await notificationsFor({
+      notifications: { navigation: { anchor: { value: { message: 'Dragging?' } } } }
+    });
+
+    assert.equal(data['notifications.navigation.anchor.message'], 'Dragging?');
+  });
+
+  it('drops the UI plumbing from every notification, whatever its state', async () => {
+    const data = await notificationsFor({
+      notifications: { environment: { bilge: notification('alarm', 'Bilge water detected') } }
+    });
+
+    assert.equal(data['notifications.environment.bilge.id'], undefined);
+    assert.equal(data['notifications.environment.bilge.method'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canSilence'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canAcknowledge'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canClear'], undefined);
+  });
+});
+
+describe('alarm coverage in the prompt', () => {
+  const { buildAiMessages } = require('../lib/ai-service.cjs');
+
+  const promptContext = (selectedData, aiDataPaths) =>
+    JSON.parse(
+      buildAiMessages('Any alarms?', { aiDataPaths, selectedData }, { systemPrompt: 's', numCtx: 8192, maxTokens: 1024 })[1]
+        .content.split('Signal K context (JSON, keyed by path):\n')[1]
+        .split('\n\nUnits:')[0]
+    );
+
+  it('says alarm status is unknown when no notification data was selected', () => {
+    // Measured twice against gemma4:e2b-it-qat - once with no notification
+    // path configured, once with all of them dropped for want of budget - the
+    // model answered "all alarms are normal" about data it had never seen.
+    const context = promptContext({ 'navigation.speedOverGround': 4 }, ['navigation.*']);
+
+    assert.match(context.alarms, /alarm status is unknown/);
+    assert.match(context.alarms, /do not state that alarms are normal/);
+  });
+
+  it('says nothing about coverage when notifications are present', () => {
+    const context = promptContext(
+      { 'notifications.propulsion.engine.oilTemperature.state': 'normal' },
+      ['notifications.*']
+    );
+
+    assert.equal(context.alarms, undefined);
+  });
+
+  it('says alarm status is unknown when notifications were dropped to fit', () => {
+    // The budget drops from the tail, so a large selection can leave the
+    // snapshot with no notification left in it even though one was configured.
+    // The bulk goes in first: the budget keeps entries in insertion order and
+    // drops from the tail, which is exactly how a real selection loses the
+    // notifications listed after a busy branch.
+    const selectedData = {};
+    for (let i = 0; i < 400; i += 1) {
+      selectedData[`electrical.batteries.house.cell${i}.voltage`] = 12.8;
+    }
+    selectedData['notifications.environment.bilge.state'] = 'alarm';
+
+    const context = promptContext(selectedData, ['electrical.*', 'notifications.*']);
+
+    assert.equal(Object.keys(context.data).some((path) => path.startsWith('notifications.')), false);
+    assert.match(context.alarms, /alarm status is unknown/);
+  });
+});
+
 describe('cost and safety of the status and retune routes', () => {
   const { retuneOffload, redactUrl, resetRuntimeState: reset } = require('../lib/ai-service.cjs');
 
