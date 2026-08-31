@@ -103,13 +103,20 @@ module.exports = function createPlugin(app, dependencies = {}) {
       systemPrompt: {
         type: 'string',
         title: 'System prompt',
-        description: 'Passed as a native Ollama system message before the operator request.',
+        description:
+          'Passed as a native Ollama system message before the operator request. The default is tuned against ' +
+          'measured failures, so prefer adding to it over replacing it — and do not ask for unit conversions: ' +
+          'angles, temperatures and speeds are already converted to degrees, Celsius and knots before the model ' +
+          'sees them, and asking again gets them converted twice.',
         default: DEFAULT_SYSTEM_PROMPT
       },
       requestTimeoutMs: {
         type: 'integer',
         title: 'Request timeout (ms)',
-        description: 'How long to wait for Ollama before failing. Set to 0 to disable the timeout.',
+        description:
+          'How long to wait for Ollama before failing. Allow for a cold model load plus the answer — on a Xavier NX ' +
+          'that is roughly 47 seconds to load and 20 more before the first token. Set to 0 to disable the timeout, ' +
+          'which leaves nothing to stop a wedged backend.',
         default: 120000,
         minimum: 0,
         maximum: 300000
@@ -132,7 +139,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'Max output tokens',
         description:
-          'Upper bound on generated tokens (num_predict). This no longer sizes the KV cache — use "GPU context window" for that.',
+          'Upper bound on generated tokens (num_predict). It does not size the KV cache — use "GPU context window" ' +
+          'for that — but it is capped at half the context window, because the prompt and the answer share it and ' +
+          'the backend resolves a conflict by truncating the prompt. Raise the context window for longer answers.',
         default: DEFAULT_MAX_TOKENS,
         minimum: 64,
         maximum: MAX_NUM_CTX
@@ -141,7 +150,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'GPU context window (num_ctx)',
         description:
-          'Tokens of context the model keeps in memory. llama.cpp reserves the KV cache from this value up front, so it is the setting that decides whether the model stays resident on the GPU. On a Jetson Orin Nano Super (8 GB unified memory) keep this at or below 16384 for a 4B-class model.',
+          'Tokens of context the model keeps in memory. llama.cpp reserves the KV cache from this value up front, ' +
+          'so it is the setting that decides whether the model stays resident on the GPU, and it also sets how much ' +
+          'vessel data the plugin will send: paths beyond what fits are dropped from the end of your selection, and ' +
+          'the prompt says how many. On a Jetson Orin Nano Super (8 GB unified memory) keep this at or below 16384 ' +
+          'for a 4B-class model.',
         default: DEFAULT_NUM_CTX,
         minimum: MIN_NUM_CTX,
         maximum: MAX_NUM_CTX
@@ -166,7 +179,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'Prompt batch size (num_batch)',
         description:
-          'Tokens evaluated per GPU batch. Larger batches raise prompt-eval throughput on the Orin Ampere GPU at the cost of some memory.',
+          'Tokens evaluated per GPU batch. Larger batches raise prompt-eval throughput at the cost of memory, and ' +
+          'this is usually the first setting to lower after a CUDA out-of-memory error. 512 suits an Orin; a ' +
+          'Xavier NX (8 GB, Volta) needs 256 at a context window of 8192.',
         default: DEFAULT_NUM_BATCH,
         minimum: MIN_NUM_BATCH,
         maximum: MAX_NUM_BATCH

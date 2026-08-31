@@ -9,6 +9,38 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- **The model no longer says "all alarms are normal" about alarms it never
+  saw.** Asked whether the environment alarms were normal, it answered yes with
+  every one of the 64 `notifications.environment.*` leaves missing from its
+  prompt; asked about alarms on a selection that carried no notification path at
+  all, it answered the same. Nothing contradicted it — `unavailablePaths` lists
+  configured paths that came back empty, so a path never configured, or one the
+  budget dropped, does not appear in it. The prompt now carries an explicit note
+  when the snapshot holds no notification data, and the model reports alarm
+  status as unknown instead. A fabricated all-clear is the one answer a vessel
+  assistant must never give.
+
+- **A normal notification is trimmed to its state.** It repeats three constants
+  — `message` "Value is within normal range", `silenced` false, `acknowledged`
+  false — and a working vessel has dozens: 43 measured aboard, flattening to
+  14,730 characters, more than the whole context budget on its own. That was the
+  budget shortfall that dropped the alarms above. A normal notification keeps
+  its `state`, so the absence of an alarm stays provable; an abnormal one keeps
+  everything, because which alarm, what it says and whether anyone has silenced
+  or acknowledged it are all the operator's business. Aboard, notifications fall
+  from 14,730 characters to 6,673 and the vessel's whole selection from 88
+  dropped paths to none.
+
+- **camelCase angle leaves are converted from radians.**
+  `sensors.headingHold.fusedHeading` is radians like every other heading, but
+  the angle list anchored its words at the start of the leaf, so a compound
+  never matched: a heading of 87 degrees reached the operator as "1.517299
+  degrees", in the same answer as a live snapshot that said 86.8. The word now
+  also matches where it begins a later segment of the leaf, catching
+  `fusedHeading`, `desiredHeading` and `targetBearing`, while distances, speeds
+  and positions under an angle-ish parent — `crossTrackError` among them — stay
+  excluded.
+
 - **Half the vessel context no longer disappears before the model sees it.**
   The answer budget was `num_ctx` minus 256 tokens, and llama.cpp resolves a
   prompt that will not fit by truncating the *prompt*, to whatever `num_predict`

@@ -264,7 +264,10 @@ fraction of its throughput. When Signal K runs on the Jetson itself, the same
 card reads the board's own sysfs and reports the model, JetPack/L4T version,
 `nvpmodel` power mode, GPU load, clock against maximum, and GPU temperature —
 with a warning and the exact command to run when any of them is holding the GPU
-back. When Signal K runs elsewhere, this section is simply absent.
+back. When the inference server is on another machine, this section is replaced
+by a line saying where inference actually runs: board telemetry read here would
+describe the wrong GPU, and advise `nvpmodel` on a board with no model loaded
+on it.
 
 ### Streaming
 
@@ -281,11 +284,58 @@ Prompt evaluation is GPU work, so the context sent to the model is kept tight:
 compact JSON rather than indented, numbers rounded to 6 decimals (finer than any
 sensor on a boat), and the data keyed by path instead of repeating the path list
 alongside it. Paths that produced no value are listed separately, so the model
-can still be explicit about what is missing. On a typical wildcard selection
-this is roughly half the tokens the plugin used to send, on every request.
+can still be explicit about what is missing.
+
+A normal notification is trimmed to its `state`. Its `message` ("Value is within
+normal range"), `silenced` and `acknowledged` are the same constants on every
+one, and a working vessel has dozens — measured aboard, 43 normal notifications
+flattened to 14,730 characters, more than the whole context budget. An alarm
+that is *not* normal keeps everything, because which alarm, what it says and
+whether anyone has acknowledged it are all worth the tokens. Every notification
+also loses the UUID, the alert methods and the five `can…` booleans, which
+describe what a notification UI may do with it and answer no question.
+
+The budget follows `numCtx`. llama.cpp resolves a prompt that will not fit by
+truncating the prompt itself, to whatever `num_predict` leaves it, and says so
+only in the inference server's log — so the plugin sizes its own context to the
+window and drops whole paths, from the end of your selection, rather than let
+the backend cut the prompt mid-JSON. When it drops any, it says how many in the
+prompt, so the model can tell you the answer may be incomplete.
+
+**Order your path selection by what matters most.** The budget keeps entries in
+the order you chose them and drops from the tail, so alarms and engine data
+belong ahead of signal strengths and camera URLs.
+
+If the snapshot ends up with no notification data at all — none selected, or all
+of it dropped — the prompt says so explicitly and tells the model to report
+alarm status as unknown. Without that the model reliably answered "all alarms
+are normal" about paths it had never been shown, which is the one answer a
+vessel assistant must never give.
 
 The context returned to the panel is unchanged — only what reaches the model is
 compacted.
+
+### Units
+
+Values reach the model in the units an operator reads, and the prompt says so,
+so the model has no arithmetic left to get wrong:
+
+| Signal K | Sent to the model |
+| --- | --- |
+| Angles, in radians | Degrees |
+| Temperatures, in kelvin | Degrees Celsius |
+| Speeds, in metres per second | Knots |
+| Everything else | Unchanged SI — pressure in pascals, distance in metres, ratios 0–1 |
+
+Angle leaves are matched on the last segment of the path, including camelCase
+compounds such as `fusedHeading`, and distances, speeds and positions that live
+under an angle-ish parent (`navigation.courseGreatCircle.nextPoint.distance`)
+are explicitly excluded.
+
+Live values and history are converted by the same code, so the two can never
+disagree about which way the boat was pointing. Do not ask for conversions in
+`systemPrompt`: the values are already converted, and a prompt that asks for
+them again gets them applied twice — an attitude yaw of 86.5° came back as 495°.
 
 ### Re-tuning without a restart
 
@@ -349,12 +399,13 @@ token generation is memory-bandwidth bound, that is the whole of the difference.
 | Setting | Value | Why |
 | --- | --- | --- |
 | `numCtx` | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
-| `maxTokens` | `2048` | Output budget only; it no longer resizes the KV cache. |
+| `maxTokens` | `1024` | Output budget only. Capped at half of `numCtx` anyway, and a vessel answer rarely runs past a few hundred tokens. |
 | `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
 | `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
-| `numBatch` | `512` | Prompt-eval throughput on the Jetson iGPU, Ampere or Volta. |
+| `numBatch` | `512` on Orin, `256` on Xavier NX | Prompt-eval throughput on the Jetson iGPU. Measured: 512 fails with `CUBLAS_STATUS_ALLOC_FAILED` on a Xavier NX at `numCtx` 8192. |
 | `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
 | `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
+| `requestTimeoutMs` | `180000` | Room for a cold load plus a full answer; `0` leaves a wedged backend nothing to stop it. |
 
 ### TensorRT-LLM
 
@@ -430,10 +481,16 @@ These are the settings most users will care about:
   History API. See [Vessel history](#vessel-history)
 
 - `requestTimeoutMs`
-  How long the plugin waits for Ollama. Set `0` to disable the timeout
+  How long the plugin waits for Ollama. Allow for a cold model load plus the
+  answer: measured on a Xavier NX, ~47 s to load and ~20 s of prompt evaluation
+  before the first token, so 120 s is tight and 180 s comfortable. `0` disables
+  the timeout entirely, which leaves nothing to stop a wedged backend
 
 - `systemPrompt`
-  Extra instructions sent to the model before your question
+  Instructions sent to the model before your question. The default is tuned
+  against measured failures — negated alarm answers, silently skipped values,
+  whole-context recitals — so prefer adding to it over replacing it, and do not
+  ask for unit conversions: see [Units](#units)
 
 - `temperature`
   Lower values are more stable and literal. Higher values are more varied
@@ -442,12 +499,17 @@ These are the settings most users will care about:
   Additional output randomness control
 
 - `maxTokens`
-  Maximum tokens the model may generate (`num_predict`). This does not size the
-  context window
+  Maximum tokens the model may generate (`num_predict`). It does not size the
+  context window, but it is capped at half of `numCtx`: the prompt and the
+  answer share the window, and llama.cpp resolves a conflict by truncating the
+  *prompt*. Half a window is already generous for a vessel summary — a few
+  hundred tokens is typical — so lower it if you want shorter answers, and raise
+  `numCtx` if you want longer ones
 
 - `numCtx`
   Context window in tokens (`num_ctx`). This is what sizes the KV cache, and
-  therefore whether the model stays resident on the GPU
+  therefore whether the model stays resident on the GPU. It also sets how much
+  vessel context the plugin will send: see [Prompt size](#prompt-size)
 
 - `gpuAutoTune`
   Force every layer onto the GPU on start and shrink `numCtx` until the whole
@@ -460,9 +522,10 @@ These are the settings most users will care about:
 - `numBatch`
   Tokens evaluated per GPU batch (`num_batch`). This sizes the prompt-eval
   compute buffers, so on a small unified-memory board it is usually the first
-  setting to lower when a question fails with `CUDA error: out of memory` — 512
-  is the backend's own default and a safe starting point. Values above `numCtx`
-  are clamped to it
+  setting to lower when a question fails with `CUDA error: out of memory`. 512
+  is the backend's own default, but it is not safe everywhere: on a Xavier NX
+  (8 GB, Volta) it fails reliably at `numCtx` 8192, where 256 is stable. Values
+  above `numCtx` are clamped to it
 
 - `numThread`
   CPU threads for anything not offloaded (`num_thread`). `0` lets the runtime choose
@@ -526,11 +589,12 @@ For each path, one series:
 ```
 
 Points are picked evenly across the window and always include its first and last,
-so a trend keeps both ends. Angles are converted from radians to degrees exactly
-as the live snapshot is, so the two never disagree about which way the boat was
-pointing. History gets its own share of the prompt budget: a series that will not
-fit loses its `samples` before it is dropped, because min/max/first/last still
-answer "is it rising?" at a fraction of the tokens.
+so a trend keeps both ends. Angles, temperatures and speeds are converted
+exactly as the live snapshot is (see [Units](#units)), so the two never disagree
+about which way the boat was pointing or how warm the cabin was. History gets
+its own share of the prompt budget: a series that will not fit loses its
+`samples` before it is dropped, because min/max/first/last still answer "is it
+rising?" at a fraction of the tokens.
 
 ### Settings
 
@@ -679,9 +743,11 @@ still fails with `Unexpected token 'v', "vite v6.4."...`.)
    - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.nano-super.yml up -d`
    - Xavier NX (JetPack 5): `docker compose -f docker-compose.xavier.yml up -d`
 2. Raise the power mode: `sudo nvpmodel -m <id> && sudo jetson_clocks`. The panel
-   names the id when the current mode is capped. On Orin that is `MAXN_SUPER`;
-   Xavier NX has no MAXN mode at all, so the highest wattage and core count wins
-   — usually `MODE_20W_6CORE`.
+   names the id when the current mode is capped — but only when Signal K shares
+   the host with the inference server, since that is the only board whose
+   telemetry it can read. On Orin the target is `MAXN_SUPER`; Xavier NX has no
+   MAXN mode at all, so the highest wattage and core count wins — usually
+   `MODE_20W_6CORE`.
 3. Open the plugin's web UI and read the `GPU Acceleration` card. It should say
    **GPU accelerated**, with `In GPU memory` equal for both figures.
 4. Ask a question. `Generation speed` should be in the tens of tokens/second on a
