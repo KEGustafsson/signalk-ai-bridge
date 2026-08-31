@@ -64,13 +64,17 @@ services:
     stop_grace_period: 30s
     runtime: nvidia
     ports:
-      # Loopback only. Docker publishes to 0.0.0.0 by default AND bypasses
-      # the host firewall, which would put an unauthenticated Ollama API -
-      # including POST /api/pull and DELETE /api/delete - on the boat's LAN
-      # and any marina wifi it is bridged to. Signal K runs on this host, so
-      # loopback is all the plugin needs; use a shared Docker network to
-      # reach it from another container.
-      - "127.0.0.1:11434:11434"
+      # Published on all interfaces by default so a Signal K server on
+      # another machine works out of the box. Ollama has no authentication -
+      # anyone who can reach the port can run inference, pull models and
+      # delete them - and Docker bypasses the host firewall for published
+      # ports, so the bind address is the scoping tool. On a boat that
+      # bridges to marina or other untrusted wifi, narrow it without editing
+      # this file by setting OLLAMA_BIND (in the shell or a .env beside this
+      # file) to this host's LAN address, or to 127.0.0.1 when Signal K runs
+      # on this host only:
+      #   OLLAMA_BIND=192.168.1.10 docker compose -f <this file> up -d
+      - "${OLLAMA_BIND:-0.0.0.0}:11434:11434"
     volumes:
       - ./ollama_data:/root/.ollama
       - /etc/nv_tegra_release:/etc/nv_tegra_release:ro

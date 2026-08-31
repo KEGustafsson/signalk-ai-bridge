@@ -7,7 +7,207 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [0.2.0-beta.1]
 
+### Fixed
+
+- **The model no longer says "all alarms are normal" about alarms it never
+  saw.** Asked whether the environment alarms were normal, it answered yes with
+  every one of the 64 `notifications.environment.*` leaves missing from its
+  prompt; asked about alarms on a selection that carried no notification path at
+  all, it answered the same. Nothing contradicted it — `unavailablePaths` lists
+  configured paths that came back empty, so a path never configured, or one the
+  budget dropped, does not appear in it. The prompt now carries an explicit note
+  when the snapshot holds no notification data, and the model reports alarm
+  status as unknown instead. A fabricated all-clear is the one answer a vessel
+  assistant must never give.
+
+- **A normal notification is trimmed to its state.** It repeats three constants
+  — `message` "Value is within normal range", `silenced` false, `acknowledged`
+  false — and a working vessel has dozens: 43 measured aboard, flattening to
+  14,730 characters, more than the whole context budget on its own. That was the
+  budget shortfall that dropped the alarms above. A normal notification keeps
+  its `state`, so the absence of an alarm stays provable; an abnormal one keeps
+  everything, because which alarm, what it says and whether anyone has silenced
+  or acknowledged it are all the operator's business. Aboard, notifications fall
+  from 14,730 characters to 6,673 and the vessel's whole selection from 88
+  dropped paths to none.
+
+- **camelCase angle leaves are converted from radians.**
+  `sensors.headingHold.fusedHeading` is radians like every other heading, but
+  the angle list anchored its words at the start of the leaf, so a compound
+  never matched: a heading of 87 degrees reached the operator as "1.517299
+  degrees", in the same answer as a live snapshot that said 86.8. The word now
+  also matches where it begins a later segment of the leaf, catching
+  `fusedHeading`, `desiredHeading` and `targetBearing`, while distances, speeds
+  and positions under an angle-ish parent — `crossTrackError` among them — stay
+  excluded.
+
+- **Half the vessel context no longer disappears before the model sees it.**
+  The answer budget was `num_ctx` minus 256 tokens, and llama.cpp resolves a
+  prompt that will not fit by truncating the *prompt*, to whatever `num_predict`
+  leaves it. Measured at `num_ctx` 4096 with the default max-tokens: a
+  4,949-token vessel snapshot cut to 2,051, with only a line in the inference
+  server's log to say so. The split is the other way round now — the answer may
+  claim at most half the window and the prompt is guaranteed the rest — and the
+  context budget that decides which paths are dropped follows `num_ctx` instead
+  of being fixed at a size chosen for the default window, so the plugin's own
+  "N further paths omitted" note appears exactly when paths are being dropped.
+  For the same reason a memory retry rebuilds its prompt at the smaller window
+  it is retrying with, rather than sending the full-size one into a halved
+  context.
+
+- **An out-of-memory failure no longer escapes the retry ladder.** The chat
+  path checks for memory pressure before it checks for a missing model, so the
+  fallback that resolves an untagged model name to an installed tag ran its
+  request with no ladder around it — and that is the ordinary path on a default
+  install, whose untagged `gemma4` always misses once before the real tag is
+  found. A `CUBLAS_STATUS_ALLOC_FAILED` from the GPU reached the operator raw
+  instead of being retried at half the footprint.
+
+- **Board telemetry describes the machine doing the inference.** Read against a
+  remote Ollama, the GPU Acceleration card reported the *Signal K* host's GPU
+  load, clock and temperature, and advised running `nvpmodel` and
+  `jetson_clocks` on a board with no model loaded on it. The card now shows
+  board detail only when the backend is local — matched against every address
+  this machine holds, not just loopback — and otherwise says where inference
+  actually runs.
+
+- **Temperatures and speeds reach the model in the units an operator reads.**
+  Angles were converted to degrees but kelvin and metres per second were not,
+  so a system prompt written to fill the gap also re-converted the values that
+  had already been converted: an attitude yaw of 86.5 degrees was reported as
+  495. Temperature and speed leaves now convert alongside angles, in the live
+  snapshot and in history alike, and the prompt states the units as fact rather
+  than asking the model for arithmetic.
+
+- **Notification plumbing no longer crowds the vessel out of the prompt.** A
+  Signal K notification flattens to about ten leaves, eight of which describe
+  what a notification UI may do with it. Measured on a working vessel,
+  `notifications.*` alone came to 150 leaves and 12,385 characters — the whole
+  context budget — so propulsion, electrical and control reached the model on
+  no question at all. The UUID, the alert methods and the five
+  can-I-draw-this-button booleans are dropped; `state`, `message`, `silenced`
+  and `acknowledged` are kept.
+
+- **The stored history path selection shows when the panel loads.** The
+  `History Context` card rendered its path list only when `historyEnabled` was
+  on, so an operator who had picked their paths and left the feature off saw
+  nothing but the "Disabled" note — the selection first appeared when they
+  pressed **Browse recorded paths**, which reads as the picker inventing ticks
+  rather than showing what was already saved.
+
+- **The history header is charged against the history budget.** Only the series
+  were counted, so `requestedPaths` and `unavailablePaths` could spend the
+  budget on their own — which is how a window with no room for a single data
+  point still spent what room it had naming the paths that did not fit. Both
+  lists collapse to a count when they will not fit.
+
+- **The out-of-memory retry keeps shrinking until something fits.** `num_ctx`
+  sizes the KV cache, but `num_batch` sizes the prompt-eval compute buffers,
+  and those scale with the batch: on an 8 GB Jetson at `num_batch` 2048 they
+  are the dominant allocation, so a retry that halved only the context freed
+  nothing that mattered and failed exactly like the first attempt. Both knobs
+  are halved now, and up to three times rather than once — one halving of a
+  2048 batch still asks for four times the backend's own default. The retry
+  also no longer depends on "Auto-tune GPU offload": that switch governs the
+  start-up probe that picks the layer split, not whether a question that has
+  already failed for memory deserves a cheaper second attempt, and gating it
+  meant an operator who pinned their own split got the raw CUDA error and no
+  recovery at all. An out-of-memory failure that survives the ladder no longer
+  surfaces the bare "CUDA error: out of memory" either — the message names the
+  two settings that decide the allocation and the values the smallest attempt
+  used, so the next step is a number to lower rather than a web search.
+
+- **A batch wider than the context window is no longer requested.** `num_batch`
+  is clamped to `num_ctx` before the request goes out. llama.cpp sizes the
+  prompt-eval buffers from `num_batch` but never has more than `num_ctx` tokens
+  to put in them, so the configured default of 2048 against a shrunken
+  1024-token window was asking the GPU for memory no prompt could ever use —
+  on the exact path where the allocation was already failing.
+
+- **Thinking models no longer answer with nothing.** `gemma4:e2b-it-qat` — the
+  model the compose files pull — declares Ollama's `thinking` capability, so it
+  routed its reasoning into a separate field and, with a full vessel context,
+  spent its entire output budget there: the answer came back empty and the
+  panel reported "AI backend returned an empty response" from a backend that
+  was fine. Chat requests now pass `think: false` when the installed model
+  declares the capability (resolved through the same family matching the
+  model name uses, so the untagged default is covered), and an answer that is
+  still empty while reasoning was produced says what happened and names the
+  remedy instead of the opaque message.
+
+### Changed
+
+- **The answer contract is written from measured failures.** A four-way sampler
+  sweep (temperature 0.1–1.0, `top_k`, `top_p`, `min_p`) against a fixed vessel
+  snapshot got every number right in every configuration, so the wrong answers
+  were never the sampler's doing. What did go wrong, and what the default
+  system prompt and the per-request response requirements now address: a 4B
+  model fumbling double negation and reporting "no alarms are in a normal
+  state" when every alarm *was* normal; a requested value absent from the
+  context skipped in silence under a summary claiming everything had been
+  reported; and "is everything okay?" answered with a 794-token recital of the
+  whole snapshot. Each rule names the failure it removes, including one that is
+  deliberately absent — a rounding instruction made the model degrade 13.43 V
+  to "13.4" with the unit dropped, and values are already rounded before they
+  reach it.
+
+- **Both path selections moved out of the settings form and into the web app.**
+  A path list is chosen against what the vessel actually publishes and what a
+  history provider has actually recorded — neither of which a settings form can
+  show — so `aiDataPaths` and `historyPaths` are no longer plugin settings. The
+  `AI Path Selection` card now carries a **Browse available paths** picker
+  listing what this vessel publishes (branch wildcards first, then the
+  individual leaves they cover), and `History Context` the same for recorded
+  paths. Both pre-tick the current selection, filter as you type, and save
+  straight through to the plugin's stored options, so a restart and a config
+  backup carry them like any other setting and the next question uses them
+  immediately. On a server with security enabled, saving takes a login with
+  write access: the selection decides what vessel data leaves the boat for the
+  inference host, which is a write, not a preference.
+
 ### Added
+
+- **Historical context from the Signal K History API.** `getSelfPath` answers
+  "what is true now", which leaves every trend question — has the wind been
+  building, did the batteries recover overnight, were we making way an hour ago
+  — unanswerable from the live data model alone. With `historyEnabled` on, the
+  plugin now reads `GET /signalk/v2/api/history/values` before each question and
+  puts a summary of each series (min, max, first, last, average, and evenly
+  spaced samples that always keep both ends of the window) in the same prompt as
+  the live snapshot. Paths may carry an aggregation method
+  (`navigation.speedOverGround:average`), the window and resolution are
+  configurable, and a blank resolution is derived from the window and the sample
+  budget so the provider is not asked for a day of one-second samples to then
+  throw all but twelve away. Angles are converted from radians to degrees the
+  same way the live snapshot is, so the two cannot disagree about which way the
+  boat was pointing. History has its own share of the prompt budget: a series
+  that will not fit loses its samples before it is dropped, because the summary
+  statistics still answer "is it rising?".
+
+  History is an enrichment, never a precondition: a server with no history
+  provider installed answers 404, and the question is still answered from live
+  data with the context saying plainly that the history was unavailable. The
+  same holds for a provider that is slow, down, or has no data for the window —
+  the read is bounded by its own short timeout, separate from the model's.
+
+  The panel's `History Context` card carries a **Browse recorded paths**
+  picker: one press asks the History API which paths actually have recorded
+  data (over at least the last day), lists them with a filter and checkboxes
+  pre-ticked to the current configuration, and saves the selection straight
+  into the plugin's stored options — so choosing paths starts from what the
+  provider records instead of from guesswork. The listing goes through the
+  plugin (`GET /history/paths`), so the same endpoint resolution and
+  credential scoping apply as for the reads themselves.
+
+  On a server with security enabled the read runs with the credentials of the
+  operator who asked: their cookie or bearer token is forwarded from the request
+  that reached the plugin, so the plugin cannot read history a user could not
+  read themselves. That forwarding stops at this machine — a cookie minted here
+  is replayable against another Signal K instance, so a `historyServerUrl`
+  pointing anywhere but loopback is never sent the operator's session and takes
+  a credential of its own in `historyApiKey` instead. `/ai/status` and the
+  panel's new `History Context` card report the window, the paths and how the
+  last read went, without making a history request of their own on every poll.
 
 - **The board's GPU generation is now read and reported.** L4T has no
   nvidia-smi, so the Tegra GPU's device-tree node name (`gv11b` on Xavier,

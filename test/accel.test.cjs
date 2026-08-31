@@ -462,11 +462,14 @@ describe('review follow-ups', () => {
   });
 
   // A Xavier running Signal K may legitimately ask an Orin elsewhere on the boat
-  // for TensorRT-LLM answers; the local GPU says nothing about that one.
+  // for TensorRT-LLM answers; the local GPU says nothing about that one - not
+  // its suitability for the backend, and not its clocks or temperature either.
   it('does not blame the local GPU for a backend on another host', async () => {
     const report = await trtReport(xavierBoard, { baseUrl: 'http://orin.local:8000' });
 
-    assert.deepEqual(report.jetson.warnings, []);
+    assert.equal(report.jetson.present, false);
+    assert.equal(report.jetson.warnings, undefined);
+    assert.match(report.jetson.message, /orin\.local/);
   });
 
   // 127.0.0.1 is not the only loopback address. Anything in 127.0.0.0/8 reaches
@@ -498,7 +501,8 @@ describe('review follow-ups', () => {
       'http://orin:8000'
     ]) {
       const report = await trtReport(xavierBoard, { baseUrl });
-      assert.deepEqual(report.jetson.warnings, [], `${baseUrl} is not this host`);
+      assert.equal(report.jetson.present, false, `${baseUrl} is not this host`);
+      assert.equal(report.jetson.warnings, undefined, `${baseUrl} is not this host`);
     }
   });
 
@@ -550,7 +554,10 @@ describe('unit conversion', () => {
       Object.keys(data).some((key) => key.endsWith('.value') || key.includes('.meta.')),
       false
     );
-    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 3.5);
+    // Converted as a speed (m/s -> knots), which is a different claim from the
+    // angle conversion this test guards against: 3.5 m/s is 6.803 knots, not
+    // the 200.5 degrees that treating it as radians would produce.
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 6.803);
     assert.equal(data['navigation.courseGreatCircle.nextPoint.position.latitude'], 60.1);
     // A real angle in the same subtree still converts. This never fired for a
     // wildcard before, because the key was "...bearingTrackTrue.value".
@@ -565,7 +572,8 @@ describe('unit conversion', () => {
     });
 
     const data = payload.context.selectedData;
-    assert.equal(data['navigation.speedOverGround'], 4.1);
+    // 4.1 m/s in knots; the point of this test is the sibling timestamp key.
+    assert.equal(data['navigation.speedOverGround'], 7.97);
     assert.equal(data['navigation.speedOverGround@'], '2026-08-23T04:00:00Z');
     assert.equal(data['navigation.speedOverGround.$source'], undefined);
   });
@@ -578,6 +586,133 @@ describe('unit conversion', () => {
 
     assert.equal(payload.context.selectedData['navigation.headingTrue'], 180);
     assert.equal(payload.context.selectedData['environment.wind.angleApparent'], 45);
+  });
+});
+
+describe('notification pruning', () => {
+  const { createBridgeService } = require('../lib/bridge-service.cjs');
+
+  function notificationsFor(model) {
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: (path) => path.split('.').reduce((node, key) => (node ? node[key] : undefined), model)
+    };
+    return createBridgeService(app, {})
+      .buildAiPayload({ prompt: 'x' }, { aiDataPaths: ['notifications.*'], ...normalizeAiConfig({}) })
+      .then((payload) => payload.context.selectedData);
+  }
+
+  const notification = (state, message) => ({
+    value: {
+      state,
+      message,
+      id: 'e6f1c0a2-0000-4000-8000-000000000000',
+      method: ['visual', 'sound'],
+      status: {
+        silenced: false,
+        acknowledged: false,
+        canSilence: true,
+        canAcknowledge: true,
+        canClear: false
+      }
+    }
+  });
+
+  it('keeps a normal notification to its state alone', async () => {
+    // Its message, silenced and acknowledged are the same constants on every
+    // normal notification, and a working vessel has dozens: measured aboard,
+    // 43 of them flattened to 14,730 characters - more than the whole prompt
+    // context budget, which is how alarms got dropped from questions about
+    // alarms.
+    const data = await notificationsFor({
+      notifications: { propulsion: { engine: { oilTemperature: notification('normal', 'Value is within normal range') } } }
+    });
+
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.state'], 'normal');
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.message'], undefined);
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.status.silenced'], undefined);
+    assert.equal(data['notifications.propulsion.engine.oilTemperature.status.acknowledged'], undefined);
+  });
+
+  it('keeps everything about an alarm that is not normal', async () => {
+    const data = await notificationsFor({
+      notifications: { environment: { bilge: notification('alarm', 'Bilge water detected') } }
+    });
+
+    assert.equal(data['notifications.environment.bilge.state'], 'alarm');
+    assert.equal(data['notifications.environment.bilge.message'], 'Bilge water detected');
+    // Whether anyone has silenced or acknowledged an active alarm is exactly
+    // the sort of thing an operator asks about.
+    assert.equal(data['notifications.environment.bilge.status.silenced'], false);
+    assert.equal(data['notifications.environment.bilge.status.acknowledged'], false);
+  });
+
+  it('leaves a notification with no state alone, because unknown is not normal', async () => {
+    const data = await notificationsFor({
+      notifications: { navigation: { anchor: { value: { message: 'Dragging?' } } } }
+    });
+
+    assert.equal(data['notifications.navigation.anchor.message'], 'Dragging?');
+  });
+
+  it('drops the UI plumbing from every notification, whatever its state', async () => {
+    const data = await notificationsFor({
+      notifications: { environment: { bilge: notification('alarm', 'Bilge water detected') } }
+    });
+
+    assert.equal(data['notifications.environment.bilge.id'], undefined);
+    assert.equal(data['notifications.environment.bilge.method'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canSilence'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canAcknowledge'], undefined);
+    assert.equal(data['notifications.environment.bilge.status.canClear'], undefined);
+  });
+});
+
+describe('alarm coverage in the prompt', () => {
+  const { buildAiMessages } = require('../lib/ai-service.cjs');
+
+  const promptContext = (selectedData, aiDataPaths) =>
+    JSON.parse(
+      buildAiMessages('Any alarms?', { aiDataPaths, selectedData }, { systemPrompt: 's', numCtx: 8192, maxTokens: 1024 })[1]
+        .content.split('Signal K context (JSON, keyed by path):\n')[1]
+        .split('\n\nUnits:')[0]
+    );
+
+  it('says alarm status is unknown when no notification data was selected', () => {
+    // Measured twice against gemma4:e2b-it-qat - once with no notification
+    // path configured, once with all of them dropped for want of budget - the
+    // model answered "all alarms are normal" about data it had never seen.
+    const context = promptContext({ 'navigation.speedOverGround': 4 }, ['navigation.*']);
+
+    assert.match(context.alarms, /alarm status is unknown/);
+    assert.match(context.alarms, /do not state that alarms are normal/);
+  });
+
+  it('says nothing about coverage when notifications are present', () => {
+    const context = promptContext(
+      { 'notifications.propulsion.engine.oilTemperature.state': 'normal' },
+      ['notifications.*']
+    );
+
+    assert.equal(context.alarms, undefined);
+  });
+
+  it('says alarm status is unknown when notifications were dropped to fit', () => {
+    // The budget drops from the tail, so a large selection can leave the
+    // snapshot with no notification left in it even though one was configured.
+    // The bulk goes in first: the budget keeps entries in insertion order and
+    // drops from the tail, which is exactly how a real selection loses the
+    // notifications listed after a busy branch.
+    const selectedData = {};
+    for (let i = 0; i < 400; i += 1) {
+      selectedData[`electrical.batteries.house.cell${i}.voltage`] = 12.8;
+    }
+    selectedData['notifications.environment.bilge.state'] = 'alarm';
+
+    const context = promptContext(selectedData, ['electrical.*', 'notifications.*']);
+
+    assert.equal(Object.keys(context.data).some((path) => path.startsWith('notifications.')), false);
+    assert.match(context.alarms, /alarm status is unknown/);
   });
 });
 

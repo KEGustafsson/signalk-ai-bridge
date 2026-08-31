@@ -45,6 +45,8 @@ With this plugin you can:
 
 - ask for a vessel-state summary in plain language
 - send selected Signal K paths to AI instead of the full data tree
+- include recent history for those paths from the Signal K History API, so trend
+  questions can be answered as well as "what is true now"
 - review the AI response in a readable panel
 - see a history of previous AI requests
 - inspect the actual request that was sent to the model
@@ -94,6 +96,28 @@ left for it: `gemma4:e2b-it-qat` on any host with room for 4.3 GB of weights, an
 If Signal K runs on the host, the default Ollama URL `http://localhost:11434` is usually correct.
 
 If Signal K runs in another container, use an address reachable from that container, for example `http://ollama:11434` on a shared Docker network.
+
+If Signal K runs on **another machine**, set the plugin's Ollama URL to this
+host's address, for example `http://192.168.0.43:11434`, and verify it with
+`curl http://<that-address>:11434/api/tags` **from the Signal K machine** — the
+plugin's reachability probe runs there, not in your browser.
+
+The compose files publish Ollama on all interfaces so that case works out of the
+box. Be deliberate about what that exposes: Ollama has no authentication — anyone
+who can reach the port can run inference, pull models and delete them — and
+Docker bypasses the host firewall for published ports, so the bind address is
+the scoping tool. On a machine that ever bridges to marina or other untrusted
+wifi, narrow it with `OLLAMA_BIND` — no file edit needed:
+
+```bash
+# this host's LAN address, so only that network reaches it
+OLLAMA_BIND=192.168.1.10 docker compose -f docker-compose.xavier.yml up -d
+
+# loopback only, when Signal K runs on this host
+OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d
+```
+
+Put `OLLAMA_BIND=…` in a `.env` file beside the compose file to make it stick.
 
 ## NVIDIA Jetson
 
@@ -240,7 +264,10 @@ fraction of its throughput. When Signal K runs on the Jetson itself, the same
 card reads the board's own sysfs and reports the model, JetPack/L4T version,
 `nvpmodel` power mode, GPU load, clock against maximum, and GPU temperature —
 with a warning and the exact command to run when any of them is holding the GPU
-back. When Signal K runs elsewhere, this section is simply absent.
+back. When the inference server is on another machine, this section is replaced
+by a line saying where inference actually runs: board telemetry read here would
+describe the wrong GPU, and advise `nvpmodel` on a board with no model loaded
+on it.
 
 ### Streaming
 
@@ -257,11 +284,58 @@ Prompt evaluation is GPU work, so the context sent to the model is kept tight:
 compact JSON rather than indented, numbers rounded to 6 decimals (finer than any
 sensor on a boat), and the data keyed by path instead of repeating the path list
 alongside it. Paths that produced no value are listed separately, so the model
-can still be explicit about what is missing. On a typical wildcard selection
-this is roughly half the tokens the plugin used to send, on every request.
+can still be explicit about what is missing.
+
+A normal notification is trimmed to its `state`. Its `message` ("Value is within
+normal range"), `silenced` and `acknowledged` are the same constants on every
+one, and a working vessel has dozens — measured aboard, 43 normal notifications
+flattened to 14,730 characters, more than the whole context budget. An alarm
+that is *not* normal keeps everything, because which alarm, what it says and
+whether anyone has acknowledged it are all worth the tokens. Every notification
+also loses the UUID, the alert methods and the five `can…` booleans, which
+describe what a notification UI may do with it and answer no question.
+
+The budget follows `numCtx`. llama.cpp resolves a prompt that will not fit by
+truncating the prompt itself, to whatever `num_predict` leaves it, and says so
+only in the inference server's log — so the plugin sizes its own context to the
+window and drops whole paths, from the end of your selection, rather than let
+the backend cut the prompt mid-JSON. When it drops any, it says how many in the
+prompt, so the model can tell you the answer may be incomplete.
+
+**Order your path selection by what matters most.** The budget keeps entries in
+the order you chose them and drops from the tail, so alarms and engine data
+belong ahead of signal strengths and camera URLs.
+
+If the snapshot ends up with no notification data at all — none selected, or all
+of it dropped — the prompt says so explicitly and tells the model to report
+alarm status as unknown. Without that the model reliably answered "all alarms
+are normal" about paths it had never been shown, which is the one answer a
+vessel assistant must never give.
 
 The context returned to the panel is unchanged — only what reaches the model is
 compacted.
+
+### Units
+
+Values reach the model in the units an operator reads, and the prompt says so,
+so the model has no arithmetic left to get wrong:
+
+| Signal K | Sent to the model |
+| --- | --- |
+| Angles, in radians | Degrees |
+| Temperatures, in kelvin | Degrees Celsius |
+| Speeds, in metres per second | Knots |
+| Everything else | Unchanged SI — pressure in pascals, distance in metres, ratios 0–1 |
+
+Angle leaves are matched on the last segment of the path, including camelCase
+compounds such as `fusedHeading`, and distances, speeds and positions that live
+under an angle-ish parent (`navigation.courseGreatCircle.nextPoint.distance`)
+are explicitly excluded.
+
+Live values and history are converted by the same code, so the two can never
+disagree about which way the boat was pointing. Do not ask for conversions in
+`systemPrompt`: the values are already converted, and a prompt that asks for
+them again gets them applied twice — an attitude yaw of 86.5° came back as 495°.
 
 ### Re-tuning without a restart
 
@@ -325,12 +399,13 @@ token generation is memory-bandwidth bound, that is the whole of the difference.
 | Setting | Value | Why |
 | --- | --- | --- |
 | `numCtx` | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
-| `maxTokens` | `2048` | Output budget only; it no longer resizes the KV cache. |
+| `maxTokens` | `1024` | Output budget only. Capped at half of `numCtx` anyway, and a vessel answer rarely runs past a few hundred tokens. |
 | `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
 | `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
-| `numBatch` | `512` | Prompt-eval throughput on the Jetson iGPU, Ampere or Volta. |
+| `numBatch` | `512` on Orin, `256` on Xavier NX | Prompt-eval throughput on the Jetson iGPU. Measured: 512 fails with `CUBLAS_STATUS_ALLOC_FAILED` on a Xavier NX at `numCtx` 8192. |
 | `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
 | `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
+| `requestTimeoutMs` | `180000` | Room for a cold load plus a full answer; `0` leaves a wedged backend nothing to stop it. |
 
 ### TensorRT-LLM
 
@@ -371,7 +446,11 @@ In the web UI you will see:
 
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
-- `AI Path Selection`: which Signal K paths are currently sent to AI
+- `AI Path Selection`: which Signal K paths are sent to AI. **Browse available
+  paths** lists what this vessel publishes; tick and save — this is where the
+  selection is made, not in the plugin settings
+- `History Context`: the history window, how the last read went, and **Browse
+  recorded paths** — tick and save the paths the History API has data for
 - `AI Response`: the latest answer from the model
 - `Ask AI History`: previous prompts and results
 
@@ -387,14 +466,31 @@ These are the settings most users will care about:
 - `model`
   Ollama model name. Example: `gemma4:e2b-it-qat`
 
-- `aiDataPaths`
-  The Signal K self paths that will be sent to AI. You can use exact paths like `navigation.position` and simple wildcards like `navigation.*`
+- **AI data paths** — chosen in the web app, not here
+  Open the plugin's web app, press **Browse available paths** in the `AI Path
+  Selection` card, tick what the model should see, and save. The picker lists
+  what this vessel is actually publishing — branch wildcards first, then the
+  individual leaves they cover — which is why the choice lives there and not in
+  this settings form. Prefer a wildcard for a whole branch: it is flattened,
+  unit-converted and budgeted leaf by leaf, where a bare branch name is sent as
+  one raw subtree. On a server with security enabled, saving needs a login with
+  write access
+
+- `historyEnabled`
+  Also send recent history for the selected paths, read from the Signal K
+  History API. See [Vessel history](#vessel-history)
 
 - `requestTimeoutMs`
-  How long the plugin waits for Ollama. Set `0` to disable the timeout
+  How long the plugin waits for Ollama. Allow for a cold model load plus the
+  answer: measured on a Xavier NX, ~47 s to load and ~20 s of prompt evaluation
+  before the first token, so 120 s is tight and 180 s comfortable. `0` disables
+  the timeout entirely, which leaves nothing to stop a wedged backend
 
 - `systemPrompt`
-  Extra instructions sent to the model before your question
+  Instructions sent to the model before your question. The default is tuned
+  against measured failures — negated alarm answers, silently skipped values,
+  whole-context recitals — so prefer adding to it over replacing it, and do not
+  ask for unit conversions: see [Units](#units)
 
 - `temperature`
   Lower values are more stable and literal. Higher values are more varied
@@ -403,12 +499,17 @@ These are the settings most users will care about:
   Additional output randomness control
 
 - `maxTokens`
-  Maximum tokens the model may generate (`num_predict`). This does not size the
-  context window
+  Maximum tokens the model may generate (`num_predict`). It does not size the
+  context window, but it is capped at half of `numCtx`: the prompt and the
+  answer share the window, and llama.cpp resolves a conflict by truncating the
+  *prompt*. Half a window is already generous for a vessel summary — a few
+  hundred tokens is typical — so lower it if you want shorter answers, and raise
+  `numCtx` if you want longer ones
 
 - `numCtx`
   Context window in tokens (`num_ctx`). This is what sizes the KV cache, and
-  therefore whether the model stays resident on the GPU
+  therefore whether the model stays resident on the GPU. It also sets how much
+  vessel context the plugin will send: see [Prompt size](#prompt-size)
 
 - `gpuAutoTune`
   Force every layer onto the GPU on start and shrink `numCtx` until the whole
@@ -419,7 +520,12 @@ These are the settings most users will care about:
   explicit value overrides it, with `0` forcing CPU-only and `999` full offload
 
 - `numBatch`
-  Tokens evaluated per GPU batch (`num_batch`)
+  Tokens evaluated per GPU batch (`num_batch`). This sizes the prompt-eval
+  compute buffers, so on a small unified-memory board it is usually the first
+  setting to lower when a question fails with `CUDA error: out of memory`. 512
+  is the backend's own default, but it is not safe everywhere: on a Xavier NX
+  (8 GB, Volta) it fails reliably at `numCtx` 8192, where 256 is stable. Values
+  above `numCtx` are clamped to it
 
 - `numThread`
   CPU threads for anything not offloaded (`num_thread`). `0` lets the runtime choose
@@ -436,6 +542,117 @@ These are the settings most users will care about:
 
 - `apiKey`
   Optional bearer token for a TensorRT-LLM or NIM backend
+
+## Vessel History
+
+`getSelfPath` answers *what is true now*. A lot of what an operator actually
+asks is about a trend — "has the wind been building?", "did the batteries
+recover overnight?", "were we making way an hour ago?" — and the live data model
+cannot answer any of it.
+
+Turning on `historyEnabled` makes the plugin also read the server's
+[History API](https://demo.signalk.org/documentation/Developing/REST_APIs/History_API.html)
+(`GET /signalk/v2/api/history/values`) before each question, and put the result
+in the same prompt as the live snapshot, under a `history` key.
+
+### What you need
+
+A history provider plugin has to be installed and recording on the same Signal K
+server — for example `signalk-to-influxdb2` or `signalk-parquet`. The History API
+is the server's front end for whichever provider is installed; without one there
+is nothing behind it.
+
+If no provider is installed, the API answers 404. The plugin does not fail the
+question over it: the context says the history was unavailable, and the model is
+told to answer from live data alone and to say the history is missing rather than
+invent a trend. The same is true of a provider that is slow, down, or has no data
+for the window.
+
+### What reaches the model
+
+For each path, one series:
+
+```json
+"history": {
+  "from": "2026-04-11T09:00:00.000Z",
+  "to": "2026-04-11T10:00:00.000Z",
+  "resolutionSeconds": 300,
+  "series": {
+    "environment.wind.speedApparent": {
+      "method": "average",
+      "count": 12,
+      "min": 5.1, "max": 11.4, "first": 5.4, "last": 10.9, "average": 8.2,
+      "samples": [["2026-04-11T09:00:00.000Z", 5.4], ["2026-04-11T09:05:00.000Z", 6.1]]
+    }
+  }
+}
+```
+
+Points are picked evenly across the window and always include its first and last,
+so a trend keeps both ends. Angles, temperatures and speeds are converted
+exactly as the live snapshot is (see [Units](#units)), so the two never disagree
+about which way the boat was pointing or how warm the cabin was. History gets
+its own share of the prompt budget: a series that will not fit loses its
+`samples` before it is dropped, because min/max/first/last still answer "is it
+rising?" at a fraction of the tokens.
+
+### Settings
+
+- `historyEnabled`
+  Off by default. Turn it on once a history provider is recording
+
+- **History paths** — chosen in the web app, not here
+  Press **Browse recorded paths** in the panel's `History Context` card: it
+  lists every path your provider has data for in the last day (or your window,
+  if longer), and saves what you tick. The History API takes no wildcards, so
+  these are explicit paths; a path may carry an aggregation method, for example
+  `navigation.speedOverGround:average` (`average`, `min`, `max`, `first`,
+  `last`, `mid`, `middle_index`, `sma`, `ema`). Select none to reuse the exact
+  paths from the AI data path selection. At most 12 paths are requested
+
+- `historyDuration`
+  How far back to look: `PT1H`, `P1D`, `30m`, or a plain number of seconds.
+  Capped at 31 days
+
+- `historyResolution`
+  Size of each aggregation window, for example `1m` or `300`. Leave blank to
+  derive it from the window and the sample budget, which keeps the request
+  proportional to what fits in the prompt
+
+- `historySamples`
+  Points per path that reach the model. Default 12, minimum 2 — a single point
+  is not a series, and the live snapshot already carries the newest value
+
+- `historyApiKey`
+  Bearer token for a history server that is not this machine. Leave blank for
+  local history, or for an unauthenticated remote one
+
+- `historyProvider`
+  A specific provider plugin id. Blank uses the server's default provider
+
+- `historyServerUrl`
+  Where the History API lives. Blank calls this server on `localhost`. Set it for
+  history served by another Signal K instance on the boat, or when this server
+  runs behind TLS with a certificate `localhost` cannot verify
+
+- `historyTimeoutMs`
+  How long to wait before answering from live data alone. Default 5000, kept
+  short on purpose — this runs before the model sees the question
+
+### Servers with security enabled
+
+The History API is behind the same authentication as the rest of the REST API,
+and a plugin has no session of its own. The operator asking the question does:
+their cookie or bearer token arrives on the request that reached the plugin and
+is forwarded to the history read. History is therefore read with exactly the
+access the operator already has — the plugin cannot read history a user could not
+read themselves.
+
+That holds for **this** server only. A cookie minted here is replayable against
+another Signal K instance, so the operator's session is forwarded to a loopback
+target and nowhere else. A `historyServerUrl` pointing at another host is never
+sent it; give that host a credential issued for itself in `historyApiKey`, or
+leave it blank if it needs none.
 
 ## Notes About Model Names
 
@@ -526,9 +743,11 @@ still fails with `Unexpected token 'v', "vite v6.4."...`.)
    - Orin Nano Super (JetPack 6): `docker compose -f docker-compose.nano-super.yml up -d`
    - Xavier NX (JetPack 5): `docker compose -f docker-compose.xavier.yml up -d`
 2. Raise the power mode: `sudo nvpmodel -m <id> && sudo jetson_clocks`. The panel
-   names the id when the current mode is capped. On Orin that is `MAXN_SUPER`;
-   Xavier NX has no MAXN mode at all, so the highest wattage and core count wins
-   — usually `MODE_20W_6CORE`.
+   names the id when the current mode is capped — but only when Signal K shares
+   the host with the inference server, since that is the only board whose
+   telemetry it can read. On Orin the target is `MAXN_SUPER`; Xavier NX has no
+   MAXN mode at all, so the highest wattage and core count wins — usually
+   `MODE_20W_6CORE`.
 3. Open the plugin's web UI and read the `GPU Acceleration` card. It should say
    **GPU accelerated**, with `In GPU memory` equal for both figures.
 4. Ask a question. `Generation speed` should be in the tens of tokens/second on a

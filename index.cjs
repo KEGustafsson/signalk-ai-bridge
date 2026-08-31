@@ -27,7 +27,26 @@ const {
   retuneOffload,
   warmUpModel
 } = require('./lib/ai-service.cjs');
-const { createBridgeService } = require('./lib/bridge-service.cjs');
+const { createBridgeService, listSelfPaths, normalizeAiDataPaths } = require('./lib/bridge-service.cjs');
+const {
+  DEFAULT_HISTORY_DURATION,
+  DEFAULT_HISTORY_SAMPLES,
+  DEFAULT_HISTORY_TIMEOUT_MS,
+  MAX_HISTORY_PATHS,
+  MAX_HISTORY_SAMPLES,
+  MIN_HISTORY_SAMPLES,
+  authHeadersFromRequest,
+  listHistoryPaths,
+  normalizeHistoryConfig,
+  resolveHistoryBaseUrl,
+  resolveHistoryPaths,
+  resolveWindow
+} = require('./lib/history-service.cjs');
+
+// A selection is prompt material: every path is prompt-eval work on the GPU,
+// and the context budget drops what does not fit anyway. Wildcards mean a
+// handful of entries covers a whole vessel.
+const MAX_SELECTED_AI_PATHS = 100;
 
 module.exports = function createPlugin(app, dependencies = {}) {
   let pluginOptions = {};
@@ -56,7 +75,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   const getConfig = () => ({
     ...normalizeAiConfig(pluginOptions),
-    ...normalizeServerConfig(pluginOptions)
+    ...normalizeServerConfig(pluginOptions),
+    ...normalizeHistoryConfig(pluginOptions)
   });
 
   const schema = () => ({
@@ -83,13 +103,20 @@ module.exports = function createPlugin(app, dependencies = {}) {
       systemPrompt: {
         type: 'string',
         title: 'System prompt',
-        description: 'Passed as a native Ollama system message before the operator request.',
+        description:
+          'Passed as a native Ollama system message before the operator request. The default is tuned against ' +
+          'measured failures, so prefer adding to it over replacing it — and do not ask for unit conversions: ' +
+          'angles, temperatures and speeds are already converted to degrees, Celsius and knots before the model ' +
+          'sees them, and asking again gets them converted twice.',
         default: DEFAULT_SYSTEM_PROMPT
       },
       requestTimeoutMs: {
         type: 'integer',
         title: 'Request timeout (ms)',
-        description: 'How long to wait for Ollama before failing. Set to 0 to disable the timeout.',
+        description:
+          'How long to wait for Ollama before failing. Allow for a cold model load plus the answer — on a Xavier NX ' +
+          'that is roughly 47 seconds to load and 20 more before the first token. Set to 0 to disable the timeout, ' +
+          'which leaves nothing to stop a wedged backend.',
         default: 120000,
         minimum: 0,
         maximum: 300000
@@ -112,7 +139,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'Max output tokens',
         description:
-          'Upper bound on generated tokens (num_predict). This no longer sizes the KV cache — use "GPU context window" for that.',
+          'Upper bound on generated tokens (num_predict). It does not size the KV cache — use "GPU context window" ' +
+          'for that — but it is capped at half the context window, because the prompt and the answer share it and ' +
+          'the backend resolves a conflict by truncating the prompt. Raise the context window for longer answers.',
         default: DEFAULT_MAX_TOKENS,
         minimum: 64,
         maximum: MAX_NUM_CTX
@@ -121,7 +150,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'GPU context window (num_ctx)',
         description:
-          'Tokens of context the model keeps in memory. llama.cpp reserves the KV cache from this value up front, so it is the setting that decides whether the model stays resident on the GPU. On a Jetson Orin Nano Super (8 GB unified memory) keep this at or below 16384 for a 4B-class model.',
+          'Tokens of context the model keeps in memory. llama.cpp reserves the KV cache from this value up front, ' +
+          'so it is the setting that decides whether the model stays resident on the GPU, and it also sets how much ' +
+          'vessel data the plugin will send: paths beyond what fits are dropped from the end of your selection, and ' +
+          'the prompt says how many. On a Jetson Orin Nano Super (8 GB unified memory) keep this at or below 16384 ' +
+          'for a 4B-class model.',
         default: DEFAULT_NUM_CTX,
         minimum: MIN_NUM_CTX,
         maximum: MAX_NUM_CTX
@@ -146,7 +179,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'integer',
         title: 'Prompt batch size (num_batch)',
         description:
-          'Tokens evaluated per GPU batch. Larger batches raise prompt-eval throughput on the Orin Ampere GPU at the cost of some memory.',
+          'Tokens evaluated per GPU batch. Larger batches raise prompt-eval throughput at the cost of memory, and ' +
+          'this is usually the first setting to lower after a CUDA out-of-memory error. 512 suits an Orin; a ' +
+          'Xavier NX (8 GB, Volta) needs 256 at a context window of 8192.',
         default: DEFAULT_NUM_BATCH,
         minimum: MIN_NUM_BATCH,
         maximum: MAX_NUM_BATCH
@@ -189,25 +224,96 @@ module.exports = function createPlugin(app, dependencies = {}) {
           'Optional bearer token sent to an OpenAI-compatible backend. Leave blank for a local Ollama or unauthenticated trtllm-serve.',
         default: ''
       },
-      aiDataPaths: {
-        type: 'array',
-        title: 'AI data paths',
+      historyEnabled: {
+        type: 'boolean',
+        title: 'Include history from the Signal K History API',
         description:
-          'Signal K self paths to collect and send to AI. Exact paths and simple wildcards ending in .* are supported. You can type your own paths, for example navigation.position, navigation.*, environment.wind.speedApparent, or notifications.',
-        uniqueItems: true,
-        default: [
-          'navigation.position',
-          'navigation.speedOverGround',
-          'navigation.courseOverGroundTrue',
-          'notifications'
-        ],
-        items: {
-          type: 'string',
-          title: 'Signal K path'
-        }
+          'Also send recent history for the selected paths, read from the server\'s History API (/signalk/v2/api/history). Requires a history provider plugin such as signalk-to-influxdb2 or signalk-parquet; without one the plugin says the history was unavailable and answers from live data alone. Choose the paths in the plugin\'s web app, under History Context.',
+        default: false
+      },
+      historyDuration: {
+        type: 'string',
+        title: 'History window',
+        description:
+          'How far back to look, as an ISO 8601 duration (PT15M, PT1H, P1D), a shorthand (30m, 2h), or a plain number of seconds. Capped at 31 days.',
+        default: DEFAULT_HISTORY_DURATION
+      },
+      historyResolution: {
+        type: 'string',
+        title: 'History resolution',
+        description:
+          'Size of each aggregation window, for example 1m or 300. Leave blank to derive it from the window and the sample budget, which is what keeps the request proportional to what actually fits in the prompt.',
+        default: ''
+      },
+      historySamples: {
+        type: 'integer',
+        title: 'History samples per path',
+        description:
+          'How many points per path reach the model. Points are picked evenly across the window and always include its first and last, with min, max, first, last and average sent alongside. Two is the minimum: a single point is not a series, and the live snapshot already carries the newest value.',
+        default: DEFAULT_HISTORY_SAMPLES,
+        minimum: MIN_HISTORY_SAMPLES,
+        maximum: MAX_HISTORY_SAMPLES
+      },
+      historyApiKey: {
+        type: 'string',
+        title: 'History API key (remote servers only)',
+        description:
+          'Bearer token for a history server that is not this machine. The operator\'s own session is forwarded only to this server on localhost — a cookie minted here is replayable against another Signal K instance, so a remote host is never sent it and needs a credential issued for itself. Leave blank for local history, or for an unauthenticated remote one.',
+        default: ''
+      },
+      historyProvider: {
+        type: 'string',
+        title: 'History provider (optional)',
+        description:
+          'Plugin id of a specific history provider, for example signalk-parquet. Leave blank to use the server default.',
+        default: ''
+      },
+      historyServerUrl: {
+        type: 'string',
+        title: 'Signal K server URL (optional)',
+        description:
+          'Where to reach the History API. Leave blank to call this server on localhost. Set it for history served by another Signal K instance, or when this server runs behind TLS with a certificate localhost cannot verify.',
+        default: ''
+      },
+      historyTimeoutMs: {
+        type: 'integer',
+        title: 'History request timeout (ms)',
+        description:
+          'How long to wait for the History API before answering from live data alone. Kept short on purpose: this runs before the model sees the question. Set to 0 to disable the timeout.',
+        default: DEFAULT_HISTORY_TIMEOUT_MS,
+        minimum: 0,
+        maximum: 120000
       }
     }
   });
+
+  /**
+   * History configuration as it will actually be used, plus how the last read
+   * went.
+   *
+   * Reporting the last outcome rather than probing keeps /ai/status free: the
+   * panel polls it on every render pass, and a probe there would put a database
+   * query behind each of those polls for information that only changes when a
+   * question is asked.
+   */
+  const describeHistory = (config) => {
+    const window = resolveWindow(config);
+
+    return {
+      enabled: config.historyEnabled,
+      // The same fallback the bridge applies: an unset `aiDataPaths` means the
+      // default live paths, and those are what an empty history list reuses.
+      paths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) }),
+      durationSeconds: window.durationSeconds,
+      resolutionSeconds: window.resolutionSeconds,
+      samples: config.historySamples,
+      // Redacted for the same reason baseUrl is: an operator may have put
+      // credentials in the URL of a remote Signal K server.
+      serverUrl: redactUrl(resolveHistoryBaseUrl(app, config)),
+      ...(config.historyProvider ? { provider: config.historyProvider } : {}),
+      lastFetch: bridgeService.getHistoryStatus()
+    };
+  };
 
   // One place for code -> HTTP, so /ai/query and the bridge routes cannot drift
   // apart the way they had (only one of them mapped `disabled` and `timeout`).
@@ -271,6 +377,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         keepAlive: config.keepAlive,
         gpuAutoTune: config.gpuAutoTune,
         aiDataPaths: config.aiDataPaths,
+        history: describeHistory(config),
         signalKSelfId: typeof app.selfId === 'string' ? app.selfId : undefined,
         aiAvailable: availability.available,
         ollamaReachable: availability.backendReachable,
@@ -296,7 +403,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
-      const payload = await bridgeService.buildAiPayload(body, config);
+      const payload = await bridgeService.buildAiPayload(body, config, {
+        authHeaders: authHeadersFromRequest(req)
+      });
       const result = await queryAiModel(payload, config, dependencies);
       res.status(200).json(result);
     } catch (error) {
@@ -335,7 +444,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       const config = getConfig();
       const body = await readJsonBody(req);
-      const result = await bridgeService.executeTool(body, config);
+      const result = await bridgeService.executeTool(body, config, {
+        authHeaders: authHeadersFromRequest(req)
+      });
       res.status(200).json(result);
     } catch (error) {
       const statusCode =
@@ -357,6 +468,181 @@ module.exports = function createPlugin(app, dependencies = {}) {
               ? error.code
               : 'unknown',
           message: error instanceof Error ? error.message : 'Unknown bridge failure.'
+        }
+      });
+    }
+  };
+
+  /**
+   * May this request change the path selection?
+   *
+   * The selection decides what vessel data leaves the boat for the inference
+   * host, so it is a write, not a preference. On a server with security
+   * enabled that means an authenticated principal with more than read access;
+   * on a server with security off - a single-user boat network, which is the
+   * common Signal K setup - there is no identity to check and the route is as
+   * open as the rest of the server already is.
+   */
+  const isSelectionWriteAllowed = (req) => {
+    const strategy = app && app.securityStrategy;
+    if (!strategy || (typeof strategy.isDummy === 'function' && strategy.isDummy())) {
+      return true;
+    }
+
+    const principal = req && req.skPrincipal;
+    if (principal) {
+      const permissions = String(principal.permissions || '').toLowerCase();
+      return permissions === 'admin' || permissions === 'readwrite';
+    }
+
+    // Older strategies expose the session only through getLoginStatus.
+    if (typeof strategy.getLoginStatus === 'function') {
+      try {
+        const status = strategy.getLoginStatus(req) || {};
+        return status.status === 'loggedIn' && status.readOnlyAccess !== true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
+  };
+
+  /** A path list from the panel: strings, trimmed, deduplicated, bounded. */
+  const normalizeSelection = (value, limit) => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const cleaned = value
+      .map((item) => String(item == null ? '' : item).trim())
+      .filter((item) => item.length > 0 && item.length <= 200);
+    return [...new Set(cleaned)].slice(0, limit);
+  };
+
+  /**
+   * Store the path selections the panel made.
+   *
+   * These two lists left the plugin's settings schema: a path list is chosen
+   * against what the vessel actually publishes, which the settings form cannot
+   * show and the panel's pickers can. They are still stored as plugin options,
+   * so a restart and a config backup carry them like any other setting.
+   */
+  const saveSelectionHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+
+    if (!isSelectionWriteAllowed(req)) {
+      res.status(401).json({
+        error: {
+          code: 'unauthorized',
+          message: 'Changing the path selection requires a Signal K login with write access.'
+        }
+      });
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(req);
+      const aiDataPaths = normalizeSelection(body && body.aiDataPaths, MAX_SELECTED_AI_PATHS);
+      const historyPaths = normalizeSelection(body && body.historyPaths, MAX_HISTORY_PATHS);
+
+      if (aiDataPaths === undefined && historyPaths === undefined) {
+        res.status(400).json({
+          error: {
+            code: 'validation-failed',
+            message: 'Send aiDataPaths, historyPaths, or both, as arrays of Signal K paths.'
+          }
+        });
+        return;
+      }
+
+      const updated = {
+        ...pluginOptions,
+        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
+        ...(historyPaths === undefined ? {} : { historyPaths })
+      };
+
+      if (typeof app.savePluginOptions !== 'function') {
+        res.status(501).json({
+          error: {
+            code: 'unknown',
+            message: 'This Signal K server does not let plugins store their own settings.'
+          }
+        });
+        return;
+      }
+
+      await new Promise((resolve, reject) => {
+        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+      });
+
+      // Applied to the running plugin as well as stored, so the next question
+      // uses the new selection without waiting for a restart.
+      pluginOptions = updated;
+
+      const config = getConfig();
+      res.status(200).json({
+        aiDataPaths: normalizeAiDataPaths(config),
+        historyPaths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) })
+      });
+    } catch (error) {
+      const statusCode = error && error.code === 'validation-failed' ? 400 : 500;
+      res.status(statusCode).json({
+        error: {
+          code: error && error.code === 'validation-failed' ? 'validation-failed' : 'unknown',
+          message: error instanceof Error ? error.message : 'Could not save the path selection.'
+        }
+      });
+    }
+  };
+
+  /**
+   * Live Signal K paths this vessel publishes, for the panel's picker.
+   *
+   * Read straight from the data model - no backend, no provider - so it
+   * answers whether or not AI is configured, which is what makes it useful
+   * while an operator is still deciding what to send.
+   */
+  const selfPathsHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json({ ...listSelfPaths(app), selected: normalizeAiDataPaths(getConfig()) });
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'unknown',
+          message: error instanceof Error ? error.message : 'Unknown path listing failure.'
+        }
+      });
+    }
+  };
+
+  /**
+   * Paths the History API has recorded, for the panel's picker.
+   *
+   * Deliberately not gated on historyEnabled: browsing what a provider records
+   * is how an operator decides whether enabling history is worth it. Failures
+   * arrive as a message in a 200 body - the picker shows the reason instead of
+   * the card breaking on a status code.
+   */
+  const historyPathsHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      const config = getConfig();
+      const result = await listHistoryPaths(app, config, dependencies, {
+        authHeaders: authHeadersFromRequest(req)
+      });
+      res.status(200).json(result);
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'unknown',
+          message: error instanceof Error ? error.message : 'Unknown history failure.'
         }
       });
     }
@@ -473,7 +759,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
         (text) => {
           writeLine({ type: 'token', text });
         },
-        abortController.signal
+        abortController.signal,
+        { authHeaders: authHeadersFromRequest(req) }
       );
 
       // streamTool reports a bad request by *returning* an error result rather
@@ -525,6 +812,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
   // token is on screen in cleartext and echoed back on every config page load.
   const uiSchema = () => ({
     apiKey: { 'ui:widget': 'password' },
+    historyApiKey: { 'ui:widget': 'password' },
     systemPrompt: { 'ui:widget': 'textarea' }
   });
 
@@ -603,6 +891,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/bridge/execute', bridgeExecuteHandler);
       router.post('/bridge/stream', bridgeStreamHandler);
       router.post('/ai/retune', retuneHandler);
+      router.get('/history/paths', historyPathsHandler);
+      router.get('/signalk/paths', selfPathsHandler);
+      router.post('/paths/selection', saveSelectionHandler);
       routesRegistered = true;
     },
     stop: () => {

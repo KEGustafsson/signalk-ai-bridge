@@ -2,7 +2,8 @@ import React from 'react';
 import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
-import type { AcceleratorStatus, AiChatMessage } from './types.js';
+import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
+import { withUnlistedSelection } from './pathSelection.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -33,6 +34,7 @@ interface BackendStatus {
   readonly keepAlive?: string;
   readonly accelerator?: AcceleratorStatus;
   readonly aiDataPaths?: readonly string[];
+  readonly history?: AiHistoryStatus;
   readonly signalKSelfId?: string;
   readonly aiAvailable?: boolean;
   readonly ollamaReachable?: boolean;
@@ -65,6 +67,220 @@ function getStatusEndpoint(props: AppPanelProps): string {
   return '/plugins/signalk-ai-bridge/ai/status';
 }
 
+function getSelectionEndpoint(props: AppPanelProps): string {
+  if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
+    return props.bridgeEndpoint.replace(/\/bridge\/execute$/, '/paths/selection');
+  }
+
+  return '/plugins/signalk-ai-bridge/paths/selection';
+}
+
+function getSelfPathsEndpoint(props: AppPanelProps): string {
+  if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
+    return props.bridgeEndpoint.replace(/\/bridge\/execute$/, '/signalk/paths');
+  }
+
+  return '/plugins/signalk-ai-bridge/signalk/paths';
+}
+
+function getHistoryPathsEndpoint(props: AppPanelProps): string {
+  if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
+    return props.bridgeEndpoint.replace(/\/bridge\/execute$/, '/history/paths');
+  }
+
+  return '/plugins/signalk-ai-bridge/history/paths';
+}
+
+interface PathPickerState {
+  readonly status: 'idle' | 'loading' | 'loaded';
+  readonly paths: readonly string[];
+  readonly windowSeconds?: number;
+  readonly message?: string;
+}
+
+interface PathPickerProps {
+  readonly state: PathPickerState;
+  readonly picked: Record<string, boolean>;
+  readonly setPicked: (updater: (previous: Record<string, boolean>) => Record<string, boolean>) => void;
+  readonly filter: string;
+  readonly setFilter: (value: string) => void;
+  readonly notice: string | null;
+  readonly saving: boolean;
+  readonly onBrowse: () => void;
+  readonly onSave: () => void;
+  readonly idleLabel: string;
+  readonly loadingLabel: string;
+  readonly emptyLabel: string;
+  readonly summary: (count: number) => string;
+}
+
+const pickerButtonStyle = {
+  padding: '0.35rem 0.75rem',
+  borderRadius: '6px',
+  border: '1px solid #94a3b8',
+  background: '#ffffff',
+  color: '#0f172a'
+} as const;
+
+/**
+ * Browse-tick-copy over a list of Signal K paths.
+ *
+ * Shared by the live and history cards because the interaction is identical
+ * and only the source and wording differ. Saving writes straight through to
+ * the plugin's stored options: these two lists are chosen against what the
+ * vessel actually publishes, which the settings form cannot show, so the panel
+ * is the only place they are edited.
+ */
+/**
+ * The picked paths, plus the configured ones the picker could not offer.
+ *
+ * A save writes the whole list, so anything the listing did not carry would be
+ * dropped by a save the operator meant as "keep these too". The listing misses
+ * paths for reasons that say nothing about intent: a live source that happens
+ * to be silent, a listing truncated at its cap, a history path with nothing
+ * recorded in the discovery window. An unlisted path has no checkbox, so the
+ * picker cannot express "remove it" either - only what it showed can be
+ * unticked.
+ */
+/**
+ * Write a path selection through to the plugin's stored options.
+ *
+ * Returns a message rather than throwing: every outcome - saved, refused for
+ * want of a login, plugin unreachable - belongs beside the picker that made
+ * the selection, not in a console nobody has open on a boat.
+ */
+async function saveSelection(
+  props: AppPanelProps,
+  selection: { aiDataPaths?: readonly string[]; historyPaths?: readonly string[] }
+): Promise<{ message: string; status?: BackendStatus }> {
+  const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
+  if (typeof fetchImpl !== 'function') {
+    return { message: 'This browser cannot reach the plugin.' };
+  }
+
+  const count = (selection.aiDataPaths ?? selection.historyPaths ?? []).length;
+  try {
+    const response = await fetchImpl(getSelectionEndpoint(props), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(selection)
+    });
+    const payload = (await response.json()) as { error?: { message?: string } };
+    if (!response.ok) {
+      return { message: payload.error?.message ?? `The plugin refused the change (HTTP ${response.status}).` };
+    }
+
+    // Re-read the status so the card's own list shows what was stored, not
+    // what the browser hoped was stored.
+    let status: BackendStatus | undefined;
+    try {
+      const statusResponse = await fetchImpl(getStatusEndpoint(props), { method: 'GET', credentials: 'include' });
+      if (statusResponse.ok) {
+        status = (await statusResponse.json()) as BackendStatus;
+      }
+    } catch {
+      // The save landed; a stale card is a cosmetic problem.
+    }
+
+    return {
+      message: count === 0 ? 'Saved: no paths selected.' : `Saved ${count} path${count === 1 ? '' : 's'}.`,
+      status
+    };
+  } catch (error) {
+    return { message: error instanceof Error ? error.message : 'Could not reach the plugin.' };
+  }
+}
+
+function PathPicker(props: PathPickerProps) {
+  const { state, picked, setPicked, filter, setFilter, notice } = props;
+  const pickedCount = state.paths.filter((path) => picked[path]).length;
+  const visible = state.paths.filter((path) => path.toLowerCase().includes(filter.trim().toLowerCase()));
+
+  return (
+    <div style={{ marginTop: '0.75rem' }}>
+      <button
+        type="button"
+        onClick={props.onBrowse}
+        disabled={state.status === 'loading'}
+        style={{ ...pickerButtonStyle, cursor: state.status === 'loading' ? 'wait' : 'pointer' }}
+      >
+        {state.status === 'loading' ? props.loadingLabel : props.idleLabel}
+      </button>
+      {state.status === 'loaded' ? (
+        <>
+          {state.message ? <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{state.message}</p> : null}
+          {state.paths.length === 0 ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>{props.emptyLabel}</p>
+          ) : (
+            <div style={{ marginTop: '0.5rem' }}>
+              <p style={{ margin: 0, color: '#475569' }}>
+                {props.summary(state.paths.length)} Tick the ones the model should see, then save.
+              </p>
+              {state.paths.length > 8 ? (
+                <input
+                  type="text"
+                  value={filter}
+                  onChange={(event: { target: { value: string } }) => setFilter(event.target.value)}
+                  placeholder="Filter paths…"
+                  style={{
+                    marginTop: '0.5rem',
+                    padding: '0.3rem 0.5rem',
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    width: '100%',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              ) : null}
+              <div
+                style={{
+                  marginTop: '0.5rem',
+                  maxHeight: '14rem',
+                  overflowY: 'auto',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '6px',
+                  padding: '0.35rem 0.5rem',
+                  background: '#ffffff'
+                }}
+              >
+                {visible.length === 0 ? (
+                  <p style={{ margin: 0, color: '#475569' }}>No path matches that filter.</p>
+                ) : (
+                  visible.map((path) => (
+                    <label key={path} style={{ display: 'block', padding: '0.1rem 0', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(picked[path])}
+                        onChange={(event: { target: { checked: boolean } }) =>
+                          setPicked((previous) => ({ ...previous, [path]: event.target.checked }))
+                        }
+                        style={{ marginRight: '0.4rem' }}
+                      />
+                      <code>{path}</code>
+                    </label>
+                  ))
+                )}
+              </div>
+              <p style={{ margin: '0.5rem 0 0 0' }}>
+                <button
+                  type="button"
+                  onClick={props.onSave}
+                  disabled={props.saving}
+                  style={{ ...pickerButtonStyle, cursor: props.saving ? 'wait' : 'pointer' }}
+                >
+                  {props.saving ? 'Saving…' : `Save ${pickedCount} selected`}
+                </button>
+                {notice ? <span style={{ marginLeft: '0.5rem', color: '#475569' }}>{notice}</span> : null}
+              </p>
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 function formatTimestamp(value: string | undefined): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     return 'Unavailable';
@@ -72,6 +288,35 @@ function formatTimestamp(value: string | undefined): string {
 
   const parsed = new Date(value);
   return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : value;
+}
+
+/** `5400` -> `1 h 30 min`, for a window an operator typed as `PT1H30M`. */
+function formatSeconds(seconds: number | undefined): string {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    return 'Unavailable';
+  }
+
+  const units: ReadonlyArray<readonly [number, string]> = [
+    [86400, 'd'],
+    [3600, 'h'],
+    [60, 'min'],
+    [1, 's']
+  ];
+
+  const parts: string[] = [];
+  let remaining = Math.round(seconds);
+  for (const [size, label] of units) {
+    const amount = Math.floor(remaining / size);
+    if (amount > 0) {
+      parts.push(`${amount} ${label}`);
+      remaining -= amount * size;
+    }
+    if (parts.length === 2) {
+      break;
+    }
+  }
+
+  return parts.join(' ');
 }
 
 function formatTimeoutLabel(timeoutMs: number | undefined): string {
@@ -234,6 +479,22 @@ export default function AppPanel(props: AppPanelProps) {
   const [streamingAnswer, setStreamingAnswer] = React.useState<string>('');
   const [aiRequestLog, setAiRequestLog] = React.useState<AiRequestLogEntry[]>([]);
   const [backendStatus, setBackendStatus] = React.useState<BackendStatus | null>(null);
+  // The status route is polled once, on mount, and each poll costs the
+  // inference server three round trips plus a full Jetson sysfs scan - so the
+  // history card is refreshed from the answer itself, which carries the very
+  // context the bridge just recorded, rather than by asking the server again.
+  const [lastHistoryFetch, setLastHistoryFetch] = React.useState<AiHistoryFetchStatus | null>(null);
+  // The picker is fetch-on-demand: the listing is a provider database query,
+  // so it runs when the operator asks for it, never on a render pass.
+  const [historyPathsState, setHistoryPathsState] = React.useState<PathPickerState>({ status: 'idle', paths: [] });
+  const [pickedPaths, setPickedPaths] = React.useState<Record<string, boolean>>({});
+  const [pathFilter, setPathFilter] = React.useState('');
+  const [copyNotice, setCopyNotice] = React.useState<string | null>(null);
+  const [livePathsState, setLivePathsState] = React.useState<PathPickerState>({ status: 'idle', paths: [] });
+  const [pickedLivePaths, setPickedLivePaths] = React.useState<Record<string, boolean>>({});
+  const [livePathFilter, setLivePathFilter] = React.useState('');
+  const [liveCopyNotice, setLiveCopyNotice] = React.useState<string | null>(null);
+  const [savingSelection, setSavingSelection] = React.useState<'live' | 'history' | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -328,6 +589,16 @@ export default function AppPanel(props: AppPanelProps) {
       // trusted as the final rendering.
       setToolResult(result);
       setStreamingAnswer('');
+      if (result.type === 'ask-vessel-ai-result' && result.context?.history) {
+        const history = result.context.history;
+        setLastHistoryFetch({
+          at: new Date().toISOString(),
+          ok: typeof history.message !== 'string',
+          requestedPaths: history.requestedPaths,
+          seriesCount: history.series ? Object.keys(history.series).length : 0,
+          message: history.message
+        });
+      }
       setAiRequestLog((previous) =>
         previous.map((entry) =>
           entry.id === requestId
@@ -349,6 +620,126 @@ export default function AppPanel(props: AppPanelProps) {
       setStreamingAnswer('');
     }
   }, [props, aiInput]);
+
+  // Whichever is newer: this session's own answers, else whatever the server
+  // had recorded when the panel loaded.
+  const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
+  const historyPaths = backendStatus?.history?.paths ?? [];
+
+  const onBrowseHistoryPaths = React.useCallback(async () => {
+    const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') {
+      return;
+    }
+
+    setHistoryPathsState({ status: 'loading', paths: [] });
+    setCopyNotice(null);
+    try {
+      const response = await fetchImpl(getHistoryPathsEndpoint(props), {
+        method: 'GET',
+        credentials: 'include'
+      });
+      const payload = (await response.json()) as {
+        paths?: readonly string[];
+        windowSeconds?: number;
+        message?: string;
+        error?: { message?: string };
+      };
+      const paths = Array.isArray(payload.paths) ? payload.paths : [];
+      setHistoryPathsState({
+        status: 'loaded',
+        paths,
+        windowSeconds: payload.windowSeconds,
+        message: payload.message ?? payload.error?.message
+      });
+      // Pre-tick what the plugin already uses, so the selection starts from
+      // the current configuration instead of from nothing.
+      const configured = new Set(
+        (backendStatus?.history?.paths ?? []).map((path) => path.split(':')[0])
+      );
+      setPickedPaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
+    } catch (error) {
+      setHistoryPathsState({
+        status: 'loaded',
+        paths: [],
+        message: error instanceof Error ? error.message : 'Could not reach the plugin.'
+      });
+    }
+  }, [props, backendStatus]);
+
+  const onBrowseLivePaths = React.useCallback(async () => {
+    const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') {
+      return;
+    }
+
+    setLivePathsState({ status: 'loading', paths: [] });
+    setLiveCopyNotice(null);
+    try {
+      const response = await fetchImpl(getSelfPathsEndpoint(props), {
+        method: 'GET',
+        credentials: 'include'
+      });
+      const payload = (await response.json()) as {
+        paths?: readonly string[];
+        branches?: ReadonlyArray<{ path?: string; leafCount?: number }>;
+        selected?: readonly string[];
+        message?: string;
+        error?: { message?: string };
+      };
+
+      // Branch wildcards first: they are the selection that scales, and the
+      // one an operator wanting "all of navigation" should reach for rather
+      // than ticking forty leaves.
+      const branchPaths = (payload.branches ?? [])
+        .map((branch) => branch.path)
+        .filter((path): path is string => typeof path === 'string');
+      const leafPaths = Array.isArray(payload.paths) ? payload.paths : [];
+      const paths = [...branchPaths, ...leafPaths];
+
+      setLivePathsState({ status: 'loaded', paths, message: payload.message ?? payload.error?.message });
+      const configured = new Set(payload.selected ?? []);
+      setPickedLivePaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
+    } catch (error) {
+      setLivePathsState({
+        status: 'loaded',
+        paths: [],
+        message: error instanceof Error ? error.message : 'Could not reach the plugin.'
+      });
+    }
+  }, [props]);
+
+  const onSavePickedLivePaths = React.useCallback(async () => {
+    const picked = withUnlistedSelection(
+      livePathsState.paths.filter((path) => pickedLivePaths[path]),
+      livePathsState.paths,
+      backendStatus?.aiDataPaths
+    );
+    setSavingSelection('live');
+    setLiveCopyNotice(null);
+    const result = await saveSelection(props, { aiDataPaths: picked });
+    setSavingSelection(null);
+    setLiveCopyNotice(result.message);
+    if (result.status) {
+      setBackendStatus(result.status);
+    }
+  }, [backendStatus, livePathsState, pickedLivePaths, props]);
+
+  const onSavePickedPaths = React.useCallback(async () => {
+    const picked = withUnlistedSelection(
+      historyPathsState.paths.filter((path) => pickedPaths[path]),
+      historyPathsState.paths,
+      backendStatus?.history?.paths
+    );
+    setSavingSelection('history');
+    setCopyNotice(null);
+    const result = await saveSelection(props, { historyPaths: picked });
+    setSavingSelection(null);
+    setCopyNotice(result.message);
+    if (result.status) {
+      setBackendStatus(result.status);
+    }
+  }, [backendStatus, historyPathsState, pickedPaths, props]);
 
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),
@@ -474,6 +865,106 @@ export default function AppPanel(props: AppPanelProps) {
           ) : (
             <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
           )}
+          <PathPicker
+            state={livePathsState}
+            picked={pickedLivePaths}
+            setPicked={setPickedLivePaths}
+            filter={livePathFilter}
+            setFilter={setLivePathFilter}
+            notice={liveCopyNotice}
+            saving={savingSelection === 'live'}
+            onBrowse={onBrowseLivePaths}
+            onSave={onSavePickedLivePaths}
+            idleLabel="Browse available paths"
+            loadingLabel="Reading Signal K…"
+            emptyLabel="This vessel is not publishing any data on the paths the picker knows about."
+            summary={(count) =>
+              `${count} selectable path${count === 1 ? '' : 's'}: branch wildcards first, then the individual leaves they cover.`
+            }
+          />
+        </section>
+
+        <section
+          style={{
+            padding: '0.75rem',
+            borderRadius: '8px',
+            backgroundColor: '#f8fafc',
+            border: '1px solid #cbd5e1'
+          }}
+        >
+          <h3 style={{ marginTop: 0 }}>History Context</h3>
+          {/*
+            Outside the `enabled` branch on purpose. The stored selection used
+            to render only when history was switched on, so an operator who had
+            picked their paths and left the feature off saw nothing but the
+            "Disabled" note - the selection first appeared when they pressed
+            Browse, which reads as the picker inventing ticks rather than
+            showing what was already saved. The live card has always listed its
+            selection unconditionally; this one now matches it.
+          */}
+          {historyPaths.length > 0 ? (
+            <ul style={{ margin: '0 0 0.5rem 0', paddingLeft: '1.1rem' }}>
+              {historyPaths.map((path) => (
+                <li key={path}>{path}</li>
+              ))}
+            </ul>
+          ) : (
+            <p style={{ margin: '0 0 0.5rem 0' }}>
+              No history paths are configured, and no exact live paths were available to reuse.
+            </p>
+          )}
+          {backendStatus?.history?.enabled ? (
+            <>
+              <p style={{ margin: 0 }}>
+                Window: last {formatSeconds(backendStatus.history.durationSeconds)}, one point per{' '}
+                {formatSeconds(backendStatus.history.resolutionSeconds)}, up to {backendStatus.history.samples} sample
+                {backendStatus.history.samples === 1 ? '' : 's'} per path
+                <br />
+                Source: {backendStatus.history.serverUrl}
+                {backendStatus.history.provider ? ` (provider ${backendStatus.history.provider})` : ''}
+              </p>
+              {historyFetch ? (
+                <p style={{ margin: '0.5rem 0 0 0', color: historyFetch.ok ? '#166534' : '#b45309' }}>
+                  Last read {formatTimestamp(historyFetch.at)}:{' '}
+                  {historyFetch.ok
+                    ? `${historyFetch.seriesCount ?? 0} series returned`
+                    : historyFetch.message}
+                </p>
+              ) : (
+                <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>
+                  History is read when a question is asked; nothing has been read yet.
+                </p>
+              )}
+            </>
+          ) : (
+            <p style={{ margin: 0 }}>
+              Disabled{historyPaths.length > 0 ? ', so the paths above are stored but not sent' : ''}. Enable{' '}
+              <code>historyEnabled</code> in the plugin settings to also send recent history from the Signal K History
+              API, which needs a history provider plugin such as signalk-to-influxdb2 or signalk-parquet.
+            </p>
+          )}
+
+          <PathPicker
+            state={historyPathsState}
+            picked={pickedPaths}
+            setPicked={setPickedPaths}
+            filter={pathFilter}
+            setFilter={setPathFilter}
+            notice={copyNotice}
+            saving={savingSelection === 'history'}
+            onBrowse={onBrowseHistoryPaths}
+            onSave={onSavePickedPaths}
+            idleLabel="Browse recorded paths"
+            loadingLabel="Reading History API…"
+            emptyLabel={`The History API answered, but no paths have recorded data in the last ${formatSeconds(
+              historyPathsState.windowSeconds
+            )}.`}
+            summary={(count) =>
+              `${count} path${count === 1 ? '' : 's'} with recorded data in the last ${formatSeconds(
+                historyPathsState.windowSeconds
+              )}.`
+            }
+          />
         </section>
 
         <section
@@ -546,6 +1037,11 @@ export default function AppPanel(props: AppPanelProps) {
                     GPU temperature: {jetson.gpuTemperatureC} C
                   </>
                 ) : null}
+              </>
+            ) : jetson?.message ? (
+              <>
+                <br />
+                {jetson.message}
               </>
             ) : null}
           </p>
