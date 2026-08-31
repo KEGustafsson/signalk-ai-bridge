@@ -612,6 +612,7 @@ export default function AppPanel(props: AppPanelProps) {
   // Whichever is newer: this session's own answers, else whatever the server
   // had recorded when the panel loaded.
   const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
+  const historyPaths = backendStatus?.history?.paths ?? [];
 
   const onBrowseHistoryPaths = React.useCallback(async () => {
     const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
@@ -872,6 +873,26 @@ export default function AppPanel(props: AppPanelProps) {
           }}
         >
           <h3 style={{ marginTop: 0 }}>History Context</h3>
+          {/*
+            Outside the `enabled` branch on purpose. The stored selection used
+            to render only when history was switched on, so an operator who had
+            picked their paths and left the feature off saw nothing but the
+            "Disabled" note - the selection first appeared when they pressed
+            Browse, which reads as the picker inventing ticks rather than
+            showing what was already saved. The live card has always listed its
+            selection unconditionally; this one now matches it.
+          */}
+          {historyPaths.length > 0 ? (
+            <ul style={{ margin: '0 0 0.5rem 0', paddingLeft: '1.1rem' }}>
+              {historyPaths.map((path) => (
+                <li key={path}>{path}</li>
+              ))}
+            </ul>
+          ) : (
+            <p style={{ margin: '0 0 0.5rem 0' }}>
+              No history paths are configured, and no exact live paths were available to reuse.
+            </p>
+          )}
           {backendStatus?.history?.enabled ? (
             <>
               <p style={{ margin: 0 }}>
@@ -882,17 +903,6 @@ export default function AppPanel(props: AppPanelProps) {
                 Source: {backendStatus.history.serverUrl}
                 {backendStatus.history.provider ? ` (provider ${backendStatus.history.provider})` : ''}
               </p>
-              {backendStatus.history.paths.length > 0 ? (
-                <ul style={{ margin: '0.35rem 0 0 0', paddingLeft: '1.1rem' }}>
-                  {backendStatus.history.paths.map((path) => (
-                    <li key={path}>{path}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p style={{ margin: '0.35rem 0 0 0' }}>
-                  No history paths are configured, and no exact live paths were available to reuse.
-                </p>
-              )}
               {historyFetch ? (
                 <p style={{ margin: '0.5rem 0 0 0', color: historyFetch.ok ? '#166534' : '#b45309' }}>
                   Last read {formatTimestamp(historyFetch.at)}:{' '}
@@ -908,9 +918,9 @@ export default function AppPanel(props: AppPanelProps) {
             </>
           ) : (
             <p style={{ margin: 0 }}>
-              Disabled. Enable <code>historyEnabled</code> in the plugin settings to also send recent history from the
-              Signal K History API, which needs a history provider plugin such as signalk-to-influxdb2 or
-              signalk-parquet.
+              Disabled{historyPaths.length > 0 ? ', so the paths above are stored but not sent' : ''}. Enable{' '}
+              <code>historyEnabled</code> in the plugin settings to also send recent history from the Signal K History
+              API, which needs a history provider plugin such as signalk-to-influxdb2 or signalk-parquet.
             </p>
           )}
 
