@@ -9,6 +9,66 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- **Half the vessel context no longer disappears before the model sees it.**
+  The answer budget was `num_ctx` minus 256 tokens, and llama.cpp resolves a
+  prompt that will not fit by truncating the *prompt*, to whatever `num_predict`
+  leaves it. Measured at `num_ctx` 4096 with the default max-tokens: a
+  4,949-token vessel snapshot cut to 2,051, with only a line in the inference
+  server's log to say so. The split is the other way round now — the answer may
+  claim at most half the window and the prompt is guaranteed the rest — and the
+  context budget that decides which paths are dropped follows `num_ctx` instead
+  of being fixed at a size chosen for the default window, so the plugin's own
+  "N further paths omitted" note appears exactly when paths are being dropped.
+  For the same reason a memory retry rebuilds its prompt at the smaller window
+  it is retrying with, rather than sending the full-size one into a halved
+  context.
+
+- **An out-of-memory failure no longer escapes the retry ladder.** The chat
+  path checks for memory pressure before it checks for a missing model, so the
+  fallback that resolves an untagged model name to an installed tag ran its
+  request with no ladder around it — and that is the ordinary path on a default
+  install, whose untagged `gemma4` always misses once before the real tag is
+  found. A `CUBLAS_STATUS_ALLOC_FAILED` from the GPU reached the operator raw
+  instead of being retried at half the footprint.
+
+- **Board telemetry describes the machine doing the inference.** Read against a
+  remote Ollama, the GPU Acceleration card reported the *Signal K* host's GPU
+  load, clock and temperature, and advised running `nvpmodel` and
+  `jetson_clocks` on a board with no model loaded on it. The card now shows
+  board detail only when the backend is local — matched against every address
+  this machine holds, not just loopback — and otherwise says where inference
+  actually runs.
+
+- **Temperatures and speeds reach the model in the units an operator reads.**
+  Angles were converted to degrees but kelvin and metres per second were not,
+  so a system prompt written to fill the gap also re-converted the values that
+  had already been converted: an attitude yaw of 86.5 degrees was reported as
+  495. Temperature and speed leaves now convert alongside angles, in the live
+  snapshot and in history alike, and the prompt states the units as fact rather
+  than asking the model for arithmetic.
+
+- **Notification plumbing no longer crowds the vessel out of the prompt.** A
+  Signal K notification flattens to about ten leaves, eight of which describe
+  what a notification UI may do with it. Measured on a working vessel,
+  `notifications.*` alone came to 150 leaves and 12,385 characters — the whole
+  context budget — so propulsion, electrical and control reached the model on
+  no question at all. The UUID, the alert methods and the five
+  can-I-draw-this-button booleans are dropped; `state`, `message`, `silenced`
+  and `acknowledged` are kept.
+
+- **The stored history path selection shows when the panel loads.** The
+  `History Context` card rendered its path list only when `historyEnabled` was
+  on, so an operator who had picked their paths and left the feature off saw
+  nothing but the "Disabled" note — the selection first appeared when they
+  pressed **Browse recorded paths**, which reads as the picker inventing ticks
+  rather than showing what was already saved.
+
+- **The history header is charged against the history budget.** Only the series
+  were counted, so `requestedPaths` and `unavailablePaths` could spend the
+  budget on their own — which is how a window with no room for a single data
+  point still spent what room it had naming the paths that did not fit. Both
+  lists collapse to a count when they will not fit.
+
 - **The out-of-memory retry keeps shrinking until something fits.** `num_ctx`
   sizes the KV cache, but `num_batch` sizes the prompt-eval compute buffers,
   and those scale with the batch: on an 8 GB Jetson at `num_batch` 2048 they
@@ -44,6 +104,20 @@ this project uses [semantic versioning](https://semver.org/).
   remedy instead of the opaque message.
 
 ### Changed
+
+- **The answer contract is written from measured failures.** A four-way sampler
+  sweep (temperature 0.1–1.0, `top_k`, `top_p`, `min_p`) against a fixed vessel
+  snapshot got every number right in every configuration, so the wrong answers
+  were never the sampler's doing. What did go wrong, and what the default
+  system prompt and the per-request response requirements now address: a 4B
+  model fumbling double negation and reporting "no alarms are in a normal
+  state" when every alarm *was* normal; a requested value absent from the
+  context skipped in silence under a summary claiming everything had been
+  reported; and "is everything okay?" answered with a 794-token recital of the
+  whole snapshot. Each rule names the failure it removes, including one that is
+  deliberately absent — a rounding instruction made the model degrade 13.43 V
+  to "13.4" with the unit dropped, and values are already rounded before they
+  reach it.
 
 - **Both path selections moved out of the settings form and into the web app.**
   A path list is chosen against what the vessel actually publishes and what a
