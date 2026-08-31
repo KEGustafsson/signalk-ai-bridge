@@ -1008,6 +1008,11 @@ export default function AppPanel(props: AppPanelProps) {
                   </>
                 ) : null}
               </>
+            ) : jetson?.message ? (
+              <>
+                <br />
+                {jetson.message}
+              </>
             ) : null}
           </p>
           {backendStatus?.accelerator?.message ? (

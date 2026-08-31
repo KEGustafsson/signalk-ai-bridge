@@ -172,7 +172,8 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.type, 'ask-vessel-ai-result');
     assert.deepEqual(bridgeResponse.body.context.aiDataPaths, ['navigation.*', 'notifications']);
     assert.equal(bridgeResponse.body.context.selectedData['navigation.position.latitude'], 60.1);
-    assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 5.4);
+    // 5.4 m/s in knots: speeds reach the model in the units an operator reads.
+    assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 10.497);
     assert.equal(bridgeResponse.body.context.selectedData.notifications['navigation.anchor'].state, 'alarm');
     // The prompt carries the data keyed by path, with no second copy of the
     // path list — every token here is prompt-eval work on the GPU.
@@ -293,7 +294,7 @@ describe('signalk-ai-bridge plugin', () => {
 
     assert.equal(bridgeResponse.statusCode, 200);
     assert.equal(bridgeResponse.body.context.selectedData['environment.wind.angleApparent'], 60);
-    assert.equal(bridgeResponse.body.context.selectedData['environment.wind.speedApparent'], 8.2);
+    assert.equal(bridgeResponse.body.context.selectedData['environment.wind.speedApparent'], 15.94);
   });
 
   // Both path lists left the settings schema: they are chosen against what the

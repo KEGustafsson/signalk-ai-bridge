@@ -462,11 +462,14 @@ describe('review follow-ups', () => {
   });
 
   // A Xavier running Signal K may legitimately ask an Orin elsewhere on the boat
-  // for TensorRT-LLM answers; the local GPU says nothing about that one.
+  // for TensorRT-LLM answers; the local GPU says nothing about that one - not
+  // its suitability for the backend, and not its clocks or temperature either.
   it('does not blame the local GPU for a backend on another host', async () => {
     const report = await trtReport(xavierBoard, { baseUrl: 'http://orin.local:8000' });
 
-    assert.deepEqual(report.jetson.warnings, []);
+    assert.equal(report.jetson.present, false);
+    assert.equal(report.jetson.warnings, undefined);
+    assert.match(report.jetson.message, /orin\.local/);
   });
 
   // 127.0.0.1 is not the only loopback address. Anything in 127.0.0.0/8 reaches
@@ -498,7 +501,8 @@ describe('review follow-ups', () => {
       'http://orin:8000'
     ]) {
       const report = await trtReport(xavierBoard, { baseUrl });
-      assert.deepEqual(report.jetson.warnings, [], `${baseUrl} is not this host`);
+      assert.equal(report.jetson.present, false, `${baseUrl} is not this host`);
+      assert.equal(report.jetson.warnings, undefined, `${baseUrl} is not this host`);
     }
   });
 
@@ -550,7 +554,10 @@ describe('unit conversion', () => {
       Object.keys(data).some((key) => key.endsWith('.value') || key.includes('.meta.')),
       false
     );
-    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 3.5);
+    // Converted as a speed (m/s -> knots), which is a different claim from the
+    // angle conversion this test guards against: 3.5 m/s is 6.803 knots, not
+    // the 200.5 degrees that treating it as radians would produce.
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 6.803);
     assert.equal(data['navigation.courseGreatCircle.nextPoint.position.latitude'], 60.1);
     // A real angle in the same subtree still converts. This never fired for a
     // wildcard before, because the key was "...bearingTrackTrue.value".
@@ -565,7 +572,8 @@ describe('unit conversion', () => {
     });
 
     const data = payload.context.selectedData;
-    assert.equal(data['navigation.speedOverGround'], 4.1);
+    // 4.1 m/s in knots; the point of this test is the sibling timestamp key.
+    assert.equal(data['navigation.speedOverGround'], 7.97);
     assert.equal(data['navigation.speedOverGround@'], '2026-08-23T04:00:00Z');
     assert.equal(data['navigation.speedOverGround.$source'], undefined);
   });
