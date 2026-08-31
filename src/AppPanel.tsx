@@ -131,6 +131,26 @@ const pickerButtonStyle = {
  * is the only place they are edited.
  */
 /**
+ * The picked paths, plus the configured ones the picker could not offer.
+ *
+ * A save writes the whole list, so anything the listing did not carry would be
+ * dropped by a save the operator meant as "keep these too". The listing misses
+ * paths for reasons that say nothing about intent: a live source that happens
+ * to be silent, a listing truncated at its cap, a history path with nothing
+ * recorded in the discovery window. An unlisted path has no checkbox, so the
+ * picker cannot express "remove it" either - only what it showed can be
+ * unticked.
+ */
+function withUnlistedSelection(
+  picked: readonly string[],
+  listed: readonly string[],
+  configured: readonly string[] | undefined
+): string[] {
+  const shown = new Set(listed);
+  return [...picked, ...(configured ?? []).filter((path) => !shown.has(path))];
+}
+
+/**
  * Write a path selection through to the plugin's stored options.
  *
  * Returns a message rather than throwing: every outcome - saved, refused for
@@ -698,7 +718,11 @@ export default function AppPanel(props: AppPanelProps) {
   }, [props]);
 
   const onSavePickedLivePaths = React.useCallback(async () => {
-    const picked = livePathsState.paths.filter((path) => pickedLivePaths[path]);
+    const picked = withUnlistedSelection(
+      livePathsState.paths.filter((path) => pickedLivePaths[path]),
+      livePathsState.paths,
+      backendStatus?.aiDataPaths
+    );
     setSavingSelection('live');
     setLiveCopyNotice(null);
     const result = await saveSelection(props, { aiDataPaths: picked });
@@ -707,10 +731,14 @@ export default function AppPanel(props: AppPanelProps) {
     if (result.status) {
       setBackendStatus(result.status);
     }
-  }, [livePathsState, pickedLivePaths, props]);
+  }, [backendStatus, livePathsState, pickedLivePaths, props]);
 
   const onSavePickedPaths = React.useCallback(async () => {
-    const picked = historyPathsState.paths.filter((path) => pickedPaths[path]);
+    const picked = withUnlistedSelection(
+      historyPathsState.paths.filter((path) => pickedPaths[path]),
+      historyPathsState.paths,
+      backendStatus?.history?.paths
+    );
     setSavingSelection('history');
     setCopyNotice(null);
     const result = await saveSelection(props, { historyPaths: picked });
@@ -719,7 +747,7 @@ export default function AppPanel(props: AppPanelProps) {
     if (result.status) {
       setBackendStatus(result.status);
     }
-  }, [historyPathsState, pickedPaths, props]);
+  }, [backendStatus, historyPathsState, pickedPaths, props]);
 
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),

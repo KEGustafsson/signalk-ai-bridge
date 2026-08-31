@@ -43,8 +43,6 @@ this project uses [semantic versioning](https://semver.org/).
   still empty while reasoning was produced says what happened and names the
   remedy instead of the opaque message.
 
-### Added
-
 ### Changed
 
 - **Both path selections moved out of the settings form and into the web app.**
@@ -89,10 +87,10 @@ this project uses [semantic versioning](https://semver.org/).
   The panel's `History Context` card carries a **Browse recorded paths**
   picker: one press asks the History API which paths actually have recorded
   data (over at least the last day), lists them with a filter and checkboxes
-  pre-ticked to the current configuration, and copies the selection ready to
-  paste into the `historyPaths` setting — so choosing paths starts from what
-  the provider records instead of from guesswork. The listing goes through
-  the plugin (`GET /history/paths`), so the same endpoint resolution and
+  pre-ticked to the current configuration, and saves the selection straight
+  into the plugin's stored options — so choosing paths starts from what the
+  provider records instead of from guesswork. The listing goes through the
+  plugin (`GET /history/paths`), so the same endpoint resolution and
   credential scoping apply as for the reads themselves.
 
   On a server with security enabled the read runs with the credentials of the
