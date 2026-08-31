@@ -22,6 +22,15 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
+- **Both path selections can be browsed from the panel.** Choosing what the
+  model sees was guesswork against a vessel's live tree and a provider's
+  recordings alike. The `AI Path Selection` card now carries a **Browse
+  available paths** picker listing what this vessel actually publishes — branch
+  wildcards first, then the individual leaves they cover — and the `History
+  Context` card the same for recorded paths. Both pre-tick the current
+  configuration, filter as you type, and copy the selection ready to paste into
+  the plugin settings.
+
 - **Historical context from the Signal K History API.** `getSelfPath` answers
   "what is true now", which leaves every trend question — has the wind been
   building, did the batteries recover overnight, were we making way an hour ago

@@ -296,6 +296,50 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.body.context.selectedData['environment.wind.speedApparent'], 8.2);
   });
 
+  // The panel's live-path picker: what does this vessel actually publish?
+  it('lists the live Signal K paths at both granularities for the picker', async () => {
+    const registeredRoutes = {};
+    const plugin = createPlugin(createPluginHost(), {
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ models: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    });
+
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['navigation.*'] });
+    plugin.registerWithRouter({
+      get(path, handler) {
+        registeredRoutes[`GET ${path}`] = handler;
+      },
+      post(path, handler) {
+        registeredRoutes[`POST ${path}`] = handler;
+      }
+    });
+
+    const response = createResponseRecorder();
+    await registeredRoutes['GET /signalk/paths']({ headers: {} }, response);
+
+    assert.equal(response.statusCode, 200);
+    // A branch wildcard is the selection that scales; the leaves it covers are
+    // offered beside it for a narrower choice.
+    assert.deepEqual(
+      response.body.branches.map((branch) => branch.path).sort(),
+      ['navigation.*', 'notifications.*']
+    );
+    assert.ok(response.body.paths.includes('navigation.speedOverGround'));
+    assert.ok(response.body.paths.includes('navigation.position.latitude'));
+    // The staleness keys the prompt flattener adds are not selectable paths.
+    assert.ok(!response.body.paths.some((path) => path.endsWith('@')));
+    // The picker pre-ticks what the plugin already uses.
+    assert.deepEqual(response.body.selected, ['navigation.*']);
+
+    plugin.stop();
+    const stopped = createResponseRecorder();
+    await registeredRoutes['GET /signalk/paths']({ headers: {} }, stopped);
+    assert.equal(stopped.statusCode, 503);
+  });
+
   it('retries Ask AI with an installed tagged Gemma model', async () => {
     const registeredRoutes = {};
     const chatModels = [];

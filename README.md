@@ -395,7 +395,8 @@ In the web UI you will see:
 
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
-- `AI Path Selection`: which Signal K paths are currently sent to AI
+- `AI Path Selection`: which Signal K paths are currently sent to AI, with a
+  **Browse available paths** picker listing what this vessel publishes
 - `History Context`: the history window, paths, how the last history read went,
   and a **Browse recorded paths** picker listing what the History API has data for
 - `AI Response`: the latest answer from the model
@@ -414,7 +415,13 @@ These are the settings most users will care about:
   Ollama model name. Example: `gemma4:e2b-it-qat`
 
 - `aiDataPaths`
-  The Signal K self paths that will be sent to AI. You can use exact paths like `navigation.position` and simple wildcards like `navigation.*`
+  The Signal K self paths that will be sent to AI. You can use exact paths like
+  `navigation.position` and simple wildcards like `navigation.*`. Press **Browse
+  available paths** in the panel's `AI Path Selection` card to see what this
+  vessel is publishing — branch wildcards first, then the individual leaves they
+  cover — tick what the model should see, and copy them ready to paste here.
+  Prefer a wildcard for a whole branch: it is flattened, unit-converted and
+  budgeted leaf by leaf, where a bare branch name is sent as one raw subtree
 
 - `historyEnabled`
   Also send recent history for the selected paths, read from the Signal K

@@ -27,7 +27,7 @@ const {
   retuneOffload,
   warmUpModel
 } = require('./lib/ai-service.cjs');
-const { createBridgeService, normalizeAiDataPaths } = require('./lib/bridge-service.cjs');
+const { createBridgeService, listSelfPaths, normalizeAiDataPaths } = require('./lib/bridge-service.cjs');
 const {
   DEFAULT_HISTORY_DURATION,
   DEFAULT_HISTORY_SAMPLES,
@@ -482,6 +482,29 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
+   * Live Signal K paths this vessel publishes, for the panel's picker.
+   *
+   * Read straight from the data model - no backend, no provider - so it
+   * answers whether or not AI is configured, which is what makes it useful
+   * while an operator is still deciding what to send.
+   */
+  const selfPathsHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json({ ...listSelfPaths(app), selected: normalizeAiDataPaths(getConfig()) });
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: 'unknown',
+          message: error instanceof Error ? error.message : 'Unknown path listing failure.'
+        }
+      });
+    }
+  };
+
+  /**
    * Paths the History API has recorded, for the panel's picker.
    *
    * Deliberately not gated on historyEnabled: browsing what a provider records
@@ -753,6 +776,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/bridge/stream', bridgeStreamHandler);
       router.post('/ai/retune', retuneHandler);
       router.get('/history/paths', historyPathsHandler);
+      router.get('/signalk/paths', selfPathsHandler);
       routesRegistered = true;
     },
     stop: () => {
