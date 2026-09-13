@@ -793,6 +793,28 @@ describe('the operator question and the context budget', () => {
     );
     assert.match(long.truncated, /omitted to fit/);
   });
+
+  it('sends no context at all when the question alone fills the window', () => {
+    // numCtx 2048 with maxTokens 1024 leaves 1,024 prompt tokens; a
+    // 4,000-character question is ~1,000 of them and the fixed overhead is
+    // 400. The old 500-character floor still put vessel data into a window
+    // that could not hold it, and llama.cpp dropped the front of the prompt.
+    const selectedData = { 'electrical.batteries.house.voltage': 12.8 };
+    const history = { from: 'a', to: 'b', resolutionSeconds: 1, series: { x: { count: 1, last: 1 } } };
+    const message = buildAiMessages(
+      'Check every cell: '.repeat(220),
+      { aiDataPaths: ['electrical.*'], selectedData, history },
+      { systemPrompt: 's', numCtx: 2048, maxTokens: 1024 }
+    )[1].content;
+    const context = JSON.parse(
+      message.split('Signal K context (JSON, keyed by path):\n')[1].split('\n\nUnits:')[0]
+    );
+
+    assert.deepEqual(context.data, {});
+    assert.equal(context.history, undefined);
+    assert.match(context.truncated, /fills the model context window/);
+    assert.match(context.alarms, /alarm status is unknown/);
+  });
 });
 
 describe('cost and safety of the status and retune routes', () => {
@@ -856,6 +878,49 @@ describe('cost and safety of the status and retune routes', () => {
 
     assert.equal(result.model, 'gemma4:e2b');
     assert.equal(counts.tags, 1);
+  });
+
+  it('does not let a listing started before a reset overwrite the one after it', async () => {
+    // A re-tune clears the caches while a status poll's listing may still be
+    // in flight. If that older listing lands last, a tag that was just
+    // removed comes back for thirty seconds and the resolver picks it.
+    reset();
+    const config = normalizeAiConfig({ model: 'gemma4' });
+    let release;
+    let tagsCalls = 0;
+    const deps = {
+      fetchImpl: async (url) => {
+        assert.match(String(url), /\/api\/tags$/);
+        tagsCalls += 1;
+        if (tagsCalls === 1) {
+          // The old listing, held until the test lets it settle.
+          await new Promise((resolve) => {
+            release = resolve;
+          });
+          return jsonOk({ models: [{ name: 'gemma4:old', details: { family: 'gemma4' } }] });
+        }
+        return jsonOk({ models: [{ name: 'gemma4:new', details: { family: 'gemma4' } }] });
+      },
+      ollamaClient: {
+        async chat({ model }) {
+          return { model, message: { role: 'assistant', content: 'ok' } };
+        }
+      }
+    };
+
+    const before = getAiAvailability(config, deps);
+    // Let the first listing start before clearing, so it is genuinely stale.
+    await new Promise((resolve) => setImmediate(resolve));
+    reset();
+    const after = await getAiAvailability(config, deps);
+    release();
+    await before;
+
+    assert.equal(after.resolvedModel, 'gemma4:new');
+    const answered = await queryAiModel({ prompt: 'Status?', context: { selectedData: {} } }, config, deps);
+    assert.equal(answered.model, 'gemma4:new');
+    // Served from the newer listing, not re-fetched and not the stale one.
+    assert.equal(tagsCalls, 2);
   });
 
   it('never echoes credentials from the configured base URL', () => {

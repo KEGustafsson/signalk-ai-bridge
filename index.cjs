@@ -315,10 +315,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
     };
   };
 
-  // One place for code -> HTTP, so /ai/query and the bridge routes cannot drift
-  // apart the way they had (only one of them mapped `disabled` and `timeout`).
-  // `fallback` is the status for a code nothing here maps: 502 where the
-  // backend answers the request, 500 where the plugin itself does.
+  /**
+   * HTTP status for an error code.
+   *
+   * One place for code -> HTTP, so /ai/query and the bridge routes cannot
+   * drift apart the way they had (only one of them mapped `disabled` and
+   * `timeout`). `fallback` is the status for a code nothing here maps: 502
+   * where the backend answers the request, 500 where the plugin itself does.
+   */
   const statusForCode = (code, fallback = 502) => {
     switch (code) {
       case 'validation-failed':
@@ -334,10 +338,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
-  /** `{ code, message }` for the route's error body, from whatever was thrown. */
+  /** The error code for a route's error body, from whatever was thrown. */
   const errorCode = (error) =>
     typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
 
+  /** The message for a route's error body; `fallback` when nothing usable was thrown. */
   const errorMessage = (error, fallback) => (error instanceof Error ? error.message : fallback);
 
   /**
@@ -367,6 +372,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     return true;
   };
 
+  /** GET /ai/status: configuration, backend availability and GPU residency. */
   const statusHandler = async (req, res) => {
     if (rejectIfStopped(res)) {
       return;
@@ -414,6 +420,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** POST /ai/query: one blocking answer to the body's prompt, with the live context. */
   const queryHandler = async (req, res) => {
     if (rejectIfStopped(res)) {
       return;
@@ -431,6 +438,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** POST /bridge/execute: run a tool request and return its result envelope. */
   const bridgeExecuteHandler = async (req, res) => {
     if (rejectIfStopped(res)) {
       return;

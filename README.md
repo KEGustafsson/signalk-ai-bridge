@@ -301,7 +301,9 @@ timestamp as a sibling key, which said nothing useful about a value refreshed a
 second ago and cost more characters than the value itself — measured on a
 55-leaf snapshot, the timestamps were 62% of the context. Now a value that has
 gone more than a minute without an update carries `"<path>@": "stale for 5 min"`
-(or `3 h`, `2 d`), and a current one carries nothing. The wording is deliberate:
+(or `3 h`, `2 d`), and a current one carries nothing — as does one whose
+timestamp cannot be read or lies in the future, and the prompt says so, so the
+model does not take "unmarked" for "verified fresh". The wording is deliberate:
 a small model reads "stale for 3 h" correctly, where it would have had to
 subtract an ISO timestamp from a "now" it was never told. Exact paths get the
 same marker as wildcard leaves, so the default selection can say a fix is old.
@@ -329,7 +331,10 @@ belong ahead of signal strengths and camera URLs.
 The operator's question is charged against the same window. A short question
 costs nothing worth counting, but a pasted checklist near the 4,000-character
 limit is roughly a thousand tokens, and the context budget shrinks by that much
-so the whole prompt still fits — rather than letting the backend cut it.
+so the whole prompt still fits — rather than letting the backend cut it. When
+the question alone fills the window, no vessel data or history is sent at all
+and the prompt says so, so the model answers "not available" instead of
+answering from a prompt the backend truncated.
 
 If the snapshot ends up with no notification data at all — none selected, or all
 of it dropped — the prompt says so explicitly and tells the model to report
