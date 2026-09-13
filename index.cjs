@@ -317,7 +317,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   // One place for code -> HTTP, so /ai/query and the bridge routes cannot drift
   // apart the way they had (only one of them mapped `disabled` and `timeout`).
-  const statusForCode = (code) => {
+  // `fallback` is the status for a code nothing here maps: 502 where the
+  // backend answers the request, 500 where the plugin itself does.
+  const statusForCode = (code, fallback = 502) => {
     switch (code) {
       case 'validation-failed':
         return 400;
@@ -328,8 +330,29 @@ module.exports = function createPlugin(app, dependencies = {}) {
       case 'timeout':
         return 504;
       default:
-        return 502;
+        return fallback;
     }
+  };
+
+  /** `{ code, message }` for the route's error body, from whatever was thrown. */
+  const errorCode = (error) =>
+    typeof error === 'object' && error !== null && typeof error.code === 'string' ? error.code : 'unknown';
+
+  const errorMessage = (error, fallback) => (error instanceof Error ? error.message : fallback);
+
+  /**
+   * Answer a failed route. A thrown error that carries its own HTTP status
+   * (a backend's 404, say) keeps it; anything else is mapped from its code.
+   */
+  const sendError = (res, error, fallbackStatus, fallbackMessage) => {
+    const statusCode =
+      typeof error === 'object' && error !== null && typeof error.statusCode === 'number'
+        ? error.statusCode
+        : statusForCode(errorCode(error), fallbackStatus);
+
+    res.status(statusCode).json({
+      error: { code: errorCode(error), message: errorMessage(error, fallbackMessage) }
+    });
   };
 
   // A stopped plugin must not serve inference. Returns true when the request
@@ -387,12 +410,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         accelerator
       });
     } catch (error) {
-      res.status(500).json({
-        error: {
-          code: 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown AI status failure.'
-        }
-      });
+      sendError(res, error, 500, 'Unknown AI status failure.');
     }
   };
 
@@ -409,31 +427,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const result = await queryAiModel(payload, config, dependencies);
       res.status(200).json(result);
     } catch (error) {
-      const statusCode =
-        typeof error === 'object' &&
-        error !== null &&
-        'statusCode' in error &&
-        typeof error.statusCode === 'number'
-          ? error.statusCode
-          : error && error.code === 'unauthorized'
-            ? 401
-          : error && error.code === 'validation-failed'
-            ? 400
-            : error && error.code === 'disabled'
-              ? 503
-              : error && error.code === 'timeout'
-                ? 504
-                : 502;
-
-      res.status(statusCode).json({
-        error: {
-          code:
-            typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-              ? error.code
-              : 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown AI backend failure.'
-        }
-      });
+      sendError(res, error, 502, 'Unknown AI backend failure.');
     }
   };
 
@@ -449,27 +443,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
       res.status(200).json(result);
     } catch (error) {
-      const statusCode =
-        typeof error === 'object' &&
-        error !== null &&
-        'statusCode' in error &&
-        typeof error.statusCode === 'number'
-          ? error.statusCode
-          : error && error.code === 'unauthorized'
-            ? 401
-            : error && error.code === 'validation-failed'
-              ? 400
-              : 500;
-
-      res.status(statusCode).json({
-        error: {
-          code:
-            typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
-              ? error.code
-              : 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown bridge failure.'
-        }
-      });
+      // executeTool reports backend failures inside a 200 result, so what
+      // reaches here is the plugin's own: a bad body, or a bug.
+      sendError(res, error, 500, 'Unknown bridge failure.');
     }
   };
 
@@ -587,13 +563,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         historyPaths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) })
       });
     } catch (error) {
-      const statusCode = error && error.code === 'validation-failed' ? 400 : 500;
-      res.status(statusCode).json({
-        error: {
-          code: error && error.code === 'validation-failed' ? 'validation-failed' : 'unknown',
-          message: error instanceof Error ? error.message : 'Could not save the path selection.'
-        }
-      });
+      sendError(res, error, 500, 'Could not save the path selection.');
     }
   };
 
@@ -611,12 +581,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
     try {
       res.status(200).json({ ...listSelfPaths(app), selected: normalizeAiDataPaths(getConfig()) });
     } catch (error) {
-      res.status(500).json({
-        error: {
-          code: 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown path listing failure.'
-        }
-      });
+      sendError(res, error, 500, 'Unknown path listing failure.');
     }
   };
 
@@ -639,12 +604,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
       res.status(200).json(result);
     } catch (error) {
-      res.status(500).json({
-        error: {
-          code: 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown history failure.'
-        }
-      });
+      sendError(res, error, 500, 'Unknown history failure.');
     }
   };
 
@@ -664,12 +624,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const result = await retuneOffload(config, dependencies);
       res.status(result.retuned ? 200 : 503).json(result);
     } catch (error) {
-      res.status(500).json({
-        error: {
-          code: 'unknown',
-          message: error instanceof Error ? error.message : 'Unknown re-tune failure.'
-        }
-      });
+      sendError(res, error, 500, 'Unknown re-tune failure.');
     }
   };
 

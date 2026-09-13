@@ -278,13 +278,33 @@ when you see the output. Both backends stream (Ollama's NDJSON and
 TensorRT-LLM's SSE), and the panel falls back to the blocking route
 automatically if streaming is unavailable.
 
+The configured model name is resolved to the installed tag *before* the first
+request. The default is the untagged `gemma4`, which Ollama reads as
+`gemma4:latest` and rejects when only `gemma4:e2b-it-qat` is installed; a
+question used to pay one rejected request for that, and because a rejection
+cannot be retried mid-stream, a default install fell back to a blocking
+generation and never streamed at all. The installed-model listing behind that
+resolution is cached for 30 seconds and shared with the status poll, so a
+question asked a moment after the panel loads makes no listing request of its
+own.
+
 ### Prompt size
 
 Prompt evaluation is GPU work, so the context sent to the model is kept tight:
-compact JSON rather than indented, numbers rounded to 6 decimals (finer than any
-sensor on a boat), and the data keyed by path instead of repeating the path list
-alongside it. Paths that produced no value are listed separately, so the model
-can still be explicit about what is missing.
+compact JSON rather than indented, numbers rounded to what the unit is read at
+(see [Units](#units)), and the data keyed by path instead of repeating the path
+list alongside it. Paths that produced no value are listed separately, so the
+model can still be explicit about what is missing.
+
+Staleness is sent only where there is some. Every leaf used to carry its ISO
+timestamp as a sibling key, which said nothing useful about a value refreshed a
+second ago and cost more characters than the value itself — measured on a
+55-leaf snapshot, the timestamps were 62% of the context. Now a value that has
+gone more than a minute without an update carries `"<path>@": "stale for 5 min"`
+(or `3 h`, `2 d`), and a current one carries nothing. The wording is deliberate:
+a small model reads "stale for 3 h" correctly, where it would have had to
+subtract an ISO timestamp from a "now" it was never told. Exact paths get the
+same marker as wildcard leaves, so the default selection can say a fix is old.
 
 A normal notification is trimmed to its `state`. Its `message` ("Value is within
 normal range"), `silenced` and `acknowledged` are the same constants on every
@@ -306,6 +326,11 @@ prompt, so the model can tell you the answer may be incomplete.
 the order you chose them and drops from the tail, so alarms and engine data
 belong ahead of signal strengths and camera URLs.
 
+The operator's question is charged against the same window. A short question
+costs nothing worth counting, but a pasted checklist near the 4,000-character
+limit is roughly a thousand tokens, and the context budget shrinks by that much
+so the whole prompt still fits — rather than letting the backend cut it.
+
 If the snapshot ends up with no notification data at all — none selected, or all
 of it dropped — the prompt says so explicitly and tells the model to report
 alarm status as unknown. Without that the model reliably answered "all alarms
@@ -322,10 +347,17 @@ so the model has no arithmetic left to get wrong:
 
 | Signal K | Sent to the model |
 | --- | --- |
-| Angles, in radians | Degrees |
-| Temperatures, in kelvin | Degrees Celsius |
-| Speeds, in metres per second | Knots |
-| Everything else | Unchanged SI — pressure in pascals, distance in metres, ratios 0–1 |
+| Angles, in radians | Degrees, to 1 decimal |
+| Temperatures, in kelvin | Degrees Celsius, to 1 decimal |
+| Speeds, in metres per second | Knots, to 2 decimals |
+| Everything else | Unchanged SI — pressure in pascals, distance in metres, ratios 0–1 — to 6 decimals |
+
+The precision is the operator's, not the sensor's. The system prompt tells the
+model to repeat values as given, and a heading sent as `86.837462` came back to
+the helm as "86.837462 degrees": five tokens where one decimal is already finer
+than a compass card. Positions are not angle leaves and keep six decimals, which
+is about 0.1 m. History statistics are rounded the same way as the values they
+summarize.
 
 Angle leaves are matched on the last segment of the path, including camelCase
 compounds such as `fusedHeading`, and distances, speeds and positions that live
@@ -484,7 +516,10 @@ These are the settings most users will care about:
   How long the plugin waits for Ollama. Allow for a cold model load plus the
   answer: measured on a Xavier NX, ~47 s to load and ~20 s of prompt evaluation
   before the first token, so 120 s is tight and 180 s comfortable. `0` disables
-  the timeout entirely, which leaves nothing to stop a wedged backend
+  the timeout entirely, which leaves nothing to stop a wedged backend. Metadata
+  calls — listing models, reading GPU residency — are bounded separately, at
+  this value or 15 s, whichever is lower, so a wedged backend cannot hold the
+  status page for the whole chat timeout
 
 - `systemPrompt`
   Instructions sent to the model before your question. The default is tuned

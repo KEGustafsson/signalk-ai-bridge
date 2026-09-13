@@ -203,12 +203,12 @@ describe('history payload summary', () => {
     const speed = series['navigation.speedOverGround'];
     assert.equal(speed.method, 'average');
     assert.equal(speed.count, 3);
-    assert.equal(speed.min, 7.775);
-    assert.equal(speed.max, 11.663);
-    assert.equal(speed.first, 7.775);
-    assert.equal(speed.last, 9.719);
-    assert.equal(speed.average, 9.719);
-    assert.deepEqual(speed.samples[0], ['2026-04-11T09:00:00.000Z', 7.775]);
+    assert.equal(speed.min, 7.78);
+    assert.equal(speed.max, 11.66);
+    assert.equal(speed.first, 7.78);
+    assert.equal(speed.last, 9.72);
+    assert.equal(speed.average, 9.72);
+    assert.deepEqual(speed.samples[0], ['2026-04-11T09:00:00.000Z', 7.78]);
 
     // Signal K carries the course in radians; the live snapshot in the same
     // prompt is in degrees, and a series that disagreed with it would read as
@@ -279,8 +279,8 @@ describe('history payload summary', () => {
       'environment.wind.speedApparent:min',
       'environment.wind.speedApparent:max'
     ]);
-    assert.equal(series['environment.wind.speedApparent:min'].last, 7.775);
-    assert.equal(series['environment.wind.speedApparent:max'].last, 21.382);
+    assert.equal(series['environment.wind.speedApparent:min'].last, 7.78);
+    assert.equal(series['environment.wind.speedApparent:max'].last, 21.38);
   });
 
   // A bare request next to an aggregated one of the same path is keyed apart
@@ -396,7 +396,7 @@ describe('history payload summary', () => {
       12
     );
 
-    assert.equal(series['navigation.speedOverGround'].last, 10.497);
+    assert.equal(series['navigation.speedOverGround'].last, 10.5);
     assert.deepEqual(unavailablePaths, ['environment.wind.speedApparent']);
   });
 
@@ -414,7 +414,7 @@ describe('history payload summary', () => {
     // the course column stays a course (radians to degrees) even though it
     // arrived where the speed was requested.
     assert.equal(series['navigation.courseOverGroundTrue'].last, 180);
-    assert.equal(series['navigation.speedOverGround'].last, 10.497);
+    assert.equal(series['navigation.speedOverGround'].last, 10.5);
   });
 
   // Spreading a column into Math.min threw RangeError past ~125k values, and
@@ -474,7 +474,7 @@ describe('collectHistoryContext', () => {
     assert.equal(history.message, undefined);
     assert.equal(history.context, 'vessels.urn:mrn:signalk:uuid:test-self');
     assert.equal(history.resolutionSeconds, 1200);
-    assert.equal(history.series['navigation.speedOverGround'].average, 9.719);
+    assert.equal(history.series['navigation.speedOverGround'].average, 9.72);
     assert.deepEqual(history.requestedPaths, [
       'navigation.speedOverGround:average',
       'navigation.courseOverGroundTrue'
@@ -825,7 +825,7 @@ describe('the plugin with history enabled', () => {
 
     assert.equal(response.statusCode, 200);
     assert.equal(historyCalls().length, 1);
-    assert.equal(response.body.context.history.series['navigation.speedOverGround'].average, 9.719);
+    assert.equal(response.body.context.history.series['navigation.speedOverGround'].average, 9.72);
     assert.match(response.body.requestMessages[1].content, /"history"/);
 
     // The status route reports the outcome of that read without making one of

@@ -5,6 +5,66 @@ All notable changes to `signalk-ai-bridge` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A question no longer pays for a timestamp on every leaf.** Each value in
+  the snapshot carried its ISO timestamp as a sibling key, which told the model
+  nothing about a value refreshed a second ago and cost more characters than the
+  value itself — measured on a 55-leaf snapshot, 62% of the context. Prompt
+  evaluation is GPU time charged before the first token, so that was the single
+  largest avoidable cost per question on a Jetson. A value that has gone more
+  than a minute without an update now carries `"<path>@": "stale for 5 min"`, in
+  words a small model reads correctly, and a current one carries nothing. Exact
+  paths get the same marker as wildcard leaves, so the default selection can at
+  last say that a fix is an hour old.
+
+- **The first request names the installed model.** The configured name is
+  resolved against the installed-model listing before the chat is sent, not
+  after it is rejected. The default `gemma4` is untagged, and Ollama rejects it
+  when only `gemma4:e2b-it-qat` is installed, so every question on a default
+  install paid one rejected request — and on the streaming route, where a
+  rejection cannot be retried mid-stream, fell back to a blocking generation and
+  never streamed. The fallback stays for a listing that was unreadable when the
+  question was asked.
+
+- **One installed-model listing serves the status poll and the questions after
+  it.** The listing is cached for 30 seconds and shared between the availability
+  probe, model resolution and the thinking-capability check. Every question used
+  to re-list the models — a round trip the panel's status poll had just made,
+  against the host that is also driving the GPU. A failed listing is not cached.
+
+- **Converted units are rounded to what an operator reads.** Angles and
+  temperatures to one decimal, speeds to two, in the live snapshot and in
+  history statistics alike. The system prompt tells the model to repeat values
+  as given, and a heading of `86.837462` reached the helm as exactly that.
+  Positions keep six decimals.
+
+### Fixed
+
+- **A long question no longer pushes the vessel context out of the window.**
+  The context budget reserved a fixed overhead for the system prompt and the
+  instructions but nothing for the operator's question, which may be 4,000
+  characters — roughly a thousand tokens. The prompt then overran the window
+  and llama.cpp truncated it silently, in exactly the case the budget exists
+  to prevent. The question is now charged against the budget by length.
+
+- **A wedged backend cannot hold the status page for the chat timeout.**
+  Listing models, reading GPU residency and reading model geometry were bounded
+  by `requestTimeoutMs` — two minutes by default, or forever at `0` — for calls
+  that take milliseconds. They are now capped at 15 seconds, whatever the chat
+  timeout says.
+
+- **The panel's "what was sent" shows the prompt that was sent.** After the
+  start-up tuner shrank the context window, the request preview was still built
+  against the configured one, so it could show vessel data the model never saw.
+
+- **Route errors map to HTTP status in one place.** `/ai/query`,
+  `/bridge/execute` and the path-selection route each carried their own
+  code-to-status ladder, and only one of them knew about `disabled` and
+  `timeout`.
+
 ## [0.2.0-beta.1]
 
 ### Fixed

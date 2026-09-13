@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { createTimedFetch } = require('../lib/http-utils.cjs');
+const { METADATA_TIMEOUT_MS, createTimedFetch, metadataTimeoutMs } = require('../lib/http-utils.cjs');
 
 /**
  * Hold the event loop open for the duration of `run`.
@@ -121,5 +121,23 @@ describe('createTimedFetch', () => {
     controller.abort();
 
     await assert.rejects(pending, (error) => error.name === 'AbortError' && error.code !== 'timeout');
+  });
+});
+
+describe('metadataTimeoutMs', () => {
+  it('caps a metadata probe well below the chat timeout', () => {
+    // A listing answered from Ollama's bookkeeping takes milliseconds; bound
+    // by the two-minute chat timeout, a wedged backend held /ai/status for
+    // all of it.
+    assert.equal(metadataTimeoutMs({ requestTimeoutMs: 120000 }), METADATA_TIMEOUT_MS);
+    assert.equal(metadataTimeoutMs({ requestTimeoutMs: 3000 }), 3000);
+  });
+
+  it('keeps a bound even when the chat timeout is disabled', () => {
+    // 0 turns off the bound on generation, which an operator may want for a
+    // slow board. A listing that never returns is not something to want.
+    assert.equal(metadataTimeoutMs({ requestTimeoutMs: 0 }), METADATA_TIMEOUT_MS);
+    assert.equal(metadataTimeoutMs({}), METADATA_TIMEOUT_MS);
+    assert.equal(metadataTimeoutMs(undefined), METADATA_TIMEOUT_MS);
   });
 });

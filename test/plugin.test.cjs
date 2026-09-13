@@ -173,7 +173,7 @@ describe('signalk-ai-bridge plugin', () => {
     assert.deepEqual(bridgeResponse.body.context.aiDataPaths, ['navigation.*', 'notifications']);
     assert.equal(bridgeResponse.body.context.selectedData['navigation.position.latitude'], 60.1);
     // 5.4 m/s in knots: speeds reach the model in the units an operator reads.
-    assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 10.497);
+    assert.equal(bridgeResponse.body.context.selectedData['navigation.speedOverGround'], 10.5);
     // Notifications are flattened whatever shape selects them - here the bare
     // branch name, which is what the plugin's own default selection uses. As
     // one nested object they could only be dropped from the prompt whole,
@@ -488,7 +488,7 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(stopped.statusCode, 503);
   });
 
-  it('retries Ask AI with an installed tagged Gemma model', async () => {
+  it('sends Ask AI straight to the installed tagged Gemma model', async () => {
     const registeredRoutes = {};
     const chatModels = [];
     let listCalls = 0;
@@ -568,7 +568,9 @@ describe('signalk-ai-bridge plugin', () => {
     assert.equal(bridgeResponse.statusCode, 200);
     assert.equal(bridgeResponse.body.response.answer, 'Tagged model fallback worked.');
     assert.equal(bridgeResponse.body.response.model, 'gemma4:e2b');
-    assert.deepEqual(chatModels, ['gemma4', 'gemma4:e2b']);
+    // Resolved from the listing before the first request: no rejected
+    // `gemma4` attempt ahead of the real one.
+    assert.deepEqual(chatModels, ['gemma4:e2b']);
     assert.equal(listCalls, 1);
   });
 
