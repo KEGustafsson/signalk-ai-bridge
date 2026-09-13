@@ -1,13 +1,20 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { beforeEach, describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildAiMessages,
   normalizeAiConfig,
   queryAiModel,
+  resetRuntimeState,
   streamAiModel
 } = require('../lib/ai-service.cjs');
+
+// The installed-model listing is cached across questions, so a test that
+// serves a different listing than the last one has to start from a cold cache.
+beforeEach(() => {
+  resetRuntimeState();
+});
 
 describe('normalizeAiConfig', () => {
   it('prefers Ollama environment variables when present', () => {
@@ -123,7 +130,11 @@ describe('queryAiModel', () => {
     assert.equal(result.usage.totalTokens, 22);
   });
 
-  it('retries with an installed tagged model when the configured model is missing', async () => {
+  // The default configuration is the untagged `gemma4`, which Ollama reads as
+  // `gemma4:latest` and rejects. Resolving against the listing up front means
+  // the first request already names the installed tag - one generation, not a
+  // rejected request followed by a retry.
+  it('resolves the configured model to the installed tag before the first request', async () => {
     const calls = [];
 
     const result = await queryAiModel(
@@ -140,20 +151,6 @@ describe('queryAiModel', () => {
       {
         fetchImpl: async (url, init = {}) => {
           calls.push({ url: String(url), body: String(init.body || '') });
-
-          if (String(url).endsWith('/api/chat') && calls.filter((call) => call.url.endsWith('/api/chat')).length === 1) {
-            return new Response(
-              JSON.stringify({
-                error: "model 'gemma4' not found"
-              }),
-              {
-                status: 404,
-                headers: {
-                  'content-type': 'application/json'
-                }
-              }
-            );
-          }
 
           if (String(url).endsWith('/api/tags')) {
             return new Response(
@@ -198,10 +195,63 @@ describe('queryAiModel', () => {
     );
 
     const chatBodies = calls.filter((call) => call.url.endsWith('/api/chat')).map((call) => call.body);
+    assert.equal(chatBodies.length, 1);
+    assert.match(chatBodies[0], /\"model\":\"gemma4:e2b\"/);
+    assert.equal(result.model, 'gemma4:e2b');
+    assert.equal(calls.filter((call) => call.url.endsWith('/api/tags')).length, 1);
+  });
+
+  // The listing can be unreadable when the question is asked - the backend was
+  // still coming up - and readable by the time the chat is rejected. The
+  // missing-model fallback then resolves the tag from a fresh listing.
+  it('still retries with the installed tag when the listing was unavailable up front', async () => {
+    const calls = [];
+    let tagsCalls = 0;
+
+    const result = await queryAiModel(
+      { prompt: 'Summarize the vessel state.', context: { selectedData: {} } },
+      normalizeAiConfig(),
+      {
+        fetchImpl: async (url, init = {}) => {
+          calls.push({ url: String(url), body: String(init.body || '') });
+
+          if (String(url).endsWith('/api/tags')) {
+            tagsCalls += 1;
+            if (tagsCalls === 1) {
+              return new Response('starting', { status: 503 });
+            }
+            return new Response(
+              JSON.stringify({ models: [{ name: 'gemma4:e2b', details: { family: 'gemma4' } }] }),
+              { status: 200, headers: { 'content-type': 'application/json' } }
+            );
+          }
+
+          if (String(init.body || '').includes('"model":"gemma4"')) {
+            return new Response(JSON.stringify({ error: "model 'gemma4' not found" }), {
+              status: 404,
+              headers: { 'content-type': 'application/json' }
+            });
+          }
+
+          return new Response(
+            JSON.stringify({
+              model: 'gemma4:e2b',
+              created_at: '2026-04-11T10:00:00.000Z',
+              message: { role: 'assistant', content: 'Resolved on retry.' }
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } }
+          );
+        }
+      }
+    );
+
+    const chatBodies = calls.filter((call) => call.url.endsWith('/api/chat')).map((call) => call.body);
     assert.equal(chatBodies.length, 2);
     assert.match(chatBodies[0], /\"model\":\"gemma4\"/);
     assert.match(chatBodies[1], /\"model\":\"gemma4:e2b\"/);
     assert.equal(result.model, 'gemma4:e2b');
+    // A failed listing is not cached, so the fallback got a fresh one.
+    assert.equal(tagsCalls, 2);
   });
 
   it('rejects empty prompts', async () => {
@@ -328,8 +378,8 @@ describe('thinking models', () => {
     assert.equal(chatBody.think, false);
 
     // And via the family match, the way the shipped default reaches the tag:
-    // the bare name 404s, the retry runs against the resolved tag, and the
-    // thinking decision is recomputed for it.
+    // the bare name resolves to the installed tag before the request goes
+    // out, and the thinking decision is made for that tag.
     const chatBodies = [];
     await queryAiModel(
       { prompt: 'How fast are we going?', context: { selectedData: {} } },
@@ -340,21 +390,14 @@ describe('thinking models', () => {
             return tagsResponse(['completion', 'thinking']);
           }
           chatBodies.push(JSON.parse(String(init.body)));
-          if (chatBodies.length === 1) {
-            return new Response(JSON.stringify({ error: "model 'gemma4' not found" }), {
-              status: 404,
-              headers: { 'content-type': 'application/json' }
-            });
-          }
           return chatResponse({ role: 'assistant', content: 'Five knots.' });
         }
       }
     );
 
-    assert.equal(chatBodies.length, 2);
-    assert.equal(chatBodies[0].model, 'gemma4');
-    assert.equal(chatBodies[1].model, 'gemma4:e2b-it-qat');
-    assert.equal(chatBodies[1].think, false);
+    assert.equal(chatBodies.length, 1);
+    assert.equal(chatBodies[0].model, 'gemma4:e2b-it-qat');
+    assert.equal(chatBodies[0].think, false);
   });
 
   it('disables thinking on the streaming path too', async () => {

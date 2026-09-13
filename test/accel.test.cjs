@@ -519,12 +519,14 @@ describe('review follow-ups', () => {
 describe('unit conversion', () => {
   const { createBridgeService } = require('../lib/bridge-service.cjs');
 
+  const NOW = Date.parse('2026-08-23T07:00:00Z');
+
   function contextFor(paths, model) {
     const app = {
       selfId: 'urn:mrn:signalk:uuid:test-self',
       getSelfPath: (path) => path.split('.').reduce((node, key) => (node ? node[key] : undefined), model)
     };
-    const service = createBridgeService(app, {});
+    const service = createBridgeService(app, { now: () => NOW });
     return service.buildAiPayload({ prompt: 'x' }, { aiDataPaths: paths, ...normalizeAiConfig({}) });
   }
 
@@ -555,27 +557,74 @@ describe('unit conversion', () => {
       false
     );
     // Converted as a speed (m/s -> knots), which is a different claim from the
-    // angle conversion this test guards against: 3.5 m/s is 6.803 knots, not
+    // angle conversion this test guards against: 3.5 m/s is 6.8 knots, not
     // the 200.5 degrees that treating it as radians would produce.
-    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 6.803);
+    assert.equal(data['navigation.courseGreatCircle.nextPoint.velocityMadeGood'], 6.8);
     assert.equal(data['navigation.courseGreatCircle.nextPoint.position.latitude'], 60.1);
     // A real angle in the same subtree still converts. This never fired for a
     // wildcard before, because the key was "...bearingTrackTrue.value".
     assert.equal(data['navigation.courseGreatCircle.bearingTrackTrue'], 90);
   });
 
-  it('keeps the leaf timestamp so staleness is visible to the model', async () => {
-    const payload = await contextFor(['navigation.*'], {
+  it('flags a stale leaf with its age and leaves a current one unmarked', async () => {
+    const payload = await contextFor(['navigation.*', 'environment.*'], {
       navigation: {
-        speedOverGround: { value: 4.1, timestamp: '2026-08-23T04:00:00Z', $source: 'gps.1' }
+        // Three hours old: the GPS has stopped, and the model must be told.
+        speedOverGround: { value: 4.1, timestamp: '2026-08-23T04:00:00Z', $source: 'gps.1' },
+        // Fresh: a timestamp here was pure prompt cost, more characters than
+        // the value it described, on every leaf of every question.
+        headingTrue: { value: Math.PI, timestamp: '2026-08-23T06:59:58Z' }
+      },
+      environment: {
+        // A source whose clock runs ahead of the server's is not stale.
+        depth: { belowTransducer: { value: 12.5, timestamp: '2026-08-23T07:05:00Z' } },
+        // Unreadable timestamps say nothing about age.
+        wind: { speedApparent: { value: 6, timestamp: 'yesterday-ish' } }
       }
     });
 
     const data = payload.context.selectedData;
-    // 4.1 m/s in knots; the point of this test is the sibling timestamp key.
     assert.equal(data['navigation.speedOverGround'], 7.97);
-    assert.equal(data['navigation.speedOverGround@'], '2026-08-23T04:00:00Z');
+    assert.equal(data['navigation.speedOverGround@'], 'stale for 3 h');
     assert.equal(data['navigation.speedOverGround.$source'], undefined);
+    assert.equal(data['navigation.headingTrue'], 180);
+    assert.equal('navigation.headingTrue@' in data, false);
+    assert.equal('environment.depth.belowTransducer@' in data, false);
+    assert.equal('environment.wind.speedApparent@' in data, false);
+  });
+
+  it('flags a stale exact path too, not only a wildcard leaf', async () => {
+    // The default selection is four exact paths, and an exact path used to
+    // drop its envelope - timestamp included - so a fix an hour old looked
+    // as current as one from a second ago.
+    const payload = await contextFor(['navigation.position', 'navigation.speedOverGround'], {
+      navigation: {
+        position: { value: { latitude: 60.1, longitude: 24.9 }, timestamp: '2026-08-23T05:30:00Z' },
+        speedOverGround: { value: 4.1, timestamp: '2026-08-23T06:59:30Z' }
+      }
+    });
+
+    const data = payload.context.selectedData;
+    assert.deepEqual(data['navigation.position'], { latitude: 60.1, longitude: 24.9 });
+    assert.equal(data['navigation.position@'], 'stale for 1 h');
+    assert.equal('navigation.speedOverGround@' in data, false);
+  });
+
+  it('words the age in the coarsest whole unit', async () => {
+    const ages = {
+      ninetySeconds: '2026-08-23T06:58:30Z',
+      twoDays: '2026-08-21T06:00:00Z'
+    };
+    const payload = await contextFor(['sensors.*'], {
+      sensors: {
+        a: { value: 1, timestamp: ages.ninetySeconds },
+        b: { value: 2, timestamp: ages.twoDays }
+      }
+    });
+
+    const data = payload.context.selectedData;
+    assert.equal(data['sensors.a@'], 'stale for 1 min');
+    assert.equal(data['sensors.b@'], 'stale for 2 d');
   });
 
   it('still converts the angle leaves that are genuinely radians', async () => {
@@ -716,6 +765,58 @@ describe('alarm coverage in the prompt', () => {
   });
 });
 
+describe('the operator question and the context budget', () => {
+  const { buildAiMessages } = require('../lib/ai-service.cjs');
+
+  const promptContext = (question, selectedData, numCtx) =>
+    JSON.parse(
+      buildAiMessages(question, { aiDataPaths: ['electrical.*'], selectedData }, { systemPrompt: 's', numCtx, maxTokens: 512 })[1]
+        .content.split('Signal K context (JSON, keyed by path):\n')[1]
+        .split('\n\nUnits:')[0]
+    );
+
+  it('drops more context for a long question than for a short one', () => {
+    // The window is shared: a question near MAX_PROMPT_LENGTH is a thousand
+    // tokens the fixed overhead never covered, so the context overran the
+    // window and llama.cpp truncated the prompt itself, silently.
+    const selectedData = {};
+    for (let i = 0; i < 120; i += 1) {
+      selectedData[`electrical.batteries.house.cell${i}.voltage`] = 12.8;
+    }
+
+    const short = promptContext('Battery status?', selectedData, 2048);
+    const long = promptContext('Check every cell: '.repeat(200), selectedData, 2048);
+
+    assert.ok(
+      Object.keys(long.data).length < Object.keys(short.data).length,
+      'a long question must leave less room for vessel data'
+    );
+    assert.match(long.truncated, /omitted to fit/);
+  });
+
+  it('sends no context at all when the question alone fills the window', () => {
+    // numCtx 2048 with maxTokens 1024 leaves 1,024 prompt tokens; a
+    // 4,000-character question is ~1,000 of them and the fixed overhead is
+    // 400. The old 500-character floor still put vessel data into a window
+    // that could not hold it, and llama.cpp dropped the front of the prompt.
+    const selectedData = { 'electrical.batteries.house.voltage': 12.8 };
+    const history = { from: 'a', to: 'b', resolutionSeconds: 1, series: { x: { count: 1, last: 1 } } };
+    const message = buildAiMessages(
+      'Check every cell: '.repeat(220),
+      { aiDataPaths: ['electrical.*'], selectedData, history },
+      { systemPrompt: 's', numCtx: 2048, maxTokens: 1024 }
+    )[1].content;
+    const context = JSON.parse(
+      message.split('Signal K context (JSON, keyed by path):\n')[1].split('\n\nUnits:')[0]
+    );
+
+    assert.deepEqual(context.data, {});
+    assert.equal(context.history, undefined);
+    assert.match(context.truncated, /fills the model context window/);
+    assert.match(context.alarms, /alarm status is unknown/);
+  });
+});
+
 describe('cost and safety of the status and retune routes', () => {
   const { retuneOffload, redactUrl, resetRuntimeState: reset } = require('../lib/ai-service.cjs');
 
@@ -753,6 +854,73 @@ describe('cost and safety of the status and retune routes', () => {
     await Promise.all(Array.from({ length: 10 }, () => retuneOffload(config, countingDeps(counts))));
 
     assert.ok(counts.generate <= 8, `expected one shared ladder, saw ${counts.generate} model loads`);
+  });
+
+  it('answers a question from the listing the status poll just fetched', async () => {
+    // The panel polls /ai/status, and the operator asks a moment later. Every
+    // question used to re-list the installed models for tag resolution and
+    // the thinking-capability check - a round trip the poll had just made,
+    // against the host that is also driving the GPU.
+    reset();
+    const counts = {};
+    const config = normalizeAiConfig({ model: 'gemma4' });
+    const deps = {
+      ...countingDeps(counts),
+      ollamaClient: {
+        async chat({ model }) {
+          return { model, message: { role: 'assistant', content: 'All good.' } };
+        }
+      }
+    };
+
+    await getAiAvailability(config, deps);
+    const result = await queryAiModel({ prompt: 'Status?', context: { selectedData: {} } }, config, deps);
+
+    assert.equal(result.model, 'gemma4:e2b');
+    assert.equal(counts.tags, 1);
+  });
+
+  it('does not let a listing started before a reset overwrite the one after it', async () => {
+    // A re-tune clears the caches while a status poll's listing may still be
+    // in flight. If that older listing lands last, a tag that was just
+    // removed comes back for thirty seconds and the resolver picks it.
+    reset();
+    const config = normalizeAiConfig({ model: 'gemma4' });
+    let release;
+    let tagsCalls = 0;
+    const deps = {
+      fetchImpl: async (url) => {
+        assert.match(String(url), /\/api\/tags$/);
+        tagsCalls += 1;
+        if (tagsCalls === 1) {
+          // The old listing, held until the test lets it settle.
+          await new Promise((resolve) => {
+            release = resolve;
+          });
+          return jsonOk({ models: [{ name: 'gemma4:old', details: { family: 'gemma4' } }] });
+        }
+        return jsonOk({ models: [{ name: 'gemma4:new', details: { family: 'gemma4' } }] });
+      },
+      ollamaClient: {
+        async chat({ model }) {
+          return { model, message: { role: 'assistant', content: 'ok' } };
+        }
+      }
+    };
+
+    const before = getAiAvailability(config, deps);
+    // Let the first listing start before clearing, so it is genuinely stale.
+    await new Promise((resolve) => setImmediate(resolve));
+    reset();
+    const after = await getAiAvailability(config, deps);
+    release();
+    await before;
+
+    assert.equal(after.resolvedModel, 'gemma4:new');
+    const answered = await queryAiModel({ prompt: 'Status?', context: { selectedData: {} } }, config, deps);
+    assert.equal(answered.model, 'gemma4:new');
+    // Served from the newer listing, not re-fetched and not the stale one.
+    assert.equal(tagsCalls, 2);
   });
 
   it('never echoes credentials from the configured base URL', () => {
