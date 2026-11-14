@@ -121,7 +121,7 @@ is not read.)
 - with TLS on, the HTTPS port is `SSLPORT` if set, else `sslport`, else 3443.
   The server's API is on that port, and a blank `historyServerUrl` calls it
   there; the HTTP port carries only its redirect to the advertised port, and
-  is not where the plugin calls;
+  is neither called nor sent the session;
 - only the value Signal K uses counts: with `PORT` set, a different `port` in
   the settings is not one of its ports, and the same for `SSLPORT` and
   `sslport`;

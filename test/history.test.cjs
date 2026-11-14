@@ -582,12 +582,27 @@ describe('collectHistoryContext', () => {
     assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
   });
 
-  it('knows every port this server listens on: its HTTP port, and the TLS port', async () => {
+  it('knows the port this server serves on: its HTTP port, or with TLS only the TLS port', async () => {
     const { ownServerPorts } = require('../lib/history-service.cjs');
     await withSignalkEnv({}, () => {
-      assert.deepEqual([...ownServerPorts({ config: { settings: { port: 3000, ssl: true } } })].sort(), ['3000', '3443']);
+      // With TLS on, the HTTP port only redirects, and is not sent the session.
+      assert.deepEqual([...ownServerPorts({ config: { settings: { port: 3000, ssl: true } } })], ['3443']);
       assert.deepEqual([...ownServerPorts({ config: { settings: {} } })], ['3000']);
     });
+  });
+
+  it('does not repeat credentials from the server URL in an error', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: {} } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://admin:hunter2@boat.example:3000' }),
+      {
+        fetchImpl: async (url) => {
+          throw new TypeError(`Request cannot be constructed from a URL that includes credentials: ${url}`);
+        }
+      }
+    );
+    assert.doesNotMatch(history.message, /hunter2|admin:/);
+    assert.match(history.message, /http:\/\/boat\.example:3000/);
   });
 
   it('sends the session to this server on its TLS port, named explicitly', async () => {
@@ -882,7 +897,7 @@ describe('which ports are this server', () => {
   it('counts SSLPORT instead of settings.sslport when both are set', async () => {
     await withSignalkEnv({ SSLPORT: '4443' }, async () => {
       const app = { config: { settings: { port: 3000, ssl: true, sslport: 3443 } } };
-      assert.deepEqual([...ownServerPorts(app)].sort(), ['3000', '4443']);
+      assert.deepEqual([...ownServerPorts(app)], ['4443']);
       assert.equal(isOwnServer('https://localhost:3443', ownServerPorts(app)), false);
       assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:4443');
       assert.equal((await cookieSentTo(app, 'https://localhost:3443')).cookie, undefined);
