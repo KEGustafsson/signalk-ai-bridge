@@ -2,13 +2,15 @@ import React from 'react';
 import {
   buildIncidentQuestion,
   buildUnusualQuestion,
+  describeCompileEvidence,
   describeDetectorCounts,
   describeInventoryRow,
   formatAgo,
   formatClockTime,
-  sparklinePoints
+  sparklinePoints,
+  storedRule
 } from './watchText.js';
-import type { WatchIncident, WatchInventory, WatchReplayResult, WatchStatus, WatchUnusualRow } from './watchText.js';
+import type { WatchIncident, WatchInventory, WatchReplayResult, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
 
 interface WatchPanelProps {
   readonly fetchImpl?: typeof fetch;
@@ -75,6 +77,8 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [now, setNow] = React.useState<number>(Date.now());
   const [inventory, setInventory] = React.useState<WatchInventory | 'loading' | { error: string } | null>(null);
   const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
+  const [ruleText, setRuleText] = React.useState<string>('');
+  const [compiled, setCompiled] = React.useState<WatchRuleCompileResult | 'working' | null>(null);
   const [unusual, setUnusual] = React.useState<readonly WatchUnusualRow[] | 'loading' | { error: string } | null>(null);
 
   const fetchImpl = props.fetchImpl ?? globalThis.fetch;
@@ -195,6 +199,56 @@ export default function WatchPanel(props: WatchPanelProps) {
       setUnusual({ error: error instanceof Error ? error.message : 'Could not rank paths.' });
     }
   }, [fetchImpl, props.endpoint, unusual]);
+
+  const onCompile = React.useCallback(
+    async (path?: string) => {
+      if (!ruleText.trim()) return;
+      setCompiled('working');
+      try {
+        const result = await post('/watch/rules/compile', { text: ruleText, ...(path ? { path } : {}) });
+        setCompiled(
+          result.ok
+            ? (result.body as WatchRuleCompileResult)
+            : { ok: false, reason: errorText(result.status, result.body, 'Could not read that.') }
+        );
+      } catch (error) {
+        setCompiled({ ok: false, reason: error instanceof Error ? error.message : 'Could not read that.' });
+      }
+    },
+    [post, ruleText]
+  );
+
+  const saveRules = React.useCallback(
+    async (rules: ReturnType<typeof storedRule>[], done: string) => {
+      setNotice(null);
+      try {
+        const result = await post('/watch/rules/save', { rules });
+        setNotice(result.ok ? done : errorText(result.status, result.body, 'Could not save the watch rules.'));
+        if (result.ok) {
+          setCompiled(null);
+          setRuleText('');
+        }
+        setRefresh((value) => value + 1);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : 'Could not save the watch rules.');
+      }
+    },
+    [post]
+  );
+
+  const onAddRule = React.useCallback(async () => {
+    if (!compiled || compiled === 'working' || !compiled.ok || !compiled.rule) return;
+    const existing = (status?.rules ?? []).map(storedRule);
+    await saveRules([...existing, storedRule(compiled.rule)], 'Watch added.');
+  }, [compiled, saveRules, status]);
+
+  const onDeleteRule = React.useCallback(
+    async (id: string) => {
+      const remaining = (status?.rules ?? []).filter((rule) => rule.id !== id).map(storedRule);
+      await saveRules(remaining, 'Watch removed.');
+    },
+    [saveRules, status]
+  );
 
   const onTrend = React.useCallback(
     async (path: string) => {
@@ -368,6 +422,97 @@ export default function WatchPanel(props: WatchPanelProps) {
             <div style={{ display: 'grid', gap: '0.5rem', marginTop: '0.6rem' }}>{activeIncidents.map(renderIncident)}</div>
           ) : null}
 
+          <div style={{ marginTop: '0.6rem', padding: '0.6rem', borderRadius: '8px', background: '#ffffff', border: '1px solid #e2e8f0' }}>
+            <p style={{ margin: 0, fontWeight: 600 }}>Your watches</p>
+            {(status.rules ?? []).length === 0 ? (
+              <p style={{ margin: '0.3rem 0 0 0', color: '#475569' }}>
+                Add a limit of your own in plain words. Unusual values are already watched without one.
+              </p>
+            ) : (
+              <ul style={{ margin: '0.3rem 0 0 0', paddingLeft: '1.1rem', display: 'grid', gap: '0.25rem' }}>
+                {(status.rules ?? []).map((rule) => (
+                  <li key={rule.id}>
+                    <span style={{ color: rule.firing ? '#991b1b' : '#0f172a', fontWeight: rule.firing ? 700 : 400 }}>
+                      {rule.firing ? 'Firing: ' : ''}
+                      {rule.description}
+                    </span>
+                    {rule.current ? <span style={{ color: '#475569' }}> (now {rule.current})</span> : null}{' '}
+                    <button type="button" style={{ ...buttonStyle, padding: '0.1rem 0.4rem' }} onClick={() => onDeleteRule(rule.id)}>
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
+              <input
+                type="text"
+                aria-label="New watch in plain words"
+                placeholder="Tell me if the coolant goes above 95 for 2 minutes"
+                value={ruleText}
+                maxLength={300}
+                onChange={(event: { target: { value: string } }) => {
+                  setRuleText(event.target.value);
+                  setCompiled(null);
+                }}
+                onKeyDown={(event: { key: string }) => {
+                  if (event.key === 'Enter') void onCompile();
+                }}
+                style={{ flex: '1 1 16rem', padding: '0.3rem 0.5rem', minWidth: 0 }}
+              />
+              <button type="button" style={buttonStyle} onClick={() => onCompile()} disabled={!ruleText.trim() || compiled === 'working'}>
+                {compiled === 'working' ? 'Reading…' : 'Read it back'}
+              </button>
+            </div>
+            {compiled && compiled !== 'working' ? (
+              compiled.ok ? (
+                <div style={{ marginTop: '0.4rem' }}>
+                  <p style={{ margin: 0 }}>
+                    <strong>{compiled.description}</strong>
+                  </p>
+                  <p style={{ margin: '0.2rem 0 0 0', color: compiled.source === 'model' ? '#b45309' : '#475569', fontSize: '0.9rem' }}>
+                    {compiled.source === 'model'
+                      ? `Interpreted by ${compiled.model ?? 'the model'}: check the reading above before adding it.`
+                      : 'Read without AI.'}{' '}
+                    {describeCompileEvidence(compiled)}
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>
+                    <button type="button" style={buttonStyle} onClick={onAddRule}>
+                      Add this watch
+                    </button>
+                    <button type="button" style={buttonStyle} onClick={() => setCompiled(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginTop: '0.4rem' }}>
+                  <p style={{ margin: 0, color: '#b45309' }}>{compiled.reason}</p>
+                  {compiled.assistNote ? (
+                    <p style={{ margin: '0.2rem 0 0 0', color: '#475569', fontSize: '0.9rem' }}>
+                      Also asked {compiled.model ?? 'the model'}: {compiled.assistNote}
+                    </p>
+                  ) : null}
+                  {compiled.alternatives && compiled.alternatives.length > 0 ? (
+                    <div style={{ display: 'flex', gap: '0.3rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
+                      {compiled.alternatives.map((alternative) => (
+                        <button
+                          key={alternative.path}
+                          type="button"
+                          style={buttonStyle}
+                          title={alternative.path}
+                          onClick={() => onCompile(alternative.path)}
+                        >
+                          {alternative.name}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              )
+            ) : null}
+          </div>
+
           {status.mutes && status.mutes.length > 0 ? (
             <p style={{ margin: '0.6rem 0 0 0', color: '#475569' }}>
               Muted:{' '}
@@ -387,10 +532,10 @@ export default function WatchPanel(props: WatchPanelProps) {
               {showResolved ? 'Hide' : 'Show'} recent incidents ({resolvedIncidents.length})
             </button>
             <button type="button" style={buttonStyle} onClick={onUnusual}>
-              {unusual && unusual !== 'loading' ? 'Hide' : 'Most unusual now'}
+              {unusual && unusual !== 'loading' ? 'Hide unusual' : 'Most unusual now'}
             </button>
             <button type="button" style={buttonStyle} onClick={onInventory}>
-              {inventory && inventory !== 'loading' ? 'Hide' : 'What is watched?'}
+              {inventory && inventory !== 'loading' ? 'Hide inventory' : 'What is watched?'}
             </button>
             <button type="button" style={buttonStyle} onClick={onReplay} disabled={replay === 'running'}>
               {replay === 'running' ? 'Replaying…' : 'Replay last 24 h'}

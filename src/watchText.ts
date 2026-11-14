@@ -65,6 +65,7 @@ export interface WatchStatus {
     readonly status: 'ok' | 'degraded' | 'suspect' | 'unavailable';
     readonly indicators: Readonly<Record<string, 'ok' | 'active' | 'unavailable'>>;
   };
+  readonly rules?: readonly WatchRuleStatus[];
   readonly mutes?: ReadonlyArray<{ readonly path: string; readonly until: number }>;
 }
 
@@ -118,6 +119,68 @@ export function describeInventoryRow(row: WatchInventoryRow): string {
     parts.push(sources[0].name);
   }
   return parts.join(' · ');
+}
+
+export interface WatchRuleCondition {
+  readonly path: string;
+  readonly op: 'above' | 'below' | 'equals' | 'notEquals' | 'changes';
+  readonly value?: number | string | boolean | null;
+}
+
+export interface WatchRule extends WatchRuleCondition {
+  readonly id: string;
+  readonly text: string;
+  readonly forSeconds: number;
+  readonly when?: WatchRuleCondition;
+  readonly severity: WatchSeverity;
+  readonly createdAt: number;
+  readonly source: 'parser' | 'model' | 'manual';
+}
+
+export interface WatchRuleStatus extends WatchRule {
+  readonly description: string;
+  readonly firing: boolean;
+  readonly current?: string;
+}
+
+export interface WatchRuleCompileResult {
+  readonly ok: boolean;
+  readonly reason?: string;
+  readonly source?: 'parser' | 'model';
+  readonly model?: string;
+  readonly assist?: string;
+  readonly assistNote?: string;
+  readonly rule?: WatchRule;
+  readonly description?: string;
+  readonly current?: { readonly text: string };
+  readonly wouldFireNow?: boolean | null;
+  readonly recent?: { readonly minutes: number; readonly share: number };
+  readonly alternatives?: ReadonlyArray<{ readonly path: string; readonly name: string }>;
+}
+
+/** A rule as stored: the status decorations stripped off. */
+export function storedRule(rule: WatchRule): WatchRule {
+  const { id, text, path, op, value, forSeconds, when, severity, createdAt, source } = rule;
+  return { id, text, path, op, value, forSeconds, ...(when ? { when } : {}), severity, createdAt, source };
+}
+
+/** What the compile result means for the operator, in one line. */
+export function describeCompileEvidence(result: WatchRuleCompileResult): string {
+  const parts: string[] = [];
+  if (result.current) {
+    parts.push(`Now ${result.current.text}`);
+  }
+  if (result.wouldFireNow === true) {
+    parts.push('it would fire straight away');
+  } else if (result.wouldFireNow === false) {
+    parts.push('it would not fire now');
+  }
+  if (result.recent && result.recent.minutes > 0) {
+    parts.push(
+      `true for ${Math.round(result.recent.share * 100)} % of the last ${result.recent.minutes} min the watch has recorded`
+    );
+  }
+  return parts.length > 0 ? `${parts.join('; ')}.` : 'No data for this path has arrived yet.';
 }
 
 export interface WatchUnusualRow {

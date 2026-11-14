@@ -778,6 +778,44 @@ boat with no speed log. The same data is at `GET /watch/inventory`.
 - The **Watchkeeper** card at the top of the panel: active incidents, a trend
   line for each finding, **Mute 1 h** for a path, and recent incidents.
 
+### Your own watches, in plain words
+
+Type a limit the way you would say it: *"tell me if the coolant goes above 95
+for 2 minutes"*, *"alert if the fridge gets warmer than 8 °C while shore is
+on"*, *"fresh water below 20 %"*, *"let me know when the bilge pump runs"*,
+*"engine oil pressure under 2 bar while rpm is above 600"*. **Read it back**
+shows how the request was understood, for example *Warn when Main engine
+temperature is above 95.0 °C for 2 min*. It also shows the current value and
+how often the condition held over the watch's recent record. Nothing is stored
+until you press **Add this watch**.
+
+The language model is used as little as possible:
+
+1. **A parser reads the request first, with no model.** It handles a thing, a
+   comparison, a number with a unit, a duration, urgency ("alert", "urgent")
+   and a "while" condition. It picks the path from what this vessel actually
+   publishes, using everyday words ("coolant", "fridge", "house battery",
+   "barometer") and the unit you typed: "95 °C" cannot be a voltage. Numbers
+   without a unit are read in the unit the panel shows for that path. When two
+   paths fit equally well, it asks which one you mean instead of guessing.
+2. **Only if the parser cannot read the request** is it passed to a model,
+   depending on `watchRuleAssist`:
+   - `main`: the configured model, already loaded, so no extra memory.
+   - `helper`: a separate small model in `watchHelperModel`, such as
+     `qwen3:0.6b`. It is unloaded two minutes after use.
+   - `off`: never.
+
+   The model chooses from at most 25 real paths and its answer is held to a
+   JSON schema with those paths as the only allowed values, which is why a
+   model under a billion parameters is enough. A rule interpreted by a model is
+   labelled as such in the panel.
+3. **The model never runs at watch time.** A stored rule is a small piece of
+   data checked deterministically on every tick, like the statistical checks.
+   It fires on its own notification, `notifications.aiBridge.watch.rules.<id>`.
+
+Rules are stored with the plugin's options and can be about any path, including
+ones the statistical watch skips, such as depth or wind.
+
 ### Most unusual right now
 
 **Most unusual now** ranks every path by how far it sits from its own normal

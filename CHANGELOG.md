@@ -41,6 +41,17 @@ this project uses [semantic versioning](https://semver.org/).
   path discovered and what the watch does with each: watched, learning, or
   skipped and by which rule. They also show which checks this vessel's data
   supports, and what a missing check would need.
+- **Watch rules in plain words, with as little language model as possible.**
+  "Tell me if the coolant goes above 95 for 2 minutes" becomes a rule. A
+  deterministic parser reads thresholds, units, durations, urgency and "while"
+  conditions, and picks the path from what the vessel publishes. It asks which
+  path you mean when two fit. Only a request it cannot read goes to a model
+  (`watchRuleAssist`: the main model already loaded, a separate helper model
+  such as `qwen3:0.6b`, or never). The model chooses from at most 25 real paths,
+  with its answer held to a JSON schema. Every rule is read back in plain words
+  with its current value and recent record before it is stored, and runs
+  deterministically with no model at watch time. New routes:
+  `POST /watch/rules/compile` and `POST /watch/rules/save`.
 - **A baseline per operating state.** Each path keeps the baseline it learned
   in each operating state: engine running or stopped, charger mode,
   `navigation.state`. Once a transition settles, the path is judged against

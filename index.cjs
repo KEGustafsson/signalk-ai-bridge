@@ -43,6 +43,7 @@ const {
   resolveWindow
 } = require('./lib/history-service.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
+const { normalizeRules } = require('./lib/watch/rules.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -343,6 +344,24 @@ module.exports = function createPlugin(app, dependencies = {}) {
           'Signal K paths or patterns: a path covers everything beneath it, * matches within one segment, ** across segments (for example environment.inside, propulsion.*.exhaustTemperature, **.signalStrength).',
         items: { type: 'string' },
         default: []
+      },
+      watchRuleAssist: {
+        type: 'string',
+        title: 'Interpreting watch rules',
+        description:
+          'Watch rules written in plain words ("tell me if the coolant goes above 95 for 2 minutes") are read by a parser first, ' +
+          'with no model. Only a request the parser cannot read is passed to a model, which picks from a short list of real ' +
+          'paths with its answer held to a fixed format, and every result is read back for you to confirm. main uses the ' +
+          'model above (already loaded, so no extra memory); helper uses a separate small model; off never asks a model.',
+        enum: ['main', 'helper', 'off'],
+        default: 'main'
+      },
+      watchHelperModel: {
+        type: 'string',
+        title: 'Helper model for watch rules',
+        description:
+          'Used when "Interpreting watch rules" is helper: a small Ollama model such as qwen3:0.6b or gemma3:1b. It is unloaded two minutes after use so it does not hold GPU memory.',
+        default: ''
       },
       watchMaxPaths: {
         type: 'integer',
@@ -949,6 +968,50 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** POST /watch/rules/compile { text, path? }: read a request back as a rule, without storing it. */
+  const watchRuleCompileHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Writing a watch rule')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      res.status(200).json(await watchService.compileRule(body || {}, getConfig()));
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * POST /watch/rules/save { rules }: store the operator's watch rules. Stored
+   * as plugin options, like the path selections, so a restart and a config
+   * backup carry them.
+   */
+  const watchRuleSaveHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      if (!body || !Array.isArray(body.rules)) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
+        return;
+      }
+      const watchRules = normalizeRules(body.rules);
+      if (typeof app.savePluginOptions !== 'function') {
+        res.status(501).json({ error: { code: 'unknown', message: 'This Signal K server does not let plugins store their own settings.' } });
+        return;
+      }
+      const updated = { ...pluginOptions, watchRules };
+      await new Promise((resolve, reject) => {
+        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+      });
+      pluginOptions = updated;
+      res.status(200).json({ rules: watchService.setRules(watchRules) });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
   // Without this the admin UI renders apiKey as an ordinary text input, so the
   // token is on screen in cleartext and echoed back on every config page load.
   const uiSchema = () => ({
@@ -1040,6 +1103,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/watch/series', watchSeriesHandler);
       router.get('/watch/inventory', watchInventoryHandler);
       router.get('/watch/unusual', watchUnusualHandler);
+      router.post('/watch/rules/compile', watchRuleCompileHandler);
+      router.post('/watch/rules/save', watchRuleSaveHandler);
       router.post('/watch/mute', watchMuteHandler(false));
       router.post('/watch/unmute', watchMuteHandler(true));
       router.post('/watch/replay', watchReplayHandler);

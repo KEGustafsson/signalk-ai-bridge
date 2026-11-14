@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncidentQuestion, buildUnusualQuestion, describeDetectorCounts, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
+import { buildIncidentQuestion, buildUnusualQuestion, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -107,5 +107,23 @@ describe('buildUnusualQuestion', () => {
     ]);
     assert.match(question, /House battery voltage somewhat low: 13\.03 V/);
     assert.match(question, /ordinary variation, say so\.$/);
+  });
+});
+
+describe('watch rules in the panel', () => {
+  it('summarises the evidence for a rule before it is added', () => {
+    assert.equal(
+      describeCompileEvidence({ ok: true, current: { text: '79.9 °C' }, wouldFireNow: false, recent: { minutes: 90, share: 0 } }),
+      'Now 79.9 °C; it would not fire now; true for 0 % of the last 90 min the watch has recorded.'
+    );
+    assert.equal(describeCompileEvidence({ ok: true }), 'No data for this path has arrived yet.');
+  });
+
+  it('stores a rule without its status decorations', () => {
+    const stored = storedRule({
+      id: 'r-1', text: 't', path: 'a.b', op: 'above', value: 1, forSeconds: 0, severity: 'warn', createdAt: 1, source: 'parser',
+      description: 'x', firing: true, current: '1'
+    } as never);
+    assert.deepEqual(Object.keys(stored).sort(), ['createdAt', 'forSeconds', 'id', 'op', 'path', 'severity', 'source', 'text', 'value']);
   });
 });
