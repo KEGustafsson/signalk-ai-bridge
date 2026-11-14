@@ -623,6 +623,67 @@ describe('path priority order', () => {
     }
   });
 
+  it('answers a remove as done when a restart lands during its save', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const rule = { id: 'r-gone', text: 'x', path: 'propulsion.main.temperature', op: 'above', value: 360, forSeconds: 0, severity: 'warn' };
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: [rule] });
+    try {
+      const reply = recorder();
+      const removing = routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-gone' } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      // The plugin restarts on the options just written, without the rule.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: [] });
+      finish();
+      await removing;
+      assert.equal(reply.statusCode, 200);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('ends with the newest options on disk after two restarts during one save', async () => {
+    const host = createHost();
+    const pending = [];
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      pending.push(done);
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, model: 'm1', aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
+      await new Promise((resolve) => setImmediate(resolve));
+      // Restart 1: b.two is gone, so the redone move has nothing to do and
+      // the restart's options are written back.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, model: 'm2', aiDataPaths: ['a.one'] });
+      pending.shift()();
+      await new Promise((resolve) => setImmediate(resolve));
+      // Restart 2 while that re-save is in flight.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, model: 'm3', aiDataPaths: ['a.one'] });
+      while (pending.length > 0) {
+        pending.shift()();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await moving;
+      assert.equal(saves[saves.length - 1].model, 'm3');
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('says a change was saved when the plugin stops after storing it', async () => {
     const host = createHost();
     let finish;

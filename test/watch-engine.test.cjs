@@ -897,6 +897,7 @@ describe('watch engine: review follow-ups', () => {
     const row = saved.paths.find((item) => item.path === 'plugins.ex.chargerState');
     Object.assign(row, { kind: 'continuous', distinct: null, counterOptIn: true });
     delete row.kindN;
+    delete row.counterListing;
     const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
     restarted.importState(saved, t);
     t = run(restarted, t, t + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
@@ -934,10 +935,51 @@ describe('watch engine: review follow-ups', () => {
     const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
     let pulses = 0;
     let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (pulses += 1)]]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
     const restarted = newEngine({ watchCounterPaths: ['plugins.*'] });
+    restarted.importState(saved, t);
+    const state = restarted.exportState(t).paths.find((item) => item.path === 'plugins.ex.pulses');
+    assert.equal(state.newStateQuietUntil, undefined, 'a reworded pattern is not a change');
+    assert.equal(state.kind, saved.paths.find((item) => item.path === 'plugins.ex.pulses').kind);
+  });
+
+  it('keeps judging a measurement whose listing changed, from its baseline', () => {
+    const engine = newEngine();
+    const rand = noise(11);
+    let t = run(engine, T0, T0 + 90 * MINUTE, 10 * SECOND, () => [['plugins.ex.coolantTemperature', 350 + 0.2 * rand()]]);
+    const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
     restarted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
-    t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (pulses += 1)]]);
-    assert.equal(restarted.inventory(t).paths.find((item) => item.path === 'plugins.ex.pulses').role, 'watching');
+    t = run(restarted, t, t + 2 * MINUTE, 10 * SECOND, () => [['plugins.ex.coolantTemperature', 365 + 0.2 * rand()]]);
+    assert.ok(detectors(restarted).includes('shift:plugins.ex.coolantTemperature'), detectors(restarted).join(', '));
+  });
+
+  it('reads state names with digits or capitals, and counts time in an alarm', () => {
+    const listed = (path) => {
+      const state = monitor.createPathState(path, T0);
+      Object.assign(state, { counterOptIn: 'plugins.ex', kind: 'continuous', n: 100, rose: true, monotonic: true });
+      return monitor.isCounterState(state);
+    };
+    for (const path of ['plugins.ex.relay1State', 'plugins.ex.inverterACMode', 'plugins.ex.DCState', 'plugins.ex.gpsSource', 'plugins.ex.fixMethod']) {
+      assert.equal(listed(path), false, `${path} is a state code`);
+    }
+    for (const path of ['plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault']) {
+      assert.equal(listed(path), true, `${path} is a count`);
+    }
+  });
+
+  it('decides again a path forced continuous by the previous rule, once', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.errorCode', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 0 : 1]]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    // As the previous head saved it: forced continuous, kindN recorded, no listing effect.
+    const row = saved.paths.find((item) => item.path === 'plugins.ex.errorCode');
+    Object.assign(row, { kind: 'continuous', distinct: null, kindN: 240 });
+    delete row.counterListing;
+    const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    restarted.importState(saved, t);
+    t = run(restarted, t, t + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.errorCode', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 0 : 1]]);
+    t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.errorCode', 2]]);
+    assert.ok(detectors(restarted).includes('newState:plugins.ex.errorCode'), detectors(restarted).join(', '));
   });
 
   it('keeps a named counter a counter after it is reset to zero', () => {

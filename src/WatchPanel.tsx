@@ -284,7 +284,12 @@ export default function WatchPanel(props: WatchPanelProps) {
       setNotice(null);
       try {
         const result = await post(route, body);
-        setNotice(result.ok ? done : errorText(result.status, result.body, 'Could not save the watch rules.'));
+        // A remove that finds nothing - a quick second click, or another
+        // panel got there first - has the outcome the operator wanted.
+        const alreadyGone = route === '/watch/rules/remove' && result.status === 404;
+        setNotice(
+          result.ok ? done : alreadyGone ? 'That watch was already removed.' : errorText(result.status, result.body, 'Could not save the watch rules.')
+        );
         // Only the draft that was added is cleared, text and read-back
         // together - not when the editor changed or a new read-back started
         // while the request was pending (each bumps the draft generation),

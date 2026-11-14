@@ -221,7 +221,14 @@ this project uses [semantic versioning](https://semver.org/).
     `…Alarm` names under a pattern keep their new-state check, while
     `…InState`/`…SinceStatus` are counts; a listing change keeps known
     states and re-learns before reporting, and a reworded pattern changes
-    nothing; removing an id that is not stored answers 404. Upgrade note:
+    nothing; removing an id that is not stored answers 404. Then: a
+    re-decision no longer re-learns the baseline (only new states wait), so
+    a measurement that changes listing is still judged; state names with a
+    digit or capital before the suffix (`relay1State`, `inverterACMode`) and
+    `…Name`/`…Source`/`…Reference`/`…Method`/`…Label` are state codes, and
+    `…InAlarm`/`…SinceError` are counts; what a listing did is saved, so
+    paths forced by the previous rule are decided again once; a remove that
+    a restart interrupts still answers 200. Upgrade note:
     the derived id of a stored rule that had none changes once (it now
     covers duration and source); reload the panel if a remove answers 404.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown

@@ -1314,7 +1314,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }
       let found = false;
       const rules = await changeWatchRules((current) => {
-        found = current.some((item) => item.id === id);
+        // Once found, found: a redo after a restart sees the list it wrote.
+        found = found || current.some((item) => item.id === id);
         return current.filter((item) => item.id !== id);
       });
       // An id that is not stored (a panel open across an upgrade that changed

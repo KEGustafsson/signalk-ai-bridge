@@ -98,8 +98,10 @@ standard Signal K path or a plugin's own.
   - A number covered by a pattern in `watchCounterPaths` is then a counter,
     unless its name is a state code's - a whole `state` or `mode`, or a
     name ending in `State`, `Mode`, `Status`, `Type`, `Code`, `Phase`,
-    `Fault`, `Error` or `Alarm` (but not `…InState`, `…SinceStatus`, which
-    count time or pulses) - which keeps its new-state check.
+    `Fault`, `Error`, `Alarm`, `Name`, `Source`, `Reference`, `Method` or
+    `Label`, after a letter or digit (`relay1State`, `inverterACMode`) - but
+    not `…InState`, `…SinceError`, `…InAlarm` and the like, which count time
+    or pulses - which keeps its new-state check.
   - Any other number is a counter if, over at least 30 samples, it has never
     fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
     `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
@@ -114,8 +116,10 @@ standard Signal K path or a plugin's own.
   (twelve engine starts becoming thirteen is not a new state), and the
   inventory says which entry listed it (`counterBy`). When what the listing
   does to a path changes (not merely the pattern's wording), its kind is
-  decided again from new samples; the states it has seen stay known, and it
-  re-learns for the learning period before anything about it is reported.
+  decided again from new samples. The states it has seen stay known, and
+  for the learning period a state seen for the first time is learned
+  without a finding; its baseline and every other check (shift, frozen,
+  dropout) carry on unchanged.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -256,7 +260,7 @@ indicator uses evidence the receiver does not control:
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
 | `frozen` | Consecutive fixes (no more than `max(5 s, 3 × the usual fix interval)` apart, so a receiver reporting every 10 s keeps the check) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
-| `lost` | After 30 fixes, none for `max(30 s, 5 × usual fix interval)`. A gap that long is an outage and is left out of the usual interval, so a receiver that drops out twice is reported both times; only a run of eight long gaps of about one size (each within half of the run's mean) is taken as the receiver's new, slower rate. Until then a receiver that really slowed down is reported lost after each of those first fixes, and a receiver whose fixes keep coming only every 20 to 40 s for eight fixes in a row is taken as reporting at that rate, so its loss is reported after five of those intervals Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
+| `lost` | After 30 fixes, none for `max(30 s, 5 × usual fix interval)`. A gap that long is an outage and is left out of the usual interval, so a receiver that drops out twice is reported both times; only a run of eight long gaps of about one size (each within half of the run's mean) is taken as the receiver's new, slower rate. Until then a receiver that really slowed down is reported lost after each of those first fixes, and a receiver whose fixes keep coming only every 20 to 40 s for eight fixes in a row is taken as reporting at that rate, so its loss is reported after five of those intervals. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
 Two indicators at once escalate every GNSS finding to `alert`. All GNSS
@@ -523,7 +527,7 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `pathsReplayed`, `rows`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `note`. `409` while another replay runs |
 | `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?` |
 | `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }`; `409` when 50 watches already exist |
-| `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }` |
+| `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }`; `404` with `{ rules }` when no watch with that id is stored |
 | `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list, for tools that manage it as a unit. Invalid rules are dropped. Returns `{ rules }` |
 | `GET /watch/report?hours=24` | | `from`, `to`, `hours`, `incidents`, `alerts`, `findings`, `byDetector`, `lines[]` |
 | `POST /watch/feedback` | write | Body `{ path, useful }`: `false`, `true` or `"reset"`. Returns `{ path, factor }` |
