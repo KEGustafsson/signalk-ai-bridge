@@ -1605,6 +1605,17 @@ describe('reading a History API response', () => {
     };
     await assert.rejects(readJsonBounded(handMade, 1000), (error) => error.code === 'too-large');
     assert.deepEqual(await readJsonBounded({ headers: new Headers(), json: async () => ({ b: 2 }) }, 100), { b: 2 });
+    const arrayBuffers = {
+      headers: new Headers(),
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"c":').buffer);
+          controller.enqueue(new TextEncoder().encode('3}').buffer);
+          controller.close();
+        }
+      })
+    };
+    assert.deepEqual(await readJsonBounded(arrayBuffers, 100), { c: 3 });
     await assert.rejects(readJsonBounded(new Response('x'.repeat(200)), 100), /larger than 100 bytes/);
   });
 

@@ -475,13 +475,15 @@ describe('watch detection: replay', () => {
     assert.ok(control.byDetector.shift >= 1, 'the jump is a shift when read');
     // The first column for the path is empty; the duplicate after it jumps.
     const duplicate = await replayed([{ path }, { path }], (at) => [null, jumping(at)]);
-    assert.equal(duplicate.byDetector.shift, undefined, 'the second column for the path is not read');
+    assert.equal(duplicate.byDetector?.shift, undefined, 'the second column for the path is not read');
     // A column that names no path is not taken for the path at its position.
     const unnamed = await replayed([{ method: 'average' }], (at) => [jumping(at)]);
-    assert.equal(unnamed.byDetector.shift, undefined, 'a column without a path is not read');
+    assert.equal(unnamed.ok, false, 'a column without a path is not read, and nothing replayed is not a quiet history');
+    assert.match(unnamed.message, /declared none of the requested paths/);
     // An empty list declares no columns: nothing is read by position.
     const empty = await replayed([], (at) => [jumping(at)]);
-    assert.equal(empty.byDetector?.shift, undefined, 'an empty values list declares no columns');
+    assert.equal(empty.ok, false, 'an empty values list declares no columns');
+    assert.match(empty.message, /declared none of the requested paths/);
     // No list at all: the columns are the paths in the order asked.
     const absent = await replayed(undefined, (at) => [jumping(at)]);
     assert.ok(absent.byDetector.shift >= 1, 'without a values list, columns follow the request');
@@ -515,3 +517,112 @@ describe('watch detection: replay', () => {
     }
   });
 });
+
+describe('review of 2187087..7ecbc1a: replay rows, flaky sensors and the feed', () => {
+  const replayRows = async (paths, responseFor, duration, end) => {
+    let request = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = new URL(url).searchParams.get('paths').split(',').map((item) => item.split(':')[0]);
+      return new Response(JSON.stringify(responseFor(asked, request++)), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      return await service.replay({ duration }, { historyTimeoutMs: 5000 });
+    } finally {
+      service.stop();
+    }
+  };
+
+  it('keeps every request\'s rows when their times do not line up', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const paths = Array.from({ length: 20 }, (_, index) => `environment.sensor${index}.temperature`);
+    const result = await replayRows(
+      paths,
+      (asked, request) => {
+        const data = [];
+        // The second request's rows are stamped 3 s later.
+        for (let at = start + request * 3 * SECOND; at <= end; at += 10 * SECOND) {
+          data.push([new Date(at).toISOString(), ...asked.map((_, index) => 290.15 + index + ((at / 10000) % 3) * 0.05)]);
+        }
+        return { values: asked.map((path) => ({ path })), data };
+      },
+      'PT6H',
+      end
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.truncated, undefined, `${result.rowsDropped} rows dropped`);
+    assert.equal(result.byDetector.feed, undefined, 'no silent feed was recorded');
+  });
+
+  it('counts a gap the recorder filled with empty rows as a gap', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const offFrom = start + 3 * HOUR;
+    const paths = ['environment.sensor0.temperature', 'environment.sensor1.temperature'];
+    const result = await replayRows(
+      paths,
+      (asked) => {
+        const data = [];
+        for (let at = start; at <= end; at += 10 * SECOND) {
+          const off = at > offFrom && at < offFrom + 2 * HOUR;
+          data.push([new Date(at).toISOString(), ...asked.map(() => (off ? null : 290.15 + ((at / 10000) % 3) * 0.05))]);
+        }
+        return { values: asked.map((path) => ({ path })), data };
+      },
+      'PT6H',
+      end
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.historyGaps && result.historyGaps.count, 1, JSON.stringify(result.historyGaps));
+  });
+
+  it('keeps a path updated every 90 s irregular in a week\'s replay, as it is live', async () => {
+    const end = Date.parse('2026-06-08T08:00:00Z');
+    const start = end - 7 * 24 * HOUR;
+    const path = 'environment.sensor0.temperature';
+    const result = await replayRows(
+      [path],
+      () => {
+        const data = [];
+        for (let at = start; at <= end; at += 90 * SECOND) {
+          // A 25-minute gap each day.
+          if ((at - start) % (24 * HOUR) < 25 * MINUTE) continue;
+          data.push([new Date(at).toISOString(), 290.15 + ((at / 90000) % 3) * 0.05]);
+        }
+        return { values: [{ path }], data };
+      },
+      'P7D',
+      end
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.byDetector.dropout, undefined, JSON.stringify(result.byDetector));
+  });
+
+  it('keeps reporting a flaky sensor whose outages have a few samples between them', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(21);
+    const sample = () => [[path, 12.8 + 0.02 * rand()]];
+    let t = run(engine, T0, T0 + 40 * MINUTE, 30 * SECOND, sample);
+    let reported = 0;
+    for (let cycle = 0; cycle < 20; cycle += 1) {
+      t = run(engine, t, t + 10 * MINUTE, SECOND, () => []);
+      if (detectors(engine).includes(`dropout:${path}`)) reported += 1;
+      t = run(engine, t, t + 60 * SECOND, 30 * SECOND, sample);
+    }
+    assert.ok(reported >= 18, `${reported} of 20 outages reported`);
+  });
+
+  it('reports a whole feed going silent when some of its paths are muted', () => {
+    const engine = newEngine();
+    const names = Array.from({ length: 6 }, (_, index) => `environment.sensor${index}.temperature`);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => names.map((name) => [name, 290.15, 'gateway']));
+    for (const name of names.slice(0, 3)) engine.mute(name, t + HOUR, t);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+  });
+});
+

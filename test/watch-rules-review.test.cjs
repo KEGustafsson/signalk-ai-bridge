@@ -368,3 +368,83 @@ describe('review of d17e43d: more phrasings the leftover check refused', () => {
     assert.deepEqual(guarded.rule.when, { path: 'propulsion.main.state', op: 'equals', value: true });
   });
 });
+
+describe('review of 0934d63..7ecbc1a: the qualifier, apostrophes and quotes', () => {
+  const BOAT = [
+    ...VESSEL,
+    { path: 'environment.inside.engineRoom.temperature', role: 'watching' },
+    { path: 'environment.inside.refrigerator.temperature', role: 'watching' },
+    { path: 'electrical.switches.anchorLight.state', role: 'watching' },
+    { path: 'electrical.ac.shore.state', role: 'watching' },
+    { path: 'electrical.inverters.main.mode', role: 'watching', valueType: 'string' }
+  ];
+  const read = (text) => parseRule(text, BOAT);
+
+  it('never lets a qualifier move the watch to another thing than the subject names', () => {
+    for (const text of ['coolant above 95 °C in the engine room', 'the fridge temperature is above 8 °C in the engine room']) {
+      const result = read(text);
+      assert.equal(result.ok, false, `${text} -> ${result.rule && result.rule.path}`);
+    }
+    const pump = read('the bilge pump runs in the engine room');
+    assert.equal(pump.ok, false);
+    assert.notEqual(pump.terminal, true, 'refused for the qualifier, not as a measurement');
+    // A qualifier that only repeats the subject is a condition in disguise.
+    const anchored = read('the anchor light is off at anchor');
+    assert.equal(anchored.ok, false);
+    assert.match(anchored.reason, /only repeats/);
+    // An engine room is not an engine.
+    assert.equal(read('engine coolant above 95 °C').rule.path, 'propulsion.main.temperature');
+    assert.equal(read('engine room temperature above 40 °C').rule.path, 'environment.inside.engineRoom.temperature');
+  });
+
+  it('keeps the op of "starts and stops" with a qualifier', () => {
+    const pump = read('the bilge pump starts and stops in the engine room');
+    assert.equal(pump.ok, false);
+    assert.match(pump.reason, /Could not read "in the engine room"/);
+    const bank = read('the bilge pump switches on and off on the house bank');
+    assert.equal(bank.ok, false);
+    assert.doesNotMatch(bank.reason, /undefined/);
+  });
+
+  it('takes an apostrophe for an apostrophe, not a quote', () => {
+    const state = read("the bilge pump's state isn't 'off'");
+    assert.equal(state.ok, true, state.reason);
+    assert.deepEqual([state.rule.op, state.rule.value], ['notEquals', false]);
+    const guarded = read("tell me if the engine's coolant is above 95 °C while the bilge pump isn't on");
+    assert.equal(guarded.ok, true, guarded.reason);
+    assert.deepEqual(guarded.rule.when, { path: 'electrical.switches.bilgePump.state', op: 'notEquals', value: true });
+  });
+
+  it('reads quoted words in a subject, and refuses empty quotes', () => {
+    assert.equal(read('the "engine room" temperature above 40 °C').rule.path, 'environment.inside.engineRoom.temperature');
+    assert.equal(read('the inverter mode is ""').ok, false);
+  });
+
+  it('gives the "while" hint whatever filler is around, and reads a qualifier after a bare number', () => {
+    const hinted = read('alert immediately when coolant above 95 °C and the shore is on');
+    assert.equal(hinted.ok, false);
+    assert.notEqual(hinted.terminal, true);
+    assert.match(hinted.reason, /say "coolant above 95 °c while the shore is on"/);
+    const bare = read('battery voltage below 12 on the house bank');
+    assert.equal(bare.ok, true, bare.reason);
+    assert.equal(bare.rule.path, 'electrical.batteries.house.voltage');
+  });
+
+  it('keeps the HTTP status when text() throws at once', async () => {
+    const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+    const fetchImpl = async () => ({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: new Map(),
+      body: null,
+      text() {
+        throw new Error('no body');
+      }
+    });
+    const result = await assistRule('x', VESSEL.slice(0, 4), options, { fetchImpl, errorBodyTimeoutMs: 50 });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /503/);
+  });
+});
+

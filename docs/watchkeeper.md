@@ -151,7 +151,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage and counts only up to that limit, so one hour of silence moves a 30 s sensor's interval to about 57 s (still regular, and back to 30 s within minutes) rather than past the regularity limit, where it would hide the next outage. A sender that reports on change, or goes quiet at night, still learns its longer gaps, so it is not reported at each one. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a flaky sensor with a few samples between outages has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -199,7 +199,7 @@ been watched for `watchLearningMinutes` (default 30).
 | --- | --- | --- | --- |
 | **Unusually high / low** (`shift`) | `\|z\| ≥ zWarn`; clears below `zClear` | `alert` at `\|z\| ≥ zAlert`, else `warn` | 15 s / 60 s |
 | **Stopped updating** (`dropout`) | A path that updates at least once a minute (30+ samples) has been silent for more than `max(30 s, 10 × usual interval)` | `warn` | immediate / on next update |
-| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path. Muted paths are not counted, so paths the operator muted going quiet are not a silent feed. Muting `feed` mutes it; the silent paths' dropouts stay folded into it while muted | `alert` | immediate |
+| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path. Decided over all paths, and reported unless the silence is only the muted paths': at least half of the unmuted regular paths must be silent too, so a gateway that dies is a silent feed even with some of its paths muted, and muted paths going quiet alone are not. Muting `feed` mutes it; the silent paths' dropouts stay folded into it while muted | `alert` | immediate |
 | **Looks stuck** (`frozen`) | A continuous path that changed on at least half its updates repeats exactly the same non-zero value 30+ times over 5+ minutes (100+ samples learned) | `warn` | immediate |
 | **New state** (`newState`) | A discrete path takes a value never seen before, after learning. Held 10 minutes | `warn` | immediate |
 | **Cycling** (`cycling`) | After 6 h of observation, transitions in the last hour ≥ `max(4, 3 × usual hourly rate + 2)` | `alert` at twice that, else `warn` | immediate / 10 min |
@@ -459,11 +459,16 @@ A rule is stored data, checked deterministically on every tick:
   temperature is 95 °C). A unit it does not know ("below 30 cm") is refused,
   not read as no unit, and so are words left over after the comparison
   ("above 95 °C during the storm"). Words that start with *on, in, at, of,
-  for* or *from* are read as part of the subject ("below 12 V on the house
-  bank"), and kept only if the path picked answers to every one of them
-  (apart from *bank, side, unit, system, circuit, sensor*): "above 95 °C at
-  anchor" or "on the port side" of a boat with one engine is refused, not
-  stored as a watch that ignores them. Urgency words, *now, again, then,
+  for* or *from* may narrow the subject ("below 12 V on the house bank"):
+  the subject picks the paths, and these words choose only among the ones
+  that fit the subject as well as the best does, so "coolant above 95 °C in
+  the engine room" never watches the engine-room air. They are kept only if
+  the path picked answers to every one of them (apart from *bank, side,
+  unit, system, circuit, sensor*) and they add something to the subject:
+  "above 95 °C at anchor", "on the port side" of a boat with one engine, or
+  "the anchor light is off at anchor" is refused, not stored as a watch
+  that ignores them. A single quote is a quote only at a word's edge, so
+  "isn't" and "the pump's" are words, and empty quotes are not a value. Urgency words, *now, again, then,
   send a notification* and the like are fine after the comparison.
 - Duration: *for 30 s / 2 minutes / 1 hour*, optionally *or more*,
   *straight*, *in a row*, *continuously*.
@@ -592,14 +597,21 @@ provider may clip to the window), outside the window (by more than one row)
 or past a third more than the window holds are left out, and so are columns
 for paths that were not asked for, a path's second column, and a column
 that names no path (it is not guessed from its position; only a response
-with no `values` list at all is read in the order the paths were asked). The result says so
+with no `values` list at all is read in the order the paths were asked). A
+row with no value for any asked path is left out, so empty buckets a
+recorder returns for its downtime count as a gap, and a response that
+declares none of the requested paths is a failure, not a quiet history. Each
+response is limited on its own, not against the others, so requests whose
+rows fall at different times all keep theirs. The result says so
 (`truncated: true`, `rowsDropped`, and a sentence in `note`), so a provider
 that ignores the resolution cannot make a replay hold a week of one-second
 rows, while rows with a little jitter are all kept.
 
-Rows are an aggregate, so in a replay a path updated at the row interval
-counts as regular however long that interval is (a week's replay has 61 s
-rows): its dropouts are checked as they would be live. The replay ticks the
+Rows are an aggregate, so in a replay a path with a value in (nearly) every
+row counts as regular even when the row interval is over a minute (a week's
+replay has 61 s rows), and its dropouts are checked as they would be live. A
+path that updates less often (every 90 s) is not regular live and is not
+made so by a replay. The replay ticks the
 detectors at each row and, through a gap in the returned history, at the row
 interval up to the next row's time before that row is read, so a dropout or
 a silent feed that spans the gap is reported as it would have been live.

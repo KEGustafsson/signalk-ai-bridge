@@ -270,6 +270,16 @@ this project uses [semantic versioning](https://semver.org/).
     is known keeps the kind it had (and its switching history); more time
     words count a state (`elapsedInState`, `msSinceError`,
     `relay1SecondsInState`), but not "ms" inside a word (`systemsInAlarm`).
+    The review of those: words after the comparison only narrow among the
+    paths that fit the subject ("coolant above 95 °C in the engine room" is
+    not the engine-room air), and must add something to it ("the anchor
+    light is off at anchor" is refused); an engine room is not an engine;
+    "starts and stops" keeps its op with a qualifier; apostrophes are not
+    quotes; quoted words in a subject are words, and empty quotes are no
+    value; the "while" hint survives filler such as "alert immediately";
+    "below 12 on the house bank" reads the qualifier; ArrayBuffer chunks are
+    read; more lowercase count names (`runtimeInState`); the assist keeps the
+    HTTP status when `text()` throws.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).
@@ -287,16 +297,20 @@ this project uses [semantic versioning](https://semver.org/).
     offset again); History API responses (replay, Ask AI history, the path
     list) are read at most 16 MB far, so a huge body is refused before it is
     held in the server's memory; and the persistence test waits for the saves to finish
-    (`whenSaved()`) instead of a fixed delay. From the review of that: an
-    outage counts in a path's interval up to the dropout limit, so a sender
-    that reports on change is not reported at every quiet gap (64 dropouts
-    over three nights became 9) while a 30 s sensor's second outage still
-    is; replay keeps rows with jitter (only rows closer than three quarters
-    of the resolution are extra), keeps clipped edge buckets, reads rows
-    newest-first too, caps rows across all requests, checks dropouts at a
-    week's 61 s rows, and reports gaps where nothing was recorded
-    (`historyGaps`, as possible recorder downtime); a feed made silent only
-    by muted paths is not reported.
+    (`whenSaved()`) instead of a fixed delay. From the reviews of that:
+    long gaps one right after another count in a path's interval (an outage
+    after regular samples does not), so a sender that reports on change is
+    not reported at every quiet gap (64 dropouts over three nights became
+    13) while a flaky sensor still has every outage reported; replay keeps
+    rows with jitter (only rows closer than three quarters of the resolution
+    are extra), keeps clipped edge buckets, reads rows newest-first too,
+    limits each response on its own (requests whose rows are stamped at
+    different times keep them all), skips rows with no value, refuses a
+    response that declares none of the asked paths, checks dropouts at a
+    week's 61 s rows for paths with a value in nearly every row, and reports
+    gaps where nothing was recorded (`historyGaps`, as possible recorder
+    downtime); a silent feed is decided over all paths and reported unless
+    only muted paths went quiet.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

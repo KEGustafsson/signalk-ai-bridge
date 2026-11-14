@@ -1054,7 +1054,9 @@ describe('watch engine: review follow-ups', () => {
     for (const path of [
       'plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault', 'plugins.ex.secondsSinceLastError',
       'plugins.ex.timeInCurrentState', 'plugins.ex.pulsesInState', 'plugins.ex.elapsedInState', 'plugins.ex.msSinceError',
-      'plugins.ex.ageSinceError', 'plugins.ex.periodInState', 'plugins.ex.dwellInState', 'plugins.ex.relay1SecondsInState'
+      'plugins.ex.ageSinceError', 'plugins.ex.periodInState', 'plugins.ex.dwellInState', 'plugins.ex.relay1SecondsInState',
+      'plugins.ex.runtimeInState', 'plugins.ex.uptimeSinceFault', 'plugins.ex.lifetimeInFault', 'plugins.ex.pumpRuntimeSinceAlarm',
+      'plugins.ex.cyclecountSinceFault'
     ]) {
       assert.equal(listed(path), true, `${path} is a count`);
     }
