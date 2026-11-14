@@ -57,6 +57,7 @@ export interface WatchStatus {
     readonly excluded: number;
     readonly capped: number;
   };
+  readonly sourcesCompared?: number;
   readonly activeFindings?: readonly WatchFinding[];
   readonly incidents?: readonly WatchIncident[];
   readonly regimeChanges?: readonly WatchRegimeChange[];
@@ -65,6 +66,58 @@ export interface WatchStatus {
     readonly indicators: Readonly<Record<string, 'ok' | 'active' | 'unavailable'>>;
   };
   readonly mutes?: ReadonlyArray<{ readonly path: string; readonly until: number }>;
+}
+
+export interface WatchInventoryRow {
+  readonly path: string;
+  readonly role: 'watching' | 'learning' | 'relearning' | 'skipped' | 'gnss-input';
+  readonly kind?: string;
+  readonly units?: string;
+  readonly displayName?: string;
+  readonly intervalMs?: number;
+  readonly samples?: number;
+  readonly excludedBy?: string;
+  readonly sources?: ReadonlyArray<{ readonly name: string; readonly primary: boolean; readonly samples: number }>;
+}
+
+export interface WatchInventory {
+  readonly totals: {
+    readonly seen: number;
+    readonly watched: number;
+    readonly skipped: number;
+    readonly capped: number;
+    readonly gnssInputs: number;
+    readonly multiSource: number;
+  };
+  readonly branches: ReadonlyArray<{ readonly branch: string; readonly watched: number; readonly excluded: number }>;
+  readonly capabilities: ReadonlyArray<{ readonly id: string; readonly label: string; readonly available: boolean; readonly detail: string }>;
+  readonly paths: readonly WatchInventoryRow[];
+  readonly truncated?: number;
+}
+
+/** One inventory row in words: `watching · continuous · every 1 s · 2 sources (n2k.10 primary)`. */
+export function describeInventoryRow(row: WatchInventoryRow): string {
+  const parts: string[] = [];
+  if (row.role === 'skipped') {
+    parts.push(`skipped (${row.excludedBy ?? 'excluded'})`);
+  } else if (row.role === 'gnss-input') {
+    parts.push('read by the GNSS check');
+  } else {
+    parts.push(row.role === 'relearning' ? 're-learning' : row.role);
+  }
+  if (row.kind && row.kind !== 'unknown') parts.push(row.kind);
+  if (typeof row.intervalMs === 'number') {
+    parts.push(row.intervalMs < 1500 ? 'every 1 s' : row.intervalMs < 90000 ? `every ${Math.round(row.intervalMs / 1000)} s` : `every ${Math.round(row.intervalMs / 60000)} min`);
+  }
+  if (row.units) parts.push(row.units);
+  const sources = row.sources ?? [];
+  if (sources.length > 1) {
+    const primary = sources.find((source) => source.primary);
+    parts.push(`${sources.length} sources${primary ? ` (${primary.name} primary)` : ''}`);
+  } else if (sources.length === 1 && sources[0].name !== 'default') {
+    parts.push(sources[0].name);
+  }
+  return parts.join(' · ');
 }
 
 export interface WatchReplayResult {
@@ -172,7 +225,9 @@ export function describeDetectorCounts(byDetector: Readonly<Record<string, numbe
     newState: 'new state',
     cycling: 'cycling',
     forecast: 'trend toward a limit',
-    feed: 'data feed silent'
+    feed: 'data feed silent',
+    disagree: 'sources disagree',
+    failover: 'source failover'
   };
   const entries = Object.entries(byDetector ?? {}).filter(([, count]) => count > 0);
   if (entries.length === 0) {

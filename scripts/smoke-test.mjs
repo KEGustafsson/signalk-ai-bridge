@@ -24,6 +24,7 @@ const requiredFiles = [
   'lib/watch/narrate.cjs',
   'lib/watch/format.cjs',
   'lib/watch/stats.cjs',
+  'lib/watch/sources.cjs',
   'src/WatchPanel.tsx',
   'index.cjs',
   'README.md',

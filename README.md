@@ -723,12 +723,30 @@ with the inference host down or the AI pipeline disabled.
 | Changed to a new state | A string, boolean or small integer path takes a value it has never taken before (an inverter going to `fault`). |
 | Switching unusually often | A pump or switch changing state far more often in the last hour than it does on average. |
 | Heading for its limit | The trend reaches a tank's or battery's low limit within hours, or a zone in the path's `meta.zones` within 30 minutes. |
+| Sources disagree | Two sources for the same path (two depth sounders, two compasses, a battery monitor and a shunt) are further apart than they normally are. A steady calibration offset between them is learned as normal; a change in it is not. This runs even on paths the watch otherwise skips, such as heading. |
+| Switched source | The source a path was being read from went quiet and another took over. The path kept updating, so a dropout check would never see it. |
 | GNSS position not corroborated | The fix jumps further than the boat can move, walks away from dead reckoning (heading and speed through water), disagrees with a second receiver, stops moving while the log reads speed, loses satellites, or its clock jumps. Two of these at once raise an alert. |
 
 Findings that start together, or in the same system (for example `propulsion.main`),
 are grouped into one **incident**, listed earliest first, because the first sign
 is usually nearest the cause. GNSS findings are always kept in an incident of
 their own.
+
+### Works with whatever the vessel publishes
+
+Nothing is configured per boat. The watch subscribes to every self-vessel path
+and picks each one up as it is first published — standard Signal K paths and
+any plugin's own. It works out from the values whether a path is continuous, a
+small set of states, or a counter, and takes units, display names and zones
+from the path's own metadata where the source provides them. When several
+sources publish one path, one is read as primary and the rest are compared
+against it, so redundant sensors check each other instead of looking like noise.
+
+**What is watched?** in the panel lists every path found, what the watch does
+with it and why (watched, still learning, or skipped and by which rule), and
+shows which checks this vessel's data supports. For example, the dead reckoning
+check is listed as unavailable with "needs navigation.speedThroughWater" on a
+boat with no speed log. The same data is at `GET /watch/inventory`.
 
 ### What it leaves alone
 

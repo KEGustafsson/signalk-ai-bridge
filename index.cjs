@@ -874,6 +874,21 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /**
+   * GET /watch/inventory: every path the watch has found on this vessel, what
+   * it does with each, and which checks this vessel's data supports.
+   */
+  const watchInventoryHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.inventory());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
   const rejectUnlessWriter = (req, res, action) => {
     if (isSelectionWriteAllowed(req)) {
       return false;
@@ -1011,6 +1026,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.post('/paths/selection', saveSelectionHandler);
       router.get('/watch/status', watchStatusHandler);
       router.get('/watch/series', watchSeriesHandler);
+      router.get('/watch/inventory', watchInventoryHandler);
       router.post('/watch/mute', watchMuteHandler(false));
       router.post('/watch/unmute', watchMuteHandler(true));
       router.post('/watch/replay', watchReplayHandler);

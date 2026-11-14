@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncidentQuestion, describeDetectorCounts, formatAgo, sparklinePoints } from './watchText.js';
+import { buildIncidentQuestion, describeDetectorCounts, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -70,5 +70,32 @@ describe('watch panel helpers', () => {
     assert.equal(formatAgo(1000, 1000 + 30 * 1000), 'just now');
     assert.equal(formatAgo(0, 5 * 60 * 1000), '5 min ago');
     assert.equal(formatAgo(0, 3 * 60 * 60 * 1000), '3 h ago');
+  });
+});
+
+describe('describeInventoryRow', () => {
+  it('says what the watch does with a path, and why', () => {
+    assert.equal(
+      describeInventoryRow({
+        path: 'environment.water.temperature',
+        role: 'watching',
+        kind: 'continuous',
+        intervalMs: 1000,
+        units: 'K',
+        sources: [
+          { name: 'n2k.10', primary: true, samples: 10 },
+          { name: 'n2k.20', primary: false, samples: 10 }
+        ]
+      }),
+      'watching · continuous · every 1 s · K · 2 sources (n2k.10 primary)'
+    );
+    assert.equal(
+      describeInventoryRow({ path: 'navigation.headingTrue', role: 'gnss-input', excludedBy: 'navigation.heading*' }),
+      'read by the GNSS check'
+    );
+    assert.equal(
+      describeInventoryRow({ path: 'environment.wind.speedApparent', role: 'skipped', excludedBy: 'environment.wind' }),
+      'skipped (environment.wind)'
+    );
   });
 });

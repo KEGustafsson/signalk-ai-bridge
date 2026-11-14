@@ -2,11 +2,12 @@ import React from 'react';
 import {
   buildIncidentQuestion,
   describeDetectorCounts,
+  describeInventoryRow,
   formatAgo,
   formatClockTime,
   sparklinePoints
 } from './watchText.js';
-import type { WatchIncident, WatchReplayResult, WatchStatus } from './watchText.js';
+import type { WatchIncident, WatchInventory, WatchReplayResult, WatchStatus } from './watchText.js';
 
 interface WatchPanelProps {
   readonly fetchImpl?: typeof fetch;
@@ -71,6 +72,8 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [showResolved, setShowResolved] = React.useState<boolean>(false);
   const [refresh, setRefresh] = React.useState<number>(0);
   const [now, setNow] = React.useState<number>(Date.now());
+  const [inventory, setInventory] = React.useState<WatchInventory | 'loading' | { error: string } | null>(null);
+  const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
 
   const fetchImpl = props.fetchImpl ?? globalThis.fetch;
   const statusUrl = props.endpoint('/watch/status');
@@ -158,6 +161,22 @@ export default function WatchPanel(props: WatchPanelProps) {
       setReplay({ ok: false, message: error instanceof Error ? error.message : 'The replay failed.' });
     }
   }, [post]);
+
+  const onInventory = React.useCallback(async () => {
+    if (inventory && inventory !== 'loading') {
+      setInventory(null);
+      return;
+    }
+    if (typeof fetchImpl !== 'function') return;
+    setInventory('loading');
+    try {
+      const response = await fetchImpl(props.endpoint('/watch/inventory'), { method: 'GET', credentials: 'include' });
+      const { ok, status: code, body } = await readJson(response);
+      setInventory(ok ? (body as WatchInventory) : { error: errorText(code, body, 'Could not read the inventory.') });
+    } catch (error) {
+      setInventory({ error: error instanceof Error ? error.message : 'Could not read the inventory.' });
+    }
+  }, [fetchImpl, inventory, props.endpoint]);
 
   const onTrend = React.useCallback(
     async (path: string) => {
@@ -312,7 +331,8 @@ export default function WatchPanel(props: WatchPanelProps) {
             Watching {paths?.watched ?? 0} paths: {paths?.ready ?? 0} ready, {paths?.learning ?? 0} learning
             {paths && paths.relearning > 0 ? `, ${paths.relearning} re-learning` : ''}
             {paths && paths.excluded > 0 ? `; ${paths.excluded} skipped by design` : ''}
-            {paths && paths.capped > 0 ? `; ${paths.capped} over the path limit` : ''}.
+            {paths && paths.capped > 0 ? `; ${paths.capped} over the path limit` : ''}
+            {status.sourcesCompared ? `; ${status.sourcesCompared} with redundant sources cross-checked` : ''}.
             {status.restoredBaseline ? ' Baseline restored from the last run.' : ''}
             <br />
             GNSS position: <span style={{ color: gnssLabel?.color }}>{gnssLabel?.text ?? 'unknown'}</span>
@@ -348,11 +368,62 @@ export default function WatchPanel(props: WatchPanelProps) {
             <button type="button" style={buttonStyle} onClick={() => setShowResolved((value) => !value)}>
               {showResolved ? 'Hide' : 'Show'} recent incidents ({resolvedIncidents.length})
             </button>
+            <button type="button" style={buttonStyle} onClick={onInventory}>
+              {inventory && inventory !== 'loading' ? 'Hide' : 'What is watched?'}
+            </button>
             <button type="button" style={buttonStyle} onClick={onReplay} disabled={replay === 'running'}>
               {replay === 'running' ? 'Replaying…' : 'Replay last 24 h'}
             </button>
           </div>
           {notice ? <p style={{ margin: '0.4rem 0 0 0', color: '#475569' }}>{notice}</p> : null}
+
+          {inventory === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Reading the inventory…</p> : null}
+          {inventory && inventory !== 'loading' && 'error' in inventory ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{inventory.error}</p>
+          ) : null}
+          {inventory && inventory !== 'loading' && !('error' in inventory) ? (
+            <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#ffffff', border: '1px solid #e2e8f0' }}>
+              <p style={{ margin: 0 }}>
+                Found {inventory.totals.seen} paths on this vessel: {inventory.totals.watched} watched, {inventory.totals.skipped}{' '}
+                skipped by design{inventory.totals.gnssInputs > 0 ? ` (${inventory.totals.gnssInputs} of them read by the GNSS check)` : ''}
+                {inventory.totals.capped > 0 ? `, ${inventory.totals.capped} over the path limit` : ''}. Nothing is configured
+                per boat: paths are picked up as they are published.
+              </p>
+              <ul style={{ margin: '0.5rem 0 0 0', paddingLeft: 0, listStyle: 'none', display: 'grid', gap: '0.2rem' }}>
+                {inventory.capabilities.map((capability) => (
+                  <li key={capability.id}>
+                    <span aria-hidden="true" style={{ color: capability.available ? '#166534' : '#94a3b8', fontWeight: 700 }}>
+                      {capability.available ? '✓' : '–'}
+                    </span>{' '}
+                    <span style={{ fontWeight: 600 }}>{capability.label}</span>
+                    <span style={{ color: '#475569' }}>: {capability.available ? capability.detail : `not available, ${capability.detail}`}</span>
+                  </li>
+                ))}
+              </ul>
+              <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>
+                {inventory.branches.map((branch) => `${branch.branch} ${branch.watched}${branch.excluded ? ` (+${branch.excluded} skipped)` : ''}`).join(' · ')}
+              </p>
+              <input
+                type="search"
+                aria-label="Filter watched paths"
+                placeholder="Filter paths"
+                value={inventoryFilter}
+                onChange={(event: { target: { value: string } }) => setInventoryFilter(event.target.value)}
+                style={{ marginTop: '0.5rem', width: '100%', padding: '0.3rem 0.5rem', boxSizing: 'border-box' }}
+              />
+              <ul style={{ margin: '0.4rem 0 0 0', paddingLeft: '1.1rem', maxHeight: '18rem', overflow: 'auto' }}>
+                {inventory.paths
+                  .filter((row) => row.path.toLowerCase().includes(inventoryFilter.trim().toLowerCase()))
+                  .slice(0, 300)
+                  .map((row) => (
+                    <li key={row.path} style={{ color: row.role === 'skipped' ? '#64748b' : '#0f172a' }}>
+                      <code style={{ overflowWrap: 'anywhere' }}>{row.path}</code>{' '}
+                      <span style={{ fontSize: '0.85rem', color: '#475569' }}>{describeInventoryRow(row)}</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          ) : null}
 
           {showResolved ? (
             resolvedIncidents.length === 0 ? (

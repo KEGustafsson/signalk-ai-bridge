@@ -390,3 +390,87 @@ describe('watch engine: operator controls and persistence', () => {
     assert.ok(detectors(restored).includes(`shift:${path}`));
   });
 });
+
+describe('watch engine: discovery and redundant sources', () => {
+  it('feeds the baseline from one source, so two offset sources are not noise', () => {
+    const engine = newEngine();
+    const rand = noise(31);
+    const path = 'environment.water.temperature';
+    // Two sounders that read 1.5 °C apart, interleaved.
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [
+      [path, 285 + 0.05 * rand(), 'n2k.10'],
+      [path, 286.5 + 0.05 * rand(), 'n2k.20']
+    ]);
+    assert.deepEqual(detectors(engine), []);
+    // One of them drifts 3 °C away from the other: the gap, not either value, is news.
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => [
+      [path, 285 + 0.05 * rand(), 'n2k.10'],
+      [path, 289.5 + 0.05 * rand(), 'n2k.20']
+    ]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'disagree');
+    assert.ok(finding, 'expected a disagreement finding');
+    assert.match(finding.message, /n2k\.10 reads 11\.\d °C, n2k\.20 reads 16\.\d °C: 4\.5 °C apart, where they are usually within 1\.5 °C/);
+    assert.ok(!detectors(engine).includes(`shift:${path}`));
+  });
+
+  it('compares redundant sources even on paths it does not baseline', () => {
+    const engine = newEngine();
+    // Two compasses: heading itself is excluded, but their agreement is not.
+    let t = run(engine, T0, T0 + 10 * MINUTE, SECOND, (now) => {
+      const heading = ((now - T0) / MINUTE) * 0.05;
+      return [
+        ['navigation.headingMagnetic', heading, 'autopilot'],
+        ['navigation.headingMagnetic', heading + 0.01, 'plotter']
+      ];
+    });
+    assert.deepEqual(detectors(engine), []);
+    t = run(engine, t, t + 2 * MINUTE, SECOND, (now) => {
+      const heading = ((now - T0) / MINUTE) * 0.05;
+      return [
+        ['navigation.headingMagnetic', heading, 'autopilot'],
+        ['navigation.headingMagnetic', heading + 0.35, 'plotter']
+      ];
+    });
+    assert.ok(detectors(engine).includes('disagree:navigation.headingMagnetic'));
+  });
+
+  it('reports a failover when the primary source goes quiet', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [
+      [path, 13.2, 'bmv'],
+      [path, 13.21, 'shunt']
+    ]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 13.21, 'shunt']]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'failover');
+    assert.ok(finding);
+    assert.equal(finding.message, 'bmv went quiet; now reading shunt');
+    assert.ok(!detectors(engine).includes(`dropout:${path}`), 'the path kept updating, so it is not a dropout');
+  });
+
+  it('lists what it found and which checks this vessel supports', () => {
+    const engine = newEngine();
+    run(engine, T0, T0 + 2 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 0],
+      ['electrical.batteries.house.voltage', 13.2],
+      ['tanks.fuel.0.currentLevel', 0.5],
+      ['navigation.headingTrue', 1, 'compass'],
+      ['navigation.position', { latitude: 60, longitude: 24 }, 'gps']
+    ]);
+    const inventory = engine.inventory(T0 + 2 * MINUTE);
+    assert.equal(inventory.totals.watched, 3);
+    const heading = inventory.paths.find((row) => row.path === 'navigation.headingTrue');
+    assert.equal(heading.role, 'gnss-input');
+    assert.equal(heading.excludedBy, 'navigation.heading*');
+    const capability = (id) => inventory.capabilities.find((item) => item.id === id);
+    assert.equal(capability('gnss-position').available, true);
+    assert.equal(capability('gnss-dead-reckoning').available, false);
+    assert.match(capability('gnss-dead-reckoning').detail, /needs navigation\.speedThroughWater/);
+    assert.equal(capability('regimes').available, true);
+    assert.match(capability('forecasts').detail, /1 tank or battery level/);
+    assert.deepEqual(
+      inventory.branches.map((branch) => branch.branch),
+      ['electrical', 'navigation', 'propulsion', 'tanks']
+    );
+  });
+});

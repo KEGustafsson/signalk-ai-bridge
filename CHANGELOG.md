@@ -36,6 +36,18 @@ this project uses [semantic versioning](https://semver.org/).
   `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
   with write access when security is enabled.
 - `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+- **Watchkeeper discovers what each vessel publishes, and reports what it
+  found.** `GET /watch/inventory` and the panel's "What is watched?" list every
+  path discovered and what the watch does with each: watched, learning, or
+  skipped and by which rule. They also show which checks this vessel's data
+  supports, and what a missing check would need.
+- **Redundant sources are compared instead of mixed.** When several sources
+  publish one path, only the primary one feeds the baseline. Interleaving two
+  sensors with a calibration offset made them look like noise, or like a step
+  each time the stream switched. The watch reports when sources drift apart
+  beyond their usual gap, which includes paths it otherwise skips, such as two
+  disagreeing compasses. It also reports when the primary goes quiet and
+  another source takes over.
 
 ### Changed
 
