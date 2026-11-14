@@ -110,7 +110,13 @@ export async function executeBridgeRequest(
       return toToolErrorResult(
         toApiError(
           parseRemoteError(payload) ?? `Bridge request failed with status ${response.status}.`,
-          response.status === 401 ? 'unauthorized' : response.status === 400 ? 'validation-failed' : 'unknown'
+          response.status === 401
+            ? 'unauthorized'
+            : response.status === 400
+              ? 'validation-failed'
+              : response.status === 409
+                ? 'conflict'
+                : 'unknown'
         )
       );
     }

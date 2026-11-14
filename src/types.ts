@@ -11,7 +11,7 @@ export interface EmbeddedWebAppApi {
 }
 
 export interface ApiError {
-  readonly code: 'unauthorized' | 'validation-failed' | 'timeout' | 'unknown';
+  readonly code: 'unauthorized' | 'validation-failed' | 'conflict' | 'timeout' | 'unknown';
   readonly message: string;
 }
 

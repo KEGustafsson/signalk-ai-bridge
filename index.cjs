@@ -617,6 +617,10 @@ module.exports = function createPlugin(app, dependencies = {}) {
    */
   const updatePluginOptions = (change) => {
     const run = optionsWriteQueue.then(async () => {
+      // A restart while the save is in flight replaces pluginOptions with the
+      // options the server started with; the late save must not put the
+      // older copy back in memory.
+      const generation = lifecycleGeneration;
       const updated = change(pluginOptions);
       if (updated === pluginOptions) {
         return updated;
@@ -630,7 +634,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       await new Promise((resolve, reject) => {
         app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
       });
-      pluginOptions = updated;
+      if (generation === lifecycleGeneration) {
+        pluginOptions = updated;
+      }
       return updated;
     });
     // A failed save must not wedge the queue for the next one.
@@ -800,7 +806,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const config = getConfig();
       const lists = { aiDataPaths: config.aiDataPaths, history: describeHistory(config) };
       if (outcome === 'no-stored-list' || outcome === 'not-found') {
-        res.status(409).json({
+        res.status(statusForCode('conflict')).json({
           error: {
             code: 'conflict',
             message:
@@ -1179,11 +1185,21 @@ module.exports = function createPlugin(app, dependencies = {}) {
    */
   const changeWatchRules = async (change) => {
     let rules;
+    let generation;
     await updatePluginOptions((current) => {
-      rules = normalizeRules(change(normalizeRules(current.watchRules)));
+      generation = lifecycleGeneration;
+      const before = normalizeRules(current.watchRules);
+      rules = normalizeRules(change(before));
+      // Nothing changed (a refused add, an unknown id): write nothing, so a
+      // no-op neither rewrites the settings nor fails on a host that cannot
+      // store them.
+      if (JSON.stringify(rules) === JSON.stringify(before)) {
+        return current;
+      }
       return { ...current, watchRules: rules };
     });
-    return watchService.setRules(rules);
+    // Restarted meanwhile: the new start already loaded the stored rules.
+    return generation === lifecycleGeneration ? watchService.setRules(rules) : rules;
   };
 
   /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
@@ -1210,7 +1226,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return [...others, rule];
       });
       if (full) {
-        res.status(409).json({
+        res.status(statusForCode('conflict')).json({
           error: { code: 'conflict', message: `There are already ${MAX_RULES} watches; remove one first.` }
         });
         return;

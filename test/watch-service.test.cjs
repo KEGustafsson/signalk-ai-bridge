@@ -498,6 +498,66 @@ describe('path priority order', () => {
     }
   });
 
+  it('writes nothing for a watch change that changes nothing', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
+    const full = Array.from({ length: 50 }, (_, index) => rule(`r-fill-${index}`, 300 + index));
+    // A host that cannot store settings: a refused add is a 409, not a 501.
+    const host = createHost();
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: full });
+    try {
+      const overflow = recorder();
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-new', 400) } }, overflow);
+      assert.equal(overflow.statusCode, 409);
+      const unknown = recorder();
+      await routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-nope' } }, unknown);
+      assert.equal(unknown.statusCode, 200, 'removing a rule that is not there changes nothing');
+      assert.equal(unknown.body.rules.length, 50);
+    } finally {
+      plugin.stop();
+    }
+    const counting = createHost();
+    let writes = 0;
+    counting.savePluginOptions = (options, done) => {
+      writes += 1;
+      done();
+    };
+    const second = routesFor(counting);
+    second.plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: full });
+    try {
+      await second.routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-new', 400) } }, recorder());
+      await second.routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-nope' } }, recorder());
+      assert.equal(writes, 0);
+    } finally {
+      second.plugin.stop();
+    }
+  });
+
+  it('does not put older options back when a restart lands while a save is in flight', async () => {
+    const host = createHost();
+    let finish;
+    host.savePluginOptions = (options, done) => {
+      finish = done;
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, model: 'old-model', aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(typeof finish, 'function', 'the save is in flight');
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, model: 'new-model', aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+      finish();
+      await moving;
+      const selection = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: 1 } }, selection);
+      assert.deepEqual(selection.body.aiDataPaths, ['a.one', 'b.two', 'c.three'], 'the restart\'s options stand');
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('answers a stale move with 409 conflict and the lists as stored, so the panel can refresh', async () => {
     const host = createHost();
     host.savePluginOptions = (options, done) => done();

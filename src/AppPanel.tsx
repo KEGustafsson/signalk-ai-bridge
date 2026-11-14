@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { retickedFrom, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -519,6 +519,9 @@ export default function AppPanel(props: AppPanelProps) {
   // Bumped each time a write's reply puts lists on screen. A status read sent
   // at an older version (the first load, landing late) keeps today's lists.
   const [listVersionRef] = React.useState<{ current: number }>({ current: 0 });
+  // Status reads in the order they were sent, and the last one applied: a
+  // read that lands after a later one has been applied has nothing newer.
+  const [statusOrderRef] = React.useState<{ sent: number; applied: number }>({ sent: 0, applied: 0 });
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -556,6 +559,8 @@ export default function AppPanel(props: AppPanelProps) {
 
     let isActive = true;
     const requestedAt = listVersionRef.current;
+    statusOrderRef.sent += 1;
+    const order = statusOrderRef.sent;
 
     fetchImpl(getStatusEndpoint(props), {
       method: 'GET',
@@ -573,7 +578,9 @@ export default function AppPanel(props: AppPanelProps) {
           // Read now, not inside the updater: React may run that later, after
           // a write's reply has bumped the version again.
           const current = listVersionRef.current;
-          setBackendStatus((previous) => statusKeepingNewerLists(previous, payload, requestedAt, current));
+          const newerShown = order < statusOrderRef.applied;
+          statusOrderRef.applied = Math.max(statusOrderRef.applied, order);
+          setBackendStatus((previous) => statusKeepingNewerLists(previous, payload, requestedAt, current, newerShown));
         }
       })
       .catch(() => {
@@ -740,14 +747,16 @@ export default function AppPanel(props: AppPanelProps) {
   // A picker save's re-read of the status: the lists it carries are the
   // newest on screen unless another list change landed since the save began
   // (the write lock should rule that out; the version check makes sure).
-  const applySavedStatus = React.useCallback((status: BackendStatus | undefined, requestedAt: number) => {
+  const applySavedStatus = React.useCallback((status: BackendStatus | undefined, requestedAt: number, order: number) => {
     if (!status) {
       return;
     }
     // The version is read before the bump below, not inside the updater,
     // which React may run after it.
     const current = listVersionRef.current;
-    setBackendStatus((previous) => statusKeepingNewerLists(previous, status, requestedAt, current));
+    const newerShown = order < statusOrderRef.applied;
+    statusOrderRef.applied = Math.max(statusOrderRef.applied, order);
+    setBackendStatus((previous) => statusKeepingNewerLists(previous, status, requestedAt, current, newerShown));
     listVersionRef.current += 1;
   }, []);
 
@@ -764,10 +773,13 @@ export default function AppPanel(props: AppPanelProps) {
     setSavingSelection('live');
     setLiveCopyNotice(null);
     const requestedAt = listVersionRef.current;
+    // The save's status re-read is sent after any read already in flight.
+    statusOrderRef.sent += 1;
+    const order = statusOrderRef.sent;
     try {
       const result = await saveSelection(props, { aiDataPaths: picked });
       setLiveCopyNotice(result.message);
-      applySavedStatus(result.status, requestedAt);
+      applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
       setSavingSelection(null);
@@ -787,10 +799,13 @@ export default function AppPanel(props: AppPanelProps) {
     setSavingSelection('history');
     setCopyNotice(null);
     const requestedAt = listVersionRef.current;
+    // The save's status re-read is sent after any read already in flight.
+    statusOrderRef.sent += 1;
+    const order = statusOrderRef.sent;
     try {
       const result = await saveSelection(props, { historyPaths: picked });
       setCopyNotice(result.message);
-      applySavedStatus(result.status, requestedAt);
+      applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
       setSavingSelection(null);
@@ -849,6 +864,19 @@ export default function AppPanel(props: AppPanelProps) {
           const lists = { aiDataPaths: payload.aiDataPaths, history: payload.history };
           setBackendStatus((previous) => withSelectionLists(previous, lists));
           listVersionRef.current += 1;
+          // A stale move: the card's list was out of date, and so are the
+          // picker's ticks taken from it. Re-tick from what is stored, or the
+          // next Save would put back a path another browser removed.
+          if (response.status === 409) {
+            if (payload.aiDataPaths && payload.aiDataPaths.length > 0) {
+              const stored = payload.aiDataPaths;
+              setPickedLivePaths((previous) => retickedFrom(previous, stored));
+            }
+            if (payload.history && Array.isArray(payload.history.paths)) {
+              const stored = payload.history.paths;
+              setPickedPaths((previous) => retickedFrom(previous, stored));
+            }
+          }
         }
         if (!response.ok) {
           setNotice(payload.error?.message ?? (response.status === 401 ? 'Saving needs a Signal K login with write access.' : 'Could not move the path.'));

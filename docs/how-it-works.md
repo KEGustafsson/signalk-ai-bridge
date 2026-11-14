@@ -75,7 +75,8 @@ list and changes nothing else there (entries the card does not show, such as
 a wildcard in the history list, stay where they were). A move that would
 change nothing (the path is already first or last) stores nothing. If the
 path has gone from the stored list, or there is no stored list to reorder,
-the server answers `409` with the lists as they are and the card shows those.
+the server answers `409` with the lists as they are; the card shows those,
+and an open picker's ticks are set again from them.
 Paths newly ticked in a picker are added at the end, and saving from the
 picker keeps the order you set. A picker save does send the whole list as
 the panel last read it, so the panel makes one change to the lists at a time:

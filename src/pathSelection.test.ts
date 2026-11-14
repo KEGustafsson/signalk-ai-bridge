@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { retickedFrom, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 
 describe('withUnlistedSelection', () => {
   it('keeps a configured path the listing could not show', () => {
@@ -85,6 +85,7 @@ describe('applying list replies', () => {
   interface History {
     readonly paths: readonly string[];
     readonly derived: boolean;
+    readonly samples?: number;
   }
   interface Status {
     readonly model: string;
@@ -127,6 +128,29 @@ describe('applying list replies', () => {
     const applied = statusKeepingNewerLists<History, Status>(moved, stale, 3, 4);
     assert.deepEqual(applied.aiDataPaths, ['b.two', 'a.one'], 'the pre-move order is not put back');
     assert.equal(applied.model, 'new-model', 'the rest of the status still updates');
+  });
+
+  it('keeps only the history order from the screen, and takes the reply\'s other history fields', () => {
+    const shown: Status = { model: 'm', aiDataPaths: ['a.one'], history: { paths: ['b.two', 'a.one'], derived: false, samples: 10 } };
+    const stale: Status = { model: 'm', aiDataPaths: ['a.one'], history: { paths: ['a.one', 'b.two'], derived: false, samples: 99 } };
+    const applied = statusKeepingNewerLists<History, Status>(shown, stale, 3, 4);
+    assert.deepEqual(applied.history, { paths: ['b.two', 'a.one'], derived: false, samples: 99 });
+  });
+
+  it('drops a status reply whole once a status sent after it has been applied', () => {
+    const shown: Status = { model: 'model-from-read-2', aiDataPaths: ['a.one'] };
+    const late: Status = { model: 'model-from-read-1', aiDataPaths: ['a.one'] };
+    assert.equal(statusKeepingNewerLists<History, Status>(shown, late, 3, 4, true), shown);
+  });
+
+  it('re-ticks the picker from the stored selection after a stale move', () => {
+    const picked = { 'a.one': true, 'b.two': true, 'c.three': true, 'd.four': false };
+    assert.deepEqual(retickedFrom(picked, ['b.two', 'c.three:max']), {
+      'a.one': false,
+      'b.two': true,
+      'c.three': true,
+      'd.four': false
+    });
   });
 
   it('takes a status reply as it is when there was nothing on screen to keep', () => {

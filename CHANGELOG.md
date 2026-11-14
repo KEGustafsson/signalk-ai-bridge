@@ -60,6 +60,14 @@ this project uses [semantic versioning](https://semver.org/).
   lists at a time - Save and the arrows are disabled while a move or a save
   is in flight, so a save can no longer undo a move - and a status read that
   was sent before a list change no longer puts the older order back.
+  Follow-ups from the review of those fixes: after a stale move the pickers
+  are re-ticked from the stored selection, so Save cannot put back a path
+  another browser removed; a late status read keeps only the newer order, and
+  one that lands after a later read is ignored, so it cannot bring back an
+  older model or history counters; a watch change that changes nothing (a
+  refused 51st watch, an unknown id) writes nothing, and the full-list answer
+  uses code `conflict`, like a stale move; a save still in flight when the
+  plugin restarts no longer puts the older options back in memory.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each
