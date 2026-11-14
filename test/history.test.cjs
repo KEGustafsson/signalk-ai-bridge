@@ -787,7 +787,7 @@ describe('which ports are this server', () => {
   // The listener object is a server internal that plugins may not use (the
   // Signal K plugin CI rejects it), so whatever it says is not read.
   it('does not read the server\'s internal listener', async () => {
-    const app = { config: { settings: { port: 3000 } }, server: { address: () => assert.fail('app.server must not be read') } };
+    const app = { config: { settings: { port: 3000 } }, server: { address: () => assert.fail('the listener must not be read') } };
     assert.deepEqual([...ownServerPorts(app)], ['3000']);
   });
 
