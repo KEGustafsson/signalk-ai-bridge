@@ -35,6 +35,7 @@ const GNSS_LABEL = {
   ok: { text: 'corroborated', color: '#166534' },
   degraded: { text: 'one indicator active', color: '#b45309' },
   suspect: { text: 'not corroborated: treat the position with suspicion', color: '#b91c1c' },
+  lost: { text: 'no fix arriving: the position shown elsewhere is old', color: '#b91c1c' },
   unavailable: { text: 'no position data', color: '#475569' }
 } as const;
 
@@ -76,6 +77,7 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [showResolved, setShowResolved] = React.useState<boolean>(false);
   const [refresh, setRefresh] = React.useState<number>(0);
   const [now, setNow] = React.useState<number>(Date.now());
+  const [updatedAt, setUpdatedAt] = React.useState<number | null>(null);
   const [inventory, setInventory] = React.useState<WatchInventory | 'loading' | { error: string } | null>(null);
   const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
   const [report, setReport] = React.useState<WatchReport | 'loading' | { error: string } | null>(null);
@@ -97,7 +99,10 @@ export default function WatchPanel(props: WatchPanelProps) {
         .then(({ ok, body }) => {
           if (!active) return;
           setUnreachable(!ok);
-          if (ok) setStatus(body as WatchStatus);
+          if (ok) {
+            setStatus(body as WatchStatus);
+            setUpdatedAt(Date.now());
+          }
           setNow(Date.now());
         })
         .catch(() => {
@@ -257,11 +262,15 @@ export default function WatchPanel(props: WatchPanelProps) {
     [post, ruleText]
   );
 
-  const saveRules = React.useCallback(
-    async (rules: ReturnType<typeof storedRule>[], done: string) => {
+  // One rule per request, applied on the server to the rules as they are
+  // stored now. Sending the whole list from this panel's last poll could undo
+  // an edit made elsewhere in the ten seconds since, or bring back a rule a
+  // quick second click had just removed.
+  const changeRule = React.useCallback(
+    async (route: '/watch/rules/add' | '/watch/rules/remove', body: unknown, done: string) => {
       setNotice(null);
       try {
-        const result = await post('/watch/rules/save', { rules });
+        const result = await post(route, body);
         setNotice(result.ok ? done : errorText(result.status, result.body, 'Could not save the watch rules.'));
         if (result.ok) {
           setCompiled(null);
@@ -277,16 +286,14 @@ export default function WatchPanel(props: WatchPanelProps) {
 
   const onAddRule = React.useCallback(async () => {
     if (!compiled || compiled === 'working' || !compiled.ok || !compiled.rule) return;
-    const existing = (status?.rules ?? []).map(storedRule);
-    await saveRules([...existing, storedRule(compiled.rule)], 'Watch added.');
-  }, [compiled, saveRules, status]);
+    await changeRule('/watch/rules/add', { rule: storedRule(compiled.rule) }, 'Watch added.');
+  }, [changeRule, compiled]);
 
   const onDeleteRule = React.useCallback(
     async (id: string) => {
-      const remaining = (status?.rules ?? []).filter((rule) => rule.id !== id).map(storedRule);
-      await saveRules(remaining, 'Watch removed.');
+      await changeRule('/watch/rules/remove', { id }, 'Watch removed.');
     },
-    [saveRules, status]
+    [changeRule]
   );
 
   const onTrend = React.useCallback(
@@ -441,8 +448,19 @@ export default function WatchPanel(props: WatchPanelProps) {
         </p>
       ) : (
         <>
+          {unreachable ? (
+            // A poll that failed after earlier ones succeeded: the server went
+            // away or the session expired. The last snapshot is still shown,
+            // but never as a current all-clear.
+            <p style={{ margin: '0.5rem 0 0 0', color: '#b45309', fontWeight: 600 }}>
+              Watch status could not be refreshed since {formatClockTime(updatedAt ?? undefined)}: what is shown below may be out
+              of date.
+            </p>
+          ) : null}
           <p style={{ margin: '0.5rem 0 0 0' }}>
-            {activeIncidents.length === 0 ? (
+            {unreachable ? (
+              <strong style={{ color: '#475569' }}>Status unknown.</strong>
+            ) : activeIncidents.length === 0 ? (
               <strong style={{ color: '#166534' }}>Nothing unusual.</strong>
             ) : (
               <strong style={{ color: '#991b1b' }}>

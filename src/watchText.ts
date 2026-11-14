@@ -62,7 +62,7 @@ export interface WatchStatus {
   readonly incidents?: readonly WatchIncident[];
   readonly regimeChanges?: readonly WatchRegimeChange[];
   readonly gnss?: {
-    readonly status: 'ok' | 'degraded' | 'suspect' | 'unavailable';
+    readonly status: 'ok' | 'degraded' | 'suspect' | 'lost' | 'unavailable';
     readonly indicators: Readonly<Record<string, 'ok' | 'active' | 'unavailable'>>;
   };
   readonly rules?: readonly WatchRuleStatus[];

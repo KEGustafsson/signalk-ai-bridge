@@ -36,6 +36,29 @@ this project uses [semantic versioning](https://semver.org/).
   `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
   with write access when security is enabled.
 - `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+- **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
+  request):
+  - Overlapping saves of path selections and watch rules no longer undo each
+    other: every options write goes through one queue. The panel adds and
+    removes one rule at a time (`/watch/rules/add`, `/watch/rules/remove`),
+    instead of saving its whole, possibly stale, list.
+  - A notification the server refuses is retried instead of being recorded
+    as sent.
+  - GNSS: a receiver that stops sending fixes is reported (`gnss.lost`), and
+    a boat that slows and stops is no longer reported as a frozen fix.
+  - A single big step is no longer taken for the sensor's resolution, which
+    let a tank's 60-point drop hide behind its own noise floor.
+  - A value that sat still and then jumped up is no longer classed as a
+    counter.
+  - A switch cycling faster than the old evidence list held is counted
+    exactly.
+  - Redundant sources learn their usual gap per pair.
+  - The rule parser keeps the target in "switches on" and "changes to fault",
+    and refuses a second "while" instead of dropping it.
+  - The panel says when its status could not be refreshed, instead of
+    showing the last snapshot as a current all-clear.
+  - The history docs say plainly that a `historyServerUrl` on `localhost` at
+    another port also receives the operator's session.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

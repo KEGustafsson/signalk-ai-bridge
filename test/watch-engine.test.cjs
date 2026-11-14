@@ -598,3 +598,80 @@ describe('watch engine: feedback and the watch report', () => {
     assert.equal(restored.status(T0 + MINUTE).lessSensitive[0].path, 'environment.inside.temperature');
   });
 });
+
+describe('watch engine: review fixes', () => {
+  it('learns the usual gap per source pair, so one offset sensor cannot hide another fault', () => {
+    const engine = newEngine();
+    const rand = noise(61);
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [
+      [path, 12.5 + 0.01 * rand(), 'a'],
+      [path, 12.5 + 0.01 * rand(), 'b'],
+      [path, 13.5 + 0.01 * rand(), 'c']
+    ]);
+    assert.deepEqual(detectors(engine), []);
+    t = run(engine, t, t + 2 * MINUTE, SECOND, () => [
+      [path, 12.5 + 0.01 * rand(), 'a'],
+      [path, 13.5 + 0.01 * rand(), 'b'],
+      [path, 13.5 + 0.01 * rand(), 'c']
+    ]);
+    const finding = engine.status().activeFindings.find((item) => item.detector === 'disagree');
+    assert.ok(finding, 'b drifting a volt off must be reported despite c being a volt off by design');
+    assert.match(finding.message, /^a reads 12\.\d+ V, b reads 13\.\d+ V/);
+  });
+
+  it('does not take one big step for the sensor resolution', () => {
+    const engine = newEngine();
+    const path = 'tanks.freshWater.0.currentLevel';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 0.8]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 0.2]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`), 'a 60-point drop must not hide behind a learned "resolution"');
+  });
+
+  it('does not take a still value that then jumps up for a counter', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    let t = run(engine, T0, T0 + SECOND, SECOND, () => [[path, 12.4]]);
+    t = run(engine, t, T0 + 40 * MINUTE, SECOND, () => [[path, 12.5]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 15.5]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`));
+  });
+
+  it('keeps counting a switch that cycles faster than the evidence list once held', () => {
+    const engine = newEngine();
+    const path = 'electrical.switches.pump.state';
+    let t = run(engine, T0, T0 + 6 * 60 * MINUTE, 10 * SECOND, () => [[path, 0]]);
+    // Ten minutes of a transition every second.
+    t = run(engine, t, t + 10 * MINUTE, SECOND, (now) => [[path, Math.floor(now / SECOND) % 2]]);
+    assert.ok(detectors(engine).includes(`cycling:${path}`));
+    t = run(engine, t, t + 30 * MINUTE, SECOND, (now) => [[path, Math.floor(now / SECOND) % 2]]);
+    assert.ok(detectors(engine).includes(`cycling:${path}`), 'still cycling, still reported');
+  });
+
+  it('reports a GNSS feed that stops, and does not call a stopped boat a frozen fix', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    let speed = 6 * knots;
+    let lat = 60;
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => {
+      lat += speed / 111195;
+      return [
+        ['navigation.position', { latitude: lat, longitude: 24 }, 'gps'],
+        ['navigation.headingTrue', 0],
+        ['navigation.speedThroughWater', speed]
+      ];
+    });
+    // Slow to a stop: the fix stops moving because the boat did.
+    speed = 0;
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [
+      ['navigation.position', { latitude: lat, longitude: 24 }, 'gps'],
+      ['navigation.headingTrue', 0],
+      ['navigation.speedThroughWater', 0]
+    ]);
+    assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
+    // The receiver goes silent.
+    t = run(engine, t, t + MINUTE, SECOND, () => [['navigation.headingTrue', 0]]);
+    assert.ok(detectors(engine).includes('gnss.lost:navigation.position'));
+    assert.equal(engine.status(t).gnss.status, 'lost');
+  });
+});

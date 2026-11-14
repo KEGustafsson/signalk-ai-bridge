@@ -579,6 +579,38 @@ module.exports = function createPlugin(app, dependencies = {}) {
     return false;
   };
 
+  // Every write to the stored options goes through this one queue. Each
+  // handler used to copy pluginOptions, await the save, then assign its copy
+  // back - so two overlapping saves (a path selection and a watch rule, say)
+  // both started from the same options and the later one silently undid the
+  // earlier, while both reported success.
+  let optionsWriteQueue = Promise.resolve();
+
+  /**
+   * Read-modify-save the plugin's options, one at a time. `change` gets the
+   * options as they are once every earlier save has finished and returns the
+   * new options; they are stored, then applied to the running plugin.
+   */
+  const updatePluginOptions = (change) => {
+    const run = optionsWriteQueue.then(async () => {
+      if (typeof app.savePluginOptions !== 'function') {
+        const error = new Error('This Signal K server does not let plugins store their own settings.');
+        error.code = 'unknown';
+        error.statusCode = 501;
+        throw error;
+      }
+      const updated = change(pluginOptions);
+      await new Promise((resolve, reject) => {
+        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+      });
+      pluginOptions = updated;
+      return updated;
+    });
+    // A failed save must not wedge the queue for the next one.
+    optionsWriteQueue = run.catch(() => {});
+    return run;
+  };
+
   /** A path list from the panel: strings, trimmed, deduplicated, bounded. */
   const normalizeSelection = (value, limit) => {
     if (!Array.isArray(value)) {
@@ -628,29 +660,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
 
-      const updated = {
-        ...pluginOptions,
-        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
-        ...(historyPaths === undefined ? {} : { historyPaths })
-      };
-
-      if (typeof app.savePluginOptions !== 'function') {
-        res.status(501).json({
-          error: {
-            code: 'unknown',
-            message: 'This Signal K server does not let plugins store their own settings.'
-          }
-        });
-        return;
-      }
-
-      await new Promise((resolve, reject) => {
-        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
-      });
-
       // Applied to the running plugin as well as stored, so the next question
       // uses the new selection without waiting for a restart.
-      pluginOptions = updated;
+      await updatePluginOptions((current) => ({
+        ...current,
+        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
+        ...(historyPaths === undefined ? {} : { historyPaths })
+      }));
 
       const config = getConfig();
       res.status(200).json({
@@ -1015,10 +1031,60 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
-   * POST /watch/rules/save { rules }: store the operator's watch rules. Stored
-   * as plugin options, like the path selections, so a restart and a config
-   * backup carry them.
+   * Change the stored watch rules. Stored as plugin options, like the path
+   * selections, so a restart and a config backup carry them. `change` gets
+   * the rules as stored when its turn in the write queue comes, so edits from
+   * two panels, or two quick clicks, apply to each other's result instead of
+   * one overwriting the other from a stale list.
    */
+  const changeWatchRules = async (change) => {
+    let rules;
+    await updatePluginOptions((current) => {
+      rules = normalizeRules(change(normalizeRules(current.watchRules)));
+      return { ...current, watchRules: rules };
+    });
+    return watchService.setRules(rules);
+  };
+
+  /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
+  const watchRuleAddHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const [rule] = normalizeRules([body && body.rule]);
+      if (!rule) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
+        return;
+      }
+      const rules = await changeWatchRules((current) => [...current.filter((item) => item.id !== rule.id), rule]);
+      res.status(200).json({ rules });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
+  /** POST /watch/rules/remove { id }: remove one rule by id. */
+  const watchRuleRemoveHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const id = body && typeof body.id === 'string' ? body.id : '';
+      if (!id) {
+        res.status(400).json({ error: { code: 'validation-failed', message: 'Send the id of the rule to remove.' } });
+        return;
+      }
+      const rules = await changeWatchRules((current) => current.filter((item) => item.id !== id));
+      res.status(200).json({ rules });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not save the watch rules.');
+    }
+  };
+
+  /** POST /watch/rules/save { rules }: replace the whole list, for tools that manage it as a unit. */
   const watchRuleSaveHandler = async (req, res) => {
     if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
       return;
@@ -1029,17 +1095,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
         return;
       }
-      const watchRules = normalizeRules(body.rules);
-      if (typeof app.savePluginOptions !== 'function') {
-        res.status(501).json({ error: { code: 'unknown', message: 'This Signal K server does not let plugins store their own settings.' } });
-        return;
-      }
-      const updated = { ...pluginOptions, watchRules };
-      await new Promise((resolve, reject) => {
-        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
-      });
-      pluginOptions = updated;
-      res.status(200).json({ rules: watchService.setRules(watchRules) });
+      const rules = await changeWatchRules(() => body.rules);
+      res.status(200).json({ rules });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the watch rules.');
     }
@@ -1138,6 +1195,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/watch/unusual', watchUnusualHandler);
       router.post('/watch/rules/compile', watchRuleCompileHandler);
       router.post('/watch/rules/save', watchRuleSaveHandler);
+      router.post('/watch/rules/add', watchRuleAddHandler);
+      router.post('/watch/rules/remove', watchRuleRemoveHandler);
       router.get('/watch/report', watchReportHandler);
       router.post('/watch/feedback', watchFeedbackHandler);
       router.post('/watch/mute', watchMuteHandler(false));

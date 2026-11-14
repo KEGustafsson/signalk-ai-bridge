@@ -169,6 +169,31 @@ describe('watch service', () => {
   });
 });
 
+describe('watch service: review fixes', () => {
+  it('retries a notification the server refused, instead of recording it as sent', () => {
+    const host = createHost();
+    let refuse = true;
+    const accepted = [];
+    host.handleMessage = (id, delta) => {
+      if (refuse) throw new Error('server busy');
+      accepted.push(delta);
+    };
+    const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
+    const service = createWatchService(host, { now: () => clock.t });
+    service.start({ watchEnabled: true, watchLearningMinutes: 10 });
+    // Fractional readings, like a real sensor: whole numbers would be read as a set of states.
+    drive(host, service, clock, 30 * MINUTE, (t) => 353.15 + ((t / 1000) % 3) * 0.05);
+    drive(host, service, clock, MINUTE, (t) => 365.15 + ((t / 1000) % 3) * 0.05);
+    assert.equal(accepted.length, 0);
+    assert.match(service.status().lastError, /server busy/);
+    refuse = false;
+    service.tick();
+    const values = accepted.flatMap((delta) => delta.updates.flatMap((update) => update.values));
+    assert.ok(values.some((value) => value.path === 'notifications.aiBridge.watch.propulsion.main.temperature' && value.value.state === 'alert'));
+    service.stop();
+  });
+});
+
 describe('watch routes', () => {
   function recorder() {
     return {
@@ -232,6 +257,31 @@ describe('watch routes', () => {
       const deniedFeedback = recorder();
       await routes['POST /watch/feedback']({ body: { path: 'a.b', useful: false } }, deniedFeedback);
       assert.equal(deniedFeedback.statusCode, 401);
+      // Overlapping writes: a path selection and two watch rules, all in
+      // flight at once against a slow save. Every change must survive.
+      host.savePluginOptions = (options, done) => {
+        setTimeout(() => {
+          host.saved = options;
+          done();
+        }, 5);
+      };
+      const writer = { skPrincipal: { permissions: 'admin' } };
+      const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
+      const responses = [recorder(), recorder(), recorder()];
+      await Promise.all([
+        routes['POST /paths/selection']({ ...writer, body: { aiDataPaths: ['navigation.position'] } }, responses[0]),
+        routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-one', 360) } }, responses[1]),
+        routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-two', 370) } }, responses[2])
+      ]);
+      assert.deepEqual(responses.map((item) => item.statusCode), [200, 200, 200]);
+      assert.deepEqual(host.saved.aiDataPaths, ['navigation.position']);
+      assert.deepEqual(host.saved.watchRules.map((item) => item.id).sort(), ['r-one', 'r-two']);
+
+      const removed = recorder();
+      await routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-one' } }, removed);
+      assert.deepEqual(removed.body.rules.map((item) => item.id), ['r-two']);
+      assert.deepEqual(host.saved.watchRules.map((item) => item.id), ['r-two']);
+
       const feedback = recorder();
       await routes['POST /watch/feedback']({ body: { path: 'a.b', useful: false }, skPrincipal: { permissions: 'readwrite' } }, feedback);
       assert.deepEqual(feedback.body, { path: 'a.b', factor: 1.25 });

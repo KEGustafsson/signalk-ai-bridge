@@ -271,3 +271,19 @@ describe('rules in the watch', () => {
     }
   });
 });
+
+describe('rule parser: review fixes', () => {
+  it('keeps the named state in "switches on" and "changes to fault"', () => {
+    const pump = parsed('tell me when the bilge pump switches on');
+    assert.deepEqual([pump.op, pump.value], ['equals', true]);
+    const mode = parsed('tell me if the inverter mode changes to fault');
+    assert.deepEqual([mode.op, mode.value], ['equals', 'fault']);
+    assert.equal(parsed('notify me if the inverter mode changes').op, 'changes');
+  });
+
+  it('refuses a second "while" rather than dropping it', () => {
+    const result = parseRule('coolant above 95 while rpm above 600 only when shore is on', VESSEL);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /one "while" condition; this has 2/);
+  });
+});

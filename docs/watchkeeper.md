@@ -81,8 +81,11 @@ standard Signal K path or a plugin's own.
   *discrete*. Numbers are *continuous*, unless the first 20 samples are all
   integers with at most 4 distinct values (a pump state, a mode code), in which
   case they are discrete until a fifth value or a fraction appears. A number
-  that has only ever risen over at least 30 samples is a *counter* (engine
-  hours, energy), and the level checks skip it.
+  that has never fallen over at least 30 samples is a *counter* (engine hours,
+  energy), and the level checks skip it, but only if its name says so
+  (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`, `log`, `trip`) or it
+  rose on at least a fifth of its updates. A value that sat still and then
+  jumped up has also never fallen, and it is not a counter.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -107,9 +110,10 @@ Each watched path keeps a small, serialisable state object
 | Update interval | Moving average of the time between accepted samples |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
-| Sensor resolution | The smallest non-zero step seen. The noise floor is at least twice this |
+| Sensor resolution | The smallest non-zero step seen at least twice (within 10 %) among the last 8 steps. The noise floor is at least twice this. A single step is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
+| Transitions | Counted per minute for the last hour, so a switch cycling every second is counted exactly |
 | Change rate | How often consecutive samples differ, for the frozen check |
-| Discrete states | Count per value (up to 32 values) and the last 120 transition times |
+| Discrete states | Count per value (up to 32 values) |
 | Series | 60 ten-second buckets (10 min) and 90 one-minute buckets (90 min) |
 
 **Noise floor.** A perfectly steady value has no spread, so the spread used is
@@ -221,7 +225,8 @@ indicator uses evidence the receiver does not control:
 | `deadReckoning` | The fix is further from dead reckoning (true heading + speed through water, integrated from an agreeing fix) than **150 m + 25 % of distance run + 2 kn × elapsed time**. Heading and log must be fresh (≤ 5 s). The reference is re-anchored every 10 minutes, and only on a fix that agrees, so a spoofed position never becomes the reference | 30 s / 60 s |
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
-| `frozen` | The fix has not moved (< 0.5 m between fixes) for 60 s while speed through water is above 1 m/s | immediate / 10 s |
+| `frozen` | The fix has not moved (< 0.5 m between fixes) for 60 s while speed through water is above 1 m/s. Any fix without that evidence — it moved, or the log is stale or reads under 1 m/s — ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped is not reported | immediate / 10 s |
+| `lost` | After 30 fixes, none for `max(30 s, 10 × usual fix interval)`. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
 Two indicators at once escalate every GNSS finding to `alert`. All GNSS
@@ -235,9 +240,12 @@ seen is primary and only its samples feed the baseline. Mixing them would make
 a calibration offset look like noise, or a step at every switch.
 
 - **Disagree**: each other source is compared with a fresh primary sample
-  (within `max(5 s, 2 × interval)`). The usual gap is learned, so a constant
-  offset is normal. It fires when the gap exceeds the usual one by `zWarn`
-  spreads and is at least 3 noise floors, after 30 comparisons.
+  (within `max(5 s, 2 × interval)`). The usual gap is learned **per
+  primary/secondary pair**, so a constant offset is normal and one sensor's
+  offset cannot hide another's fault. It fires when a pair's gap exceeds its
+  usual one by `zWarn` spreads and is at least 3 noise floors, after 30
+  comparisons. Pairs learned under an earlier primary are kept but not judged.
+  Up to 16 pairs per path.
 - **Failover**: when the primary has been silent for `max(10 s, 5 × interval)`,
   the next source becomes primary. If the old primary was established (30+
   samples), that is reported, because the path kept updating and a dropout
@@ -307,6 +315,9 @@ notifications.aiBridge.watch.rules.<rule id>
 - `sound` is added for `alert` when `watchSound` is on.
 - A state change is published at once. A message whose numbers merely
   refreshed is republished at most once a minute.
+- What was sent is recorded only once the server accepts the batch. A
+  refused batch is retried on the next tick, so a warning or its clearance is
+  never lost.
 - A cleared finding publishes `normal` with "Back to normal: …".
 - Stopping the plugin clears every watch notification.
 
@@ -341,12 +352,19 @@ A rule is stored data, checked deterministically on every tick:
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
+- One `while` condition per rule. A request with two is refused rather than
+  stored with one of them silently dropped.
+- Every write to the plugin's options (rules, path selections) goes through
+  one queue, so two overlapping saves cannot undo each other. The panel adds
+  and removes one rule at a time (`/watch/rules/add`, `/watch/rules/remove`),
+  applied to the rules as stored, never to its own possibly stale copy.
 
 **Reading plain language** (`lib/watch/rule-parser.cjs`), with no model:
 
 - Comparisons: *above, over, higher/more/greater than, exceeds, hotter/warmer/
   faster than, below, under, lower/less than, colder/cooler/slower than*,
-  `>`, `<`; *is on/off*, *runs*, *starts*, *stops*, *is not …*; *changes*,
+  `>`, `<`; *is on/off*, *switches on*, *runs*, *starts*, *stops*, *is not …*,
+  *changes to …*, *becomes …*; and, with no target state, *changes*,
   *switches*, *toggles*.
 - Units: °C, °F, K, V, A, W, kW, %, kn, m/s, rpm, Hz, hPa, mbar, kPa, bar, psi,
   Pa, m, ft, nm, L, L/h. A number without a unit is read in the unit the panel
@@ -452,7 +470,9 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `POST /watch/unmute` | write | Body `{ path }`. Returns `{ mutes }` |
 | `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `pathsReplayed`, `rows`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `note`. `409` while another replay runs |
 | `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?` |
-| `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list. Invalid rules are dropped. Returns `{ rules }` |
+| `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }` |
+| `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }` |
+| `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list, for tools that manage it as a unit. Invalid rules are dropped. Returns `{ rules }` |
 | `GET /watch/report?hours=24` | | `from`, `to`, `hours`, `incidents`, `alerts`, `findings`, `byDetector`, `lines[]` |
 | `POST /watch/feedback` | write | Body `{ path, useful }`: `false`, `true` or `"reset"`. Returns `{ path, factor }` |
 
