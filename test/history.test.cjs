@@ -618,6 +618,30 @@ describe('collectHistoryContext', () => {
     }
   });
 
+  it('names where a refused URL came from, and says what to change', async () => {
+    const fromEnv = normalizeHistoryConfig({ historyEnabled: true }, { SIGNALK_AI_BRIDGE_HISTORY_URL: 'http://u:pw@boat.example' });
+    assert.match(resolveHistoryBaseUrl({ config: { settings: {} } }, fromEnv), /SIGNALK_AI_BRIDGE_HISTORY_URL has a user name or password/);
+    const schemeless = historyConfig({ historyServerUrl: 'boat.local:3000' });
+    assert.match(resolveHistoryBaseUrl({ config: { settings: {} } }, schemeless), /start it with http:\/\/ or https:\/\//);
+    for (const url of ['http://boat.example:3000/?q=a@b', 'http://boat.example#frag@x']) {
+      assert.match(resolveHistoryBaseUrl({ config: { settings: {} } }, historyConfig({ historyServerUrl: url })), /has a query or a fragment/, url);
+    }
+  });
+
+  it('keeps only the reason from fetch\'s own refusal of a URL', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: {} } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://boat.example:3000' }),
+      {
+        fetchImpl: async () => {
+          throw new TypeError('Request cannot be constructed from a URL that includes credentials: http://user:sec retpw@boat.example/x');
+        }
+      }
+    );
+    assert.doesNotMatch(history.message, /retpw|user:/);
+    assert.match(history.message, /Request cannot be constructed from a URL that includes credentials/);
+  });
+
   it('does not repeat credentials that reach a fetch error some other way', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },

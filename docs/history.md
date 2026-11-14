@@ -143,9 +143,10 @@ on that port, set `historyServerUrl` to the socket's own port and give it a
 `historyApiKey` (a token issued by this server): only the advertised port is
 sent the operator's session.
 
-A `historyServerUrl` with a user name or password in it
-(`http://user:password@host`), or one that is not a valid http or https URL,
-is never called: the history context says so without repeating the URL, so
+A `historyServerUrl` (or `SIGNALK_AI_BRIDGE_HISTORY_URL`) with a user name or
+password in it (`http://user:password@host`), one that is not a valid http or
+https URL, or one with a query or fragment (`?…`, `#…`, which the API path
+would be appended after) is never called: the history context says so without repeating the URL, so
 the password does not reach the panel or the model's prompt. Put a token in
 `historyApiKey` instead.
 

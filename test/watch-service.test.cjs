@@ -540,6 +540,73 @@ describe('path priority order', () => {
     }
   });
 
+  it('keeps two id-less watches that differ only in their duration', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const host = createHost();
+    host.savePluginOptions = (options, done) => {
+      host.saved = options;
+      done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, watchEnabled: true });
+    try {
+      const base = { text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360, severity: 'warn' };
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: { ...base, forSeconds: 30 } } }, recorder());
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: { ...base, forSeconds: 600 } } }, recorder());
+      assert.deepEqual(host.saved.watchRules.map((item) => item.forSeconds).sort((a, b) => a - b), [30, 600]);
+      // The same rule again, without an id, is the same watch: not a third.
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: { ...base, forSeconds: 30 } } }, recorder());
+      assert.equal(host.saved.watchRules.length, 2);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('puts the restart\'s options back on disk when a redone change has nothing left to do', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, model: 'old-model', aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      plugin.stop();
+      // The restart's list no longer has b.two: the redone move finds nothing.
+      plugin.start({ warmupOnStart: false, model: 'new-model', aiDataPaths: ['a.one', 'c.three'] });
+      finish();
+      await moving;
+      const last = saves[saves.length - 1];
+      assert.equal(last.model, 'new-model', 'disk holds the restart\'s options, not the older copy');
+      assert.deepEqual(last.aiDataPaths, ['a.one', 'c.three']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('says a change was saved when the plugin stops after storing it', async () => {
+    const host = createHost();
+    let finish;
+    host.savePluginOptions = (options, done) => {
+      finish = done;
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    const reply = recorder();
+    const saving = routes['POST /paths/selection']({ body: { historyPaths: ['h.one'] } }, reply);
+    await new Promise((resolve) => setImmediate(resolve));
+    plugin.stop();
+    finish();
+    await saving;
+    assert.doesNotMatch(JSON.stringify(reply.body), /nothing was saved/);
+  });
+
   it('writes nothing for a watch change that changes nothing', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });

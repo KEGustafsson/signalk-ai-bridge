@@ -43,7 +43,7 @@ const {
   resolveWindow
 } = require('./lib/history-service.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
-const { MAX_RULES, normalizeRules } = require('./lib/watch/rules.cjs');
+const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -623,9 +623,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // those and saved again, so neither memory nor disk keeps an older copy
       // - and a save queued while the plugin was stopped (pluginOptions is {}
       // then) writes nothing at all instead of storing just its own change.
+      let wrote = false;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         if (!running) {
-          const error = new Error('The plugin is stopped; nothing was saved.');
+          const error = new Error(
+            wrote
+              ? 'The change was saved, but the plugin stopped before it took effect; it applies when the plugin starts again.'
+              : 'The plugin is stopped; nothing was saved.'
+          );
           error.code = 'disabled';
           error.statusCode = 503;
           throw error;
@@ -633,6 +638,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
         const generation = lifecycleGeneration;
         const updated = change(pluginOptions);
         if (updated === pluginOptions) {
+          // Redone after a restart and nothing to change now - but the first
+          // attempt already stored a copy made from the older options: put
+          // the restart's options back on disk.
+          if (wrote) {
+            await new Promise((resolve, reject) => {
+              app.savePluginOptions(pluginOptions, (error) => (error ? reject(error) : resolve()));
+            });
+          }
           return updated;
         }
         if (typeof app.savePluginOptions !== 'function') {
@@ -644,12 +657,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
         await new Promise((resolve, reject) => {
           app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
         });
+        wrote = true;
         if (generation === lifecycleGeneration) {
           pluginOptions = updated;
           return updated;
         }
       }
-      const error = new Error('The plugin restarted while saving; try again.');
+      const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
       error.code = 'conflict';
       error.statusCode = 409;
       throw error;
@@ -1246,7 +1260,19 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
       let full = false;
+      // A rule that came without an id is a new rule: if its derived id is
+      // already taken by a different stored rule, it is numbered as a copy
+      // rather than replacing that one.
+      const fresh = !hasValidId(body.rule);
+      // What a rule says, without when it was made or what it is called.
+      const content = ({ id, createdAt, ...rest }) => JSON.stringify(rest);
       const rules = await changeWatchRules((current) => {
+        if (fresh) {
+          const base = rule.id;
+          for (let copy = 2; current.some((item) => item.id === rule.id && content(item) !== content(rule)); copy += 1) {
+            rule.id = `${base}-${copy}`;
+          }
+        }
         const others = current.filter((item) => item.id !== rule.id);
         // At the cap, the new rule is the one truncation would drop: refuse
         // instead of reporting success for a rule that was never stored.

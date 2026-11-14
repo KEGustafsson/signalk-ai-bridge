@@ -477,6 +477,16 @@ describe('values a measurement can never have', () => {
     assert.doesNotThrow(() => restarted.proveRule({ path: 'electrical.batteries.house.overTemperature', op: 'equals', value: false }, T0 + MINUTE));
   });
 
+  it('still refuses on/off on a quiet numeric path that only looked discrete', () => {
+    const config = normalizeWatchConfig({ watchEnabled: true });
+    const engine = createWatchEngine(config, { now: T0 });
+    for (let i = 0; i < 40; i += 1) engine.ingest('propulsion.main.revolutions', 0, T0 + i * SECOND);
+    engine.tick(T0 + 40 * SECOND);
+    const restarted = createWatchEngine(config, { now: T0 + MINUTE });
+    restarted.importState(JSON.parse(JSON.stringify(engine.exportState(T0 + 40 * SECOND))), T0 + MINUTE);
+    assert.throws(() => restarted.proveRule({ path: 'propulsion.main.revolutions', op: 'equals', value: true }, T0 + MINUTE), /is a measurement/);
+  });
+
   it('gives a rule without an id the same id every time it is read', () => {
     const stored = [{ text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360 }];
     const first = normalizeRules(stored);

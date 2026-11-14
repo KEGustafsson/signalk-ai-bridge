@@ -73,7 +73,11 @@ this project uses [semantic versioning](https://semver.org/).
   while the plugin stops writes nothing instead of storing only its own
   change; a rule without an id keeps one id, so it can be removed; and the
   pickers take only what another browser changed (on every move reply, the
-  default live selection included), keeping unsaved ticks.
+  default live selection included), keeping unsaved ticks. Then: a redone
+  change with nothing left to do puts the restart's options back on disk; a
+  save the plugin stopped after says it was saved; and after a picker save
+  the picker compares with what the server uses (the defaults, for an empty
+  list), not with what was ticked.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each
@@ -131,7 +135,9 @@ this project uses [semantic versioning](https://semver.org/).
     no longer quotes credentials from `historyServerUrl` back into the
     panel or the prompt (a URL with a user name or password, or one that is
     not a valid URL, is refused when the settings are read and never
-    called), and the settings text no longer suggests a
+    called; the message names the setting or `SIGNALK_AI_BRIDGE_HISTORY_URL`
+    and says what to change, and a URL with a query or fragment is refused
+    too), and the settings text no longer suggests a
     `historyServerUrl` for a certificate localhost cannot verify.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
@@ -198,7 +204,15 @@ this project uses [semantic versioning](https://semver.org/).
     again, so a list can still be saved; a "changes" rule's hold waits while
     its guard is quiet; a state code under a counter pattern keeps its
     new-state check, an exact counter entry wins over a pattern, and
-    changing an exact listing decides the path's kind again.
+    changing an exact listing decides the path's kind again. From the
+    review of those: a slow counter under a pattern is a counter again (no
+    new state on each increment), unless named as a state code; a changed
+    listing decides the kind from new samples, not one, and baselines saved
+    under the older listing rules are decided again; a quiet numeric path
+    that only looked discrete (0 rpm) still refuses on/off; id-less rules
+    differing only in duration get different ids, and an id-less add never
+    replaces a different stored rule; a slower GNSS rate needs eight long
+    gaps within 1.75x of each other, so scattered dropouts stay outages.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

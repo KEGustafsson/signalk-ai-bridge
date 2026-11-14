@@ -867,6 +867,42 @@ describe('watch engine: review follow-ups', () => {
     assert.ok(detectors(delisted).includes('newState:plugins.ex.mode'), detectors(delisted).join(', '));
   });
 
+  it('counts a slow counter under a pattern, without a new state on each increment', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['plugins.ex.engineStarts', 12]]);
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [['plugins.ex.engineStarts', 13]]);
+    assert.ok(!detectors(engine).some((key) => key.includes('engineStarts')), detectors(engine).join(', '));
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === 'plugins.ex.engineStarts').kind, 'counter');
+  });
+
+  it('decides a kind again from new samples, not one, when the listing changes', () => {
+    const listed = newEngine({ watchCounterPaths: ['plugins.ex.pulses'] });
+    let pulses = 0;
+    let t = run(listed, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (pulses += 1)]]);
+    for (const counterPaths of [[], ['plugins.ex']]) {
+      const restarted = newEngine({ watchCounterPaths: counterPaths });
+      restarted.importState(JSON.parse(JSON.stringify(listed.exportState(t))), t);
+      let p = pulses;
+      const end = run(restarted, t, t + 5 * MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (p += 1)]]);
+      assert.ok(!detectors(restarted).includes('newState:plugins.ex.pulses'), `listing ${JSON.stringify(counterPaths)}: ${detectors(restarted).join(', ')}`);
+      assert.notEqual(restarted.inventory(end).paths.find((item) => item.path === 'plugins.ex.pulses').kind, 'discrete');
+    }
+  });
+
+  it('decides again a kind saved under a pattern before listings were kept this way', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    // As an older head saved it: forced continuous, listed by the pattern.
+    const row = saved.paths.find((item) => item.path === 'plugins.ex.chargerState');
+    Object.assign(row, { kind: 'continuous', distinct: null, counterOptIn: true });
+    const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    restarted.importState(saved, t);
+    t = run(restarted, t, t + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
+    t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.chargerState', 9]]);
+    assert.ok(detectors(restarted).includes('newState:plugins.ex.chargerState'), detectors(restarted).join(', '));
+  });
+
   it('keeps a named counter a counter after it is reset to zero', () => {
     const state = monitor.createPathState('electrical.solar.mppt.yieldToday', T0);
     let value = 0;
@@ -1014,6 +1050,24 @@ describe('GNSS: a receiver that really slows down', () => {
       engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
     }
     assert.equal(opened, 0);
+  });
+
+  it('does not take scattered dropouts of 20 to 40 s for a slower rate', () => {
+    const engine = newEngine();
+    let lat = 60;
+    let t = run(engine, T0, T0 + 2 * MINUTE, SECOND, () => [['navigation.position', { latitude: (lat += 0.00001), longitude: 24 }, 'gps']]);
+    for (const gap of [20, 40, 25, 35, 30, 22, 38, 21, 39]) {
+      t = run(engine, t, t + gap * SECOND, SECOND, () => []);
+      engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
+    }
+    // Then the receiver dies: it is reported lost within the minute.
+    let lost = false;
+    for (let s = 0; s < 60 && !lost; s += 1) {
+      t += SECOND;
+      engine.tick(t);
+      lost = detectors(engine).includes('gnss.lost:navigation.position');
+    }
+    assert.ok(lost);
   });
 
   it('learns a slow receiver whose fixes come every 45 to 75 s', () => {

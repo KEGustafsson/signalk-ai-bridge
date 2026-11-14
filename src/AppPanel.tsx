@@ -164,7 +164,11 @@ const pickerButtonStyle = {
 async function saveSelection(
   props: AppPanelProps,
   selection: { aiDataPaths?: readonly string[]; historyPaths?: readonly string[] }
-): Promise<{ message: string; status?: BackendStatus }> {
+): Promise<{
+  message: string;
+  status?: BackendStatus;
+  stored?: { readonly live?: readonly string[]; readonly history?: readonly string[] };
+}> {
   const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
     return { message: 'This browser cannot reach the plugin.' };
@@ -178,10 +182,17 @@ async function saveSelection(
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(selection)
     });
-    const payload = (await response.json()) as { error?: { message?: string } };
+    const payload = (await response.json()) as {
+      aiDataPaths?: readonly string[];
+      historyPaths?: readonly string[];
+      error?: { message?: string };
+    };
     if (!response.ok) {
       return { message: payload.error?.message ?? `The plugin refused the change (HTTP ${response.status}).` };
     }
+    // The selections the server now uses, defaults included: an empty live
+    // list means the default paths, and an empty history list the live ones.
+    const stored = { live: payload.aiDataPaths, history: payload.historyPaths };
 
     // Re-read the status so the card's own list shows what was stored, not
     // what the browser hoped was stored.
@@ -197,7 +208,8 @@ async function saveSelection(
 
     return {
       message: count === 0 ? 'Saved: no paths selected.' : `Saved ${count} path${count === 1 ? '' : 's'}.`,
-      status
+      status,
+      stored
     };
   } catch (error) {
     return { message: error instanceof Error ? error.message : 'Could not reach the plugin.' };
@@ -784,8 +796,9 @@ export default function AppPanel(props: AppPanelProps) {
     try {
       const result = await saveSelection(props, { aiDataPaths: picked });
       setLiveCopyNotice(result.message);
-      // Stored now: what the ticks are compared with from here on.
-      if (result.status) pickerBaseRef.live = picked;
+      // What the server uses now (the defaults, for an empty list): what the
+      // ticks are compared with from here on.
+      if (result.stored?.live) pickerBaseRef.live = result.stored.live;
       applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
@@ -812,7 +825,7 @@ export default function AppPanel(props: AppPanelProps) {
     try {
       const result = await saveSelection(props, { historyPaths: picked });
       setCopyNotice(result.message);
-      if (result.status) pickerBaseRef.history = picked;
+      if (result.stored?.history) pickerBaseRef.history = result.stored.history;
       applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
