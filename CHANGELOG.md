@@ -231,6 +231,18 @@ this project uses [semantic versioning](https://semver.org/).
     a restart interrupts still answers 200. Upgrade note:
     the derived id of a stored rule that had none changes once (it now
     covers duration and source); reload the panel if a remove answers 404.
+  - CodeRabbit full review: watch rules. A `changes` rule sees a value that
+    went on and back off between two ticks (changes are counted as the data
+    arrives), and one with a duration of 10 minutes or more can fire (the
+    change is held for the duration plus 1 minute). A rule removed and added
+    again starts its duration afresh. `>=` and `<=` are inclusive end to end
+    (new `atLeast` / `atMost` operators; stored rules are unchanged).
+    "Running", "started" and "stopped" published as words match the parsed
+    on and off. The parser refuses a unit it cannot convert ("30 cm"), words
+    left over after the comparison, and two comparisons joined by "and"
+    instead of dropping one. The model fallback bounds the read of an error
+    reply, reports a JSON answer that is not an object, and converts numbers
+    for `equals` / `notEquals` from the shown unit too.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

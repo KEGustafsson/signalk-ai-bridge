@@ -380,11 +380,18 @@ A rule is stored data, checked deterministically on every tick:
 }
 ```
 
-- `op` is one of `above`, `below` (numbers), `equals`, `notEquals` or
-  `changes`.
-- `value` is in SI, like the data. `equals` treats `true`, `1`, `"on"` and
-  `"true"` alike.
-- `changes` fires for 10 minutes after the change is seen, once per change.
+- `op` is one of `above`, `below`, `atLeast`, `atMost` (numbers; `atLeast`
+  and `atMost` are the inclusive `>=` and `<=`, so "at least 12 V" holds at
+  exactly 12 V), `equals`, `notEquals` or `changes`.
+- `value` is in SI, like the data. `equals` treats `true`, `1`, `"on"`,
+  `"true"`, `"running"` and `"started"` alike, and `false`, `0`, `"off"`,
+  `"false"` and `"stopped"` alike, in any letter case: the same words the
+  parser reads as on and off.
+- `changes` fires for 10 minutes after the change is seen, once per change;
+  a rule with a duration keeps the change for that duration plus 1 minute
+  when that is longer, so a `changes` rule with `forSeconds` of 600 or more
+  can still fire. Changes are counted as the data arrives, so a value that
+  goes on and back off between two ticks is still a change.
   While the `when` condition is known to be false, the rule keeps up with the
   value silently. While the `when` data is stale, nothing is judged and the
   10 minutes of a change not yet reported stop running: it is reported once
@@ -394,6 +401,8 @@ A rule is stored data, checked deterministically on every tick:
   present when the guard is first heard.
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
+- A rule that is removed takes its pending duration with it: added again
+  later, it starts counting afresh instead of firing at once.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
   A rule added or saved through the routes is checked like a compiled one (a
   word or on/off on a measurement is refused); a rule already stored as it
@@ -404,7 +413,9 @@ A rule is stored data, checked deterministically on every tick:
   temperature, or "changes to empty" on a tank level, is refused with a request
   for a number, rather than stored as a watch that can never fire. "Switches on
   and off" means any change.
-- One `while` condition per rule. A request with two is refused rather than
+- One `while` condition per rule, and one comparison in each. A request with
+  two `while` conditions, or two comparisons joined by *and*, *or* or *but*
+  ("coolant above 95 °C and battery below 12 V"), is refused rather than
   stored with one of them silently dropped, and it is not passed to a model,
   which could only drop one too.
 - Every write to the plugin's options (rules, path selections) goes through
@@ -416,12 +427,16 @@ A rule is stored data, checked deterministically on every tick:
 
 - Comparisons: *above, over, higher/more/greater than, exceeds, hotter/warmer/
   faster than, below, under, lower/less than, colder/cooler/slower than*,
-  `>`, `<`; *is on/off*, *switches on*, *runs*, *starts*, *stops*, *is not …*,
+  `>`, `<`; inclusive *at least, at most, no less/more than*, `>=`, `<=`;
+  *is on/off*, *switches on*, *runs*, *starts*, *stops*, *is not …*,
   *changes to …*, *becomes …*; and, with no target state, *changes*,
   *switches*, *toggles*.
 - Units: °C, °F, K, V, A, W, kW, %, kn, m/s, rpm, Hz, hPa, mbar, kPa, bar, psi,
-  Pa, m, ft, nm, L, L/h. A number without a unit is read in the unit the panel
-  shows for that path ("above 95" on a coolant temperature is 95 °C).
+  Pa, m, ft, nm, L, L/h (spelled out too: *degrees celsius*, *volts*,
+  *knots*). A number without a unit is read in the unit the panel shows for
+  that path ("above 95" on a coolant temperature is 95 °C). A unit it does not
+  know ("below 30 cm") is refused, not read as no unit, and so are words left
+  over after the comparison ("above 95 °C on the port side").
 - Duration: *for 30 s / 2 minutes / 1 hour*.
 - Urgency: *alarm, alert, urgent, critical, emergency, immediately* →
   `alert`.
@@ -442,7 +457,11 @@ A rule is stored data, checked deterministically on every tick:
 - The answer is held to a JSON schema (Ollama's `format`) whose `path` and `op`
   fields allow only those paths and operators.
 - Settings: `temperature 0`, `num_predict 160`, `num_ctx 2048`, thinking off,
-  60 s timeout.
+  60 s timeout. The body of an error reply is read for at most 2 s, so a
+  backend that sends a status and then stalls does not hold the request.
+- Every number in the answer, for any operator, is in the unit shown for the
+  path and converted to SI ("equals 90" on a coolant temperature is 90 °C).
+  An answer that is not a JSON object is reported as no rule.
 - `main` uses the configured model, resolved to its installed tag and already
   resident. `helper` uses `watchHelperModel` and lets it unload after 2
   minutes.
