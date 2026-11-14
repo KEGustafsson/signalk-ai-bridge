@@ -121,10 +121,16 @@ describe('CodeRabbit full review: rule parser', () => {
   });
 
   it('refuses a second condition joined with "and" rather than dropping it (4575943967)', () => {
+    // Two things joined by "and" may mean "A while B": refused with that
+    // hint, not stored as one half (and a model's reading is checked).
     const result = parseRule('coolant above 95 °C and battery below 12 V', VESSEL);
     assert.equal(result.ok, false);
-    assert.equal(result.terminal, true, 'not handed to a model, which could only drop one too');
-    assert.match(result.reason, /joins 2 with "and".*"coolant above 95 °c", "battery below 12 v"/);
+    assert.match(result.reason, /joins two with "and".*"coolant above 95 °c while battery below 12 v"/);
+    const three = parseRule('coolant above 95 °C and battery below 12 V and fuel below 10 %', VESSEL);
+    assert.equal(three.ok, false);
+    assert.equal(three.terminal, true, 'three conditions cannot fit one watch');
+    const either = parseRule('coolant above 95 °C or battery below 12 V', VESSEL);
+    assert.equal(either.terminal, true, '"or" is two watches');
     const inGuard = parseRule('coolant above 95 while rpm above 600 and fuel below 10 %', VESSEL);
     assert.equal(inGuard.ok, false);
     assert.equal(inGuard.terminal, true);
@@ -212,5 +218,103 @@ describe('CodeRabbit full review: rule assist', () => {
     assert.equal(result.ok, true);
     assert.equal(result.rule.value, 363.15);
     assert.deepEqual(result.rule.when, { path: 'propulsion.main.state', op: 'notEquals', value: 'stopped' });
+  });
+});
+
+describe('review of c5649a1: phrasings the leftover check refused', () => {
+  const BOAT = [
+    ...VESSEL,
+    { path: 'electrical.batteries.start.voltage', role: 'watching' },
+    { path: 'electrical.ac.shore.state', role: 'watching' },
+    { path: 'environment.outside.pressure', role: 'watching' }
+  ];
+  const read = (text) => parseRule(text, BOAT);
+
+  it('reads "but only if" and "but only when" as the guard', () => {
+    const ifRule = read('coolant above 95 °C but only if the engine state is running');
+    assert.equal(ifRule.ok, true, ifRule.reason);
+    assert.deepEqual(ifRule.rule.when, { path: 'propulsion.main.state', op: 'equals', value: true });
+    const whenRule = read('house battery below 12 V, but only when shore is on');
+    assert.equal(whenRule.ok, true, whenRule.reason);
+    assert.equal(whenRule.rule.when.path, 'electrical.ac.shore.state');
+  });
+
+  it('accepts urgency words and harmless trailers after the comparison', () => {
+    for (const text of ['coolant above 95 °C immediately', 'coolant above 95 °C, critical', 'coolant above 95 emergency']) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.severity, 'alert', text);
+    }
+    for (const text of ['coolant above 95 °C now', 'coolant above 95 again', 'coolant above 95 °C, send a notification']) {
+      assert.equal(read(text).ok, true, text);
+    }
+    assert.equal(read('house battery below 12 V for 2 minutes straight').rule.forSeconds, 120);
+    assert.equal(read('coolant above 95 °C for 2 minutes or more').rule.forSeconds, 120);
+    // A word that is no unit is still named as one only when it stands alone.
+    assert.match(read('coolant above 30 cm').reason, /"cm" after "30": it is not a unit/);
+    assert.match(read('coolant above 95 during the storm').reason, /Could not read "during the storm"/);
+  });
+
+  it('reads both states joined as a change, and hints "while" for two things joined by "and"', () => {
+    for (const text of ['the bilge pump starts and stops', 'the bilge pump starts or stops']) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.op, 'changes');
+    }
+    const joined = read('coolant above 95 °C and the shore is on');
+    assert.equal(joined.ok, false);
+    assert.notEqual(joined.terminal, true, 'not refused for good: it may mean "while"');
+    assert.match(joined.reason, /say "coolant above 95 °c while the shore is on"/);
+  });
+
+  it('narrows the subject with a trailing qualifier, and refuses one that names nothing', () => {
+    const house = read('battery below 12 V on the house bank');
+    assert.equal(house.ok, true, house.reason);
+    assert.equal(house.rule.path, 'electrical.batteries.house.voltage');
+    assert.equal(read('coolant above 95 °C on the main engine').rule.path, 'propulsion.main.temperature');
+    for (const text of ['coolant above 95 °C at anchor', 'coolant above 95 °C on the port side', 'the bilge pump switches on in the forward bilge']) {
+      const result = read(text);
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, /Could not read "(?:at|on|in) /, text);
+    }
+  });
+
+  it('reads mb, º and °celsius', () => {
+    assert.equal(read('barometer below 1000 mb').rule.value, 100000);
+    assert.equal(read('coolant above 95 ºC').rule.value, 368.15);
+    assert.equal(read('coolant above 95 °celsius').rule.value, 368.15);
+  });
+
+  it('does not report at unmute a change made while the path was muted', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    engine.ingest(pump, false, T0);
+    engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', source: 'manual' }]);
+    let t = T0;
+    engine.tick(t);
+    engine.mute(pump, t + 60 * MINUTE, t);
+    for (t += 5 * SECOND; t <= T0 + 40 * MINUTE; t += 5 * SECOND) {
+      const on = t >= T0 + 10 * MINUTE && t < T0 + 10 * MINUTE + 2 * SECOND;
+      engine.ingest(pump, on, t);
+      if (t === T0 + 10 * MINUTE + 5 * SECOND) engine.ingest(pump, false, t);
+      if (t === T0 + 30 * MINUTE) engine.unmute(pump, t);
+      engine.tick(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `at ${(t - T0) / SECOND} s`);
+    }
+    // A change after the mute is reported.
+    engine.ingest(pump, true, t);
+    for (const end = t + 30 * SECOND; t <= end; t += 5 * SECOND) {
+      engine.ingest(pump, true, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
+  });
+
+  it('keeps the error detail of a response that offers only text()', async () => {
+    const options = { baseUrl: 'http://ollama:11434', model: 'm', backend: 'ollama' };
+    const fetchImpl = async () => ({ ok: false, status: 500, statusText: 'Internal Server Error', headers: new Map(), body: null, text: async () => 'model not loaded' });
+    const result = await assistRule('x', VESSEL.slice(0, 4), options, { fetchImpl, errorBodyTimeoutMs: 50 });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /model not loaded/);
   });
 });

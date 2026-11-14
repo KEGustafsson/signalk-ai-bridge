@@ -253,7 +253,15 @@ this project uses [semantic versioning](https://semver.org/).
     ("switches on during rough weather") too; punctuation no longer turns
     "switches on, please" into "changes". The model fallback bounds the read of an error
     reply, reports a JSON answer that is not an object, and converts numbers
-    for `equals` / `notEquals` from the shown unit too.
+    for `equals` / `notEquals` from the shown unit too. From the review of
+    that: "but only if/when" is a guard again; urgency words and trailers
+    such as "immediately", "now", "send a notification", "for 2 minutes or
+    more" are fine after the comparison; "starts and stops" is a change;
+    two things joined by "and" get the hint to say "while" (not refused for
+    good); words such as "on the house bank" narrow the subject, kept only if
+    the path answers to them; `mb`, `º` and "°celsius" are read; a change
+    made while a path is muted is not reported when the mute ends; and an
+    error reply that offers only `text()` keeps its detail.
   - CodeRabbit full review (detection and replay): replay enforces its row
     limit on what the History API returns (rows closer than the requested
     resolution, outside the window or past the limit are left out, and the

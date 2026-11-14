@@ -402,7 +402,10 @@ A rule is stored data, checked deterministically on every tick:
   a rule with a duration keeps the change for that duration plus 1 minute
   when that is longer, so a `changes` rule with `forSeconds` of 600 or more
   can still fire. Changes are counted as the data arrives, so a value that
-  goes on and back off between two ticks is still a change.
+  goes on and back off between two ticks is still a change. On a `changes`
+  rule the duration is a delay: a change is reported that long after it was
+  seen, even if the value has gone back since. A change made while the path
+  is muted is not reported when the mute ends.
   While the `when` condition is known to be false, the rule keeps up with the
   value silently. While the `when` data is stale, nothing is judged and the
   10 minutes of a change not yet reported stop running: it is reported once
@@ -423,12 +426,14 @@ A rule is stored data, checked deterministically on every tick:
 - A word is a value only on a path that has states: "becomes warm" on a
   temperature, or "changes to empty" on a tank level, is refused with a request
   for a number, rather than stored as a watch that can never fire. "Switches on
-  and off" means any change.
+  and off", "starts and stops" mean any change.
 - One `while` condition per rule, and one comparison in each. A request with
-  two `while` conditions, or two comparisons joined by *and*, *or* or *but*
-  ("coolant above 95 °C and battery below 12 V"), is refused rather than
-  stored with one of them silently dropped, and it is not passed to a model,
-  which could only drop one too.
+  two `while` conditions, three comparisons, or two joined by *or* or *but*,
+  is refused rather than stored with one of them silently dropped, and it is
+  not passed to a model, which could only drop one too. Two things joined by
+  *and* ("coolant above 95 °C and the shore power is on") are refused with
+  the hint to say *while* instead, which is what a rule holds; that one may
+  go to a model, whose reading the operator checks.
 - Every write to the plugin's options (rules, path selections) goes through
   one queue, so two overlapping saves cannot undo each other. The panel adds
   and removes one rule at a time (`/watch/rules/add`, `/watch/rules/remove`),
@@ -442,16 +447,25 @@ A rule is stored data, checked deterministically on every tick:
   *is on/off*, *switches on*, *runs*, *starts*, *stops*, *is not …*,
   *changes to …*, *becomes …*; and, with no target state, *changes*,
   *switches*, *toggles*.
-- Units: °C, °F, K, V, A, W, kW, %, kn, m/s, rpm, Hz, hPa, mbar, kPa, bar, psi,
-  Pa, m, ft, nm, L, L/h (spelled out too: *degrees celsius*, *volts*,
-  *knots*). A number without a unit is read in the unit the panel shows for
-  that path ("above 95" on a coolant temperature is 95 °C). A unit it does not
-  know ("below 30 cm") is refused, not read as no unit, and so are words left
-  over after the comparison ("above 95 °C on the port side").
-- Duration: *for 30 s / 2 minutes / 1 hour*.
+- Units: °C, °F, K, V, A, W, kW, %, kn, m/s, rpm, Hz, hPa, mb, mbar, kPa,
+  bar, psi, Pa, m, ft, nm, L, L/h (spelled out too: *degrees celsius*,
+  *°celsius*, *volts*, *knots*; `º` for `°`). A number without a unit is read
+  in the unit the panel shows for that path ("above 95" on a coolant
+  temperature is 95 °C). A unit it does not know ("below 30 cm") is refused,
+  not read as no unit, and so are words left over after the comparison
+  ("above 95 °C during the storm"). Words that start with *on, in, at, of,
+  for* or *from* are read as part of the subject ("below 12 V on the house
+  bank"), and kept only if the path picked answers to every one of them
+  (apart from *bank, side, unit, system, circuit, sensor*): "above 95 °C at
+  anchor" or "on the port side" of a boat with one engine is refused, not
+  stored as a watch that ignores them. Urgency words, *now, again, then,
+  send a notification* and the like are fine after the comparison.
+- Duration: *for 30 s / 2 minutes / 1 hour*, optionally *or more*,
+  *straight*, *in a row*, *continuously*.
 - Urgency: *alarm, alert, urgent, critical, emergency, immediately* →
   `alert`.
-- Conditions: *while, whilst, only when, only if, as long as, when, if*.
+- Conditions: *while, whilst, only when, only if, but only if/when/while, as
+  long as, when, if*.
 - Paths: chosen from what this vessel publishes. The request's words are
   matched against path segments and display names, with everyday synonyms
   (*coolant, fridge, house battery, barometer, rpm, cabin, sea, shore, bilge*).
