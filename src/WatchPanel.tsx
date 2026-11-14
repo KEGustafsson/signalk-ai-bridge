@@ -284,11 +284,17 @@ export default function WatchPanel(props: WatchPanelProps) {
       setNotice(null);
       try {
         const result = await post(route, body);
-        // A remove that finds nothing - a quick second click, or another
-        // panel got there first - has the outcome the operator wanted.
-        const alreadyGone = route === '/watch/rules/remove' && result.status === 404;
+        // A remove that finds nothing - a quick second click, another panel
+        // got there first, or an id that is no longer the watch's. Which one
+        // is not known here, so the notice says only what is: the list is
+        // read again below, and shows whether the watch is still there.
+        const notStored = route === '/watch/rules/remove' && result.status === 404;
         setNotice(
-          result.ok ? done : alreadyGone ? 'That watch was already removed.' : errorText(result.status, result.body, 'Could not save the watch rules.')
+          result.ok
+            ? done
+            : notStored
+              ? 'No watch is stored under that id any more; the list has been read again.'
+              : errorText(result.status, result.body, 'Could not save the watch rules.')
         );
         // Only the draft that was added is cleared, text and read-back
         // together - not when the editor changed or a new read-back started

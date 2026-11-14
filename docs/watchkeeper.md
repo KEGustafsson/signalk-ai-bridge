@@ -99,9 +99,11 @@ standard Signal K path or a plugin's own.
     unless its name is a state code's - a whole `state` or `mode`, or a
     name ending in `State`, `Mode`, `Status`, `Type`, `Code`, `Phase`,
     `Fault`, `Error`, `Alarm`, `Name`, `Source`, `Reference`, `Method` or
-    `Label`, after a letter or digit (`relay1State`, `inverterACMode`) - but
-    not `…InState`, `…SinceError`, `…InAlarm` and the like, which count time
-    or pulses - which keeps its new-state check.
+    `Label`, after a letter or digit (`relay1State`, `inverterACMode`,
+    `engineInAlarm`) - which keeps its new-state check. A time or count of a
+    state is not a state code: `timeInState`, `secondsSinceLastError`,
+    `pulsesInCurrentMode` (a word such as time, seconds, hours, duration,
+    pulses or count, then `In` or `Since`) are counters.
   - Any other number is a counter if, over at least 30 samples, it has never
     fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
     `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
@@ -118,8 +120,14 @@ standard Signal K path or a plugin's own.
   does to a path changes (not merely the pattern's wording), its kind is
   decided again from new samples. The states it has seen stay known, and
   for the learning period a state seen for the first time is learned
-  without a finding; its baseline and every other check (shift, frozen,
-  dropout) carry on unchanged.
+  without a finding; its baseline and the shift, frozen and dropout checks
+  carry on unchanged. A path that turns out discrete learns quietly for a
+  learning period again from the moment its kind is known (a path that
+  changes once in ten minutes needs hours of samples to decide), and its
+  switching rate is learned from then too: until it has six hours of
+  switching history, it is not reported as cycling. A measurement (by its
+  name or units) that was continuous stays continuous rather than being
+  decided again, so a reading in whole numbers does not turn discrete.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every

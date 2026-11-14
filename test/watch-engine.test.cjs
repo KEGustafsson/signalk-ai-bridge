@@ -953,6 +953,63 @@ describe('watch engine: review follow-ups', () => {
     assert.ok(detectors(restarted).includes('shift:plugins.ex.coolantTemperature'), detectors(restarted).join(', '));
   });
 
+  it('keeps a whole-number measurement continuous when its listing changes', () => {
+    const path = 'plugins.ex.coolantTemperature';
+    const wobble = (now) => [[path, 350 + (Math.floor(now / 30000) % 2)]];
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 90 * MINUTE, 10 * SECOND, wobble);
+    const delisted = newEngine();
+    delisted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    t = run(delisted, t, t + 5 * MINUTE, 10 * SECOND, wobble);
+    assert.equal(delisted.exportState(t).paths.find((item) => item.path === path).kind, 'continuous');
+    const opened = new Set();
+    for (let end = t + 5 * MINUTE; t < end; ) {
+      t = run(delisted, t, t + 30 * SECOND, 10 * SECOND, () => [[path, 365]]);
+      for (const name of detectors(delisted)) opened.add(name);
+    }
+    assert.ok(opened.has(`shift:${path}`), [...opened].join(', '));
+  });
+
+  it('learns switching again, and quietly from when its kind is known, after a path is decided again', () => {
+    const everything = (engine) => [
+      ...engine.status().incidents.flatMap((incident) => incident.findings.map((finding) => `${finding.detector}:${finding.path}`)),
+      ...(engine.exportState(T0).findingLog || []).map((entry) => `${entry.detector}:${entry.path}`)
+    ];
+    // Toggling every two minutes for six hours, forced continuous by a pattern.
+    const pump = 'plugins.ex.pump';
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    const toggle = (now) => [[pump, (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 0 : 1]];
+    let t = run(engine, T0, T0 + 6 * 60 * MINUTE, 10 * SECOND, toggle);
+    const delisted = newEngine();
+    delisted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    t = run(delisted, t, t + 3 * 60 * MINUTE, 10 * SECOND, toggle);
+    assert.equal(delisted.exportState(t).paths.find((item) => item.path === pump).kind, 'discrete');
+    assert.deepEqual(everything(delisted).filter((name) => name.endsWith(pump)), [], 'its usual switching is not cycling');
+
+    // A path that publishes only when it changes, every ten minutes: its kind
+    // is known hours after the restart, and its two states are not new then.
+    const slow = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    t = run(slow, T0, T0 + 120 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.valve', Math.floor((now - T0) / (4 * MINUTE)) % 2]]);
+    const freed = newEngine();
+    freed.importState(JSON.parse(JSON.stringify(slow.exportState(t))), t);
+    let value = 0;
+    t = run(freed, t, t + 300 * MINUTE, 10 * MINUTE, () => [['plugins.ex.valve', (value ^= 1)]]);
+    assert.equal(freed.exportState(t).paths.find((item) => item.path === 'plugins.ex.valve').kind, 'discrete');
+    assert.deepEqual(everything(freed).filter((name) => name.endsWith('plugins.ex.valve')), []);
+    // ...but a third state, after the quiet period, is.
+    t = run(freed, t, t + 60 * MINUTE, 10 * MINUTE, () => [['plugins.ex.valve', (value ^= 1)]]);
+    t = run(freed, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.valve', 2]]);
+    assert.ok(detectors(freed).includes('newState:plugins.ex.valve'), detectors(freed).join(', '));
+  });
+
+  it('keeps the new-state check of an alarm or fault flag under a pattern', () => {
+    const path = 'plugins.ex.engineInAlarm';
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 60 * MINUTE, 10 * SECOND, () => [[path, 0]]);
+    t = run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, 1]]);
+    assert.ok(detectors(engine).includes(`newState:${path}`), detectors(engine).join(', '));
+  });
+
   it('reads state names with digits or capitals, and counts time in an alarm', () => {
     const listed = (path) => {
       const state = monitor.createPathState(path, T0);
@@ -962,7 +1019,10 @@ describe('watch engine: review follow-ups', () => {
     for (const path of ['plugins.ex.relay1State', 'plugins.ex.inverterACMode', 'plugins.ex.DCState', 'plugins.ex.gpsSource', 'plugins.ex.fixMethod']) {
       assert.equal(listed(path), false, `${path} is a state code`);
     }
-    for (const path of ['plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault']) {
+    for (const path of ['plugins.ex.engineInAlarm', 'plugins.ex.batteryInFault', 'plugins.ex.systemInError', 'plugins.ex.isInAlarm']) {
+      assert.equal(listed(path), false, `${path} is a flag`);
+    }
+    for (const path of ['plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault', 'plugins.ex.secondsSinceLastError', 'plugins.ex.timeInCurrentState', 'plugins.ex.pulsesInState']) {
       assert.equal(listed(path), true, `${path} is a count`);
     }
   });

@@ -228,9 +228,18 @@ this project uses [semantic versioning](https://semver.org/).
     `…Name`/`…Source`/`…Reference`/`…Method`/`…Label` are state codes, and
     `…InAlarm`/`…SinceError` are counts; what a listing did is saved, so
     paths forced by the previous rule are decided again once; a remove that
-    a restart interrupts still answers 200. Upgrade note:
-    the derived id of a stored rule that had none changes once (it now
-    covers duration and source); reload the panel if a remove answers 404.
+    a restart interrupts still answers 200. And from the review of that:
+    only a time or count of a state (`timeInState`, `secondsSinceLastError`)
+    is a count, so flags such as `engineInAlarm` keep their new-state check;
+    a path decided again that turns out discrete learns its switching rate
+    afresh (no false `cycling`) and learns quietly from when its kind is
+    known, not from the restart; a measurement that was continuous stays
+    continuous when its listing changes, so whole-number readings are still
+    judged for shifts; the panel says a remove found no watch under that id
+    (and reads the list again) instead of claiming it was already removed.
+    Upgrade note: the derived id of a stored rule that had none changes once
+    (it now covers duration and source); a panel left open across the
+    upgrade may find no watch under an old id - the list is read again.
   - CodeRabbit full review: watch rules. A `changes` rule sees a value that
     went on and back off between two ticks (changes are counted as the data
     arrives), and one with a duration of 10 minutes or more can fire (the

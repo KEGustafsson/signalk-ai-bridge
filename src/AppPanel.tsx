@@ -598,11 +598,13 @@ export default function AppPanel(props: AppPanelProps) {
           const current = listVersionRef.current;
           const newerShown = order < statusOrderRef.applied;
           statusOrderRef.applied = Math.max(statusOrderRef.applied, order);
+          latestStatusRef.current = statusKeepingNewerLists(latestStatusRef.current, payload, requestedAt, current, newerShown);
           setBackendStatus((previous) => statusKeepingNewerLists(previous, payload, requestedAt, current, newerShown));
         }
       })
       .catch(() => {
         if (isActive) {
+          latestStatusRef.current = null;
           setBackendStatus(null);
         }
       });
@@ -678,7 +680,9 @@ export default function AppPanel(props: AppPanelProps) {
   // had recorded when the panel loaded.
   const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
   const historyPaths = backendStatus?.history?.paths ?? [];
-  latestStatusRef.current = backendStatus;
+  // latestStatusRef is kept beside every setBackendStatus call rather than
+  // copied here: a render can run before a pending status update is applied,
+  // and copying then would put the older status back.
 
   const onBrowseHistoryPaths = React.useCallback(async () => {
     const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
