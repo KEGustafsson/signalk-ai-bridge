@@ -889,6 +889,18 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** GET /watch/unusual: the paths furthest from their own normal right now, alarming or not. */
+  const watchUnusualHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.unusual());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
   const rejectUnlessWriter = (req, res, action) => {
     if (isSelectionWriteAllowed(req)) {
       return false;
@@ -1027,6 +1039,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/watch/status', watchStatusHandler);
       router.get('/watch/series', watchSeriesHandler);
       router.get('/watch/inventory', watchInventoryHandler);
+      router.get('/watch/unusual', watchUnusualHandler);
       router.post('/watch/mute', watchMuteHandler(false));
       router.post('/watch/unmute', watchMuteHandler(true));
       router.post('/watch/replay', watchReplayHandler);

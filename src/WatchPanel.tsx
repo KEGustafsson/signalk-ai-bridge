@@ -1,13 +1,14 @@
 import React from 'react';
 import {
   buildIncidentQuestion,
+  buildUnusualQuestion,
   describeDetectorCounts,
   describeInventoryRow,
   formatAgo,
   formatClockTime,
   sparklinePoints
 } from './watchText.js';
-import type { WatchIncident, WatchInventory, WatchReplayResult, WatchStatus } from './watchText.js';
+import type { WatchIncident, WatchInventory, WatchReplayResult, WatchStatus, WatchUnusualRow } from './watchText.js';
 
 interface WatchPanelProps {
   readonly fetchImpl?: typeof fetch;
@@ -74,6 +75,7 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [now, setNow] = React.useState<number>(Date.now());
   const [inventory, setInventory] = React.useState<WatchInventory | 'loading' | { error: string } | null>(null);
   const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
+  const [unusual, setUnusual] = React.useState<readonly WatchUnusualRow[] | 'loading' | { error: string } | null>(null);
 
   const fetchImpl = props.fetchImpl ?? globalThis.fetch;
   const statusUrl = props.endpoint('/watch/status');
@@ -177,6 +179,22 @@ export default function WatchPanel(props: WatchPanelProps) {
       setInventory({ error: error instanceof Error ? error.message : 'Could not read the inventory.' });
     }
   }, [fetchImpl, inventory, props.endpoint]);
+
+  const onUnusual = React.useCallback(async () => {
+    if (unusual && unusual !== 'loading') {
+      setUnusual(null);
+      return;
+    }
+    if (typeof fetchImpl !== 'function') return;
+    setUnusual('loading');
+    try {
+      const response = await fetchImpl(props.endpoint('/watch/unusual'), { method: 'GET', credentials: 'include' });
+      const { ok, status: code, body } = await readJson(response);
+      setUnusual(ok ? ((body as { rows?: readonly WatchUnusualRow[] }).rows ?? []) : { error: errorText(code, body, 'Could not rank paths.') });
+    } catch (error) {
+      setUnusual({ error: error instanceof Error ? error.message : 'Could not rank paths.' });
+    }
+  }, [fetchImpl, props.endpoint, unusual]);
 
   const onTrend = React.useCallback(
     async (path: string) => {
@@ -368,6 +386,9 @@ export default function WatchPanel(props: WatchPanelProps) {
             <button type="button" style={buttonStyle} onClick={() => setShowResolved((value) => !value)}>
               {showResolved ? 'Hide' : 'Show'} recent incidents ({resolvedIncidents.length})
             </button>
+            <button type="button" style={buttonStyle} onClick={onUnusual}>
+              {unusual && unusual !== 'loading' ? 'Hide' : 'Most unusual now'}
+            </button>
             <button type="button" style={buttonStyle} onClick={onInventory}>
               {inventory && inventory !== 'loading' ? 'Hide' : 'What is watched?'}
             </button>
@@ -377,6 +398,40 @@ export default function WatchPanel(props: WatchPanelProps) {
           </div>
           {notice ? <p style={{ margin: '0.4rem 0 0 0', color: '#475569' }}>{notice}</p> : null}
 
+          {unusual === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Ranking…</p> : null}
+          {unusual && unusual !== 'loading' && 'error' in unusual ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{unusual.error}</p>
+          ) : null}
+          {Array.isArray(unusual) ? (
+            <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#ffffff', border: '1px solid #e2e8f0' }}>
+              {unusual.length === 0 ? (
+                <p style={{ margin: 0 }}>Everything is within its usual range for the current operating state.</p>
+              ) : (
+                <>
+                  <p style={{ margin: 0, color: '#475569' }}>
+                    Furthest from their own normal right now, whether or not anything crossed a threshold:
+                  </p>
+                  <ol style={{ margin: '0.4rem 0 0 0', paddingLeft: '1.2rem' }}>
+                    {unusual.map((row) => (
+                      <li key={row.path}>
+                        <span style={{ fontWeight: 600 }}>{row.title}</span>
+                        <br />
+                        <span style={{ overflowWrap: 'anywhere' }}>{row.message}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  <button
+                    type="button"
+                    style={{ ...buttonStyle, marginTop: '0.4rem' }}
+                    disabled={!props.canAskAi}
+                    onClick={() => props.onAskAboutIncident(buildUnusualQuestion(unusual))}
+                  >
+                    Ask AI about these
+                  </button>
+                </>
+              )}
+            </div>
+          ) : null}
           {inventory === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Reading the inventory…</p> : null}
           {inventory && inventory !== 'loading' && 'error' in inventory ? (
             <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{inventory.error}</p>

@@ -756,7 +756,12 @@ boat with no speed log. The same data is at `GET /watch/inventory`.
 - **Operating-state changes.** When an engine starts or stops, a charger changes
   mode or `navigation.state` changes, the affected paths re-learn for a settling
   period instead of alerting about the temperatures and voltages that change as
-  a result.
+  a result. Each path also keeps a separate baseline per operating state. When
+  the engine starts again, the baseline it learned while running last time is
+  restored once the start-up settles, so an engine that settles 10 °C hotter
+  than it usually runs is reported rather than quietly re-learned as normal.
+  Resting states (stopped, off, standby) re-learn instead, because a cooling
+  engine is not at a steady state.
 - **Paths that change by their nature**: heading, course, speed, attitude, wind,
   depth, steering, performance and similar, plus counters such as engine hours.
   The GNSS check still reads position, heading and speed through water. Add your
@@ -772,6 +777,15 @@ boat with no speed log. The same data is at `GET /watch/inventory`.
   Freeboard, WilhelmSK — shows them with no extra setup.
 - The **Watchkeeper** card at the top of the panel: active incidents, a trend
   line for each finding, **Mute 1 h** for a path, and recent incidents.
+
+### Most unusual right now
+
+**Most unusual now** ranks every path by how far it sits from its own normal
+for the current operating state, whether or not anything crossed a threshold,
+along with discrete paths in a state they are rarely in. It is the check for
+"something feels off". **Ask AI about these** turns the list into a question
+for the model, which you read and send yourself. The same data is at
+`GET /watch/unusual`.
 
 ### Tuning with replay
 

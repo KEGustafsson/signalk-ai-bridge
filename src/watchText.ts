@@ -120,6 +120,27 @@ export function describeInventoryRow(row: WatchInventoryRow): string {
   return parts.join(' · ');
 }
 
+export interface WatchUnusualRow {
+  readonly path: string;
+  readonly score: number;
+  readonly title: string;
+  readonly message: string;
+}
+
+/**
+ * "Something feels off": the most unusual paths as a question for the model.
+ * Same contract as the incident question - measured values, operator sends.
+ */
+export function buildUnusualQuestion(rows: readonly WatchUnusualRow[]): string {
+  const lines = rows.slice(0, 8).map((row) => `- ${row.title}: ${row.message}`);
+  return [
+    'Nothing has raised an alarm, but the onboard watch (statistical, not AI) ranks these as the furthest from ' +
+      'their own normal right now, most unusual first. The values were measured.',
+    ...lines,
+    'Do these fit together into anything worth checking? If they look like ordinary variation, say so.'
+  ].join('\n');
+}
+
 export interface WatchReplayResult {
   readonly ok: boolean;
   readonly message?: string;

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncidentQuestion, describeDetectorCounts, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
+import { buildIncidentQuestion, buildUnusualQuestion, describeDetectorCounts, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -97,5 +97,15 @@ describe('describeInventoryRow', () => {
       describeInventoryRow({ path: 'environment.wind.speedApparent', role: 'skipped', excludedBy: 'environment.wind' }),
       'skipped (environment.wind)'
     );
+  });
+});
+
+describe('buildUnusualQuestion', () => {
+  it('lists the most unusual paths and invites "ordinary variation" as an answer', () => {
+    const question = buildUnusualQuestion([
+      { path: 'a', score: 3.1, title: 'House battery voltage somewhat low', message: '13.03 V, −0.17 V from its usual 13.20 V' }
+    ]);
+    assert.match(question, /House battery voltage somewhat low: 13\.03 V/);
+    assert.match(question, /ordinary variation, say so\.$/);
   });
 });

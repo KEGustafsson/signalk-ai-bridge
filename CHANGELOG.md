@@ -41,6 +41,20 @@ this project uses [semantic versioning](https://semver.org/).
   path discovered and what the watch does with each: watched, learning, or
   skipped and by which rule. They also show which checks this vessel's data
   supports, and what a missing check would need.
+- **A baseline per operating state.** Each path keeps the baseline it learned
+  in each operating state: engine running or stopped, charger mode,
+  `navigation.state`. Once a transition settles, the path is judged against
+  what it normally does in that state. Before, every engine start re-learned
+  from the warm-up, so an engine that settled 10 °C hotter than usual became
+  the new normal without a word. Resting states re-learn instead, because a
+  cooling engine is not at a steady state.
+- **"Most unusual now".** `GET /watch/unusual` and a panel button rank every
+  path by its distance from its own normal for the current operating state,
+  below any threshold included, plus discrete paths in rarely seen states.
+  The list can be put to the model as a question.
+- **Fewer false "stuck sensor" findings.** A value of exactly zero (an engine
+  at 0 rpm) is a machine that is off, and a path re-learning after an
+  operating change is expected to behave differently.
 - **Redundant sources are compared instead of mixed.** When several sources
   publish one path, only the primary one feeds the baseline. Interleaving two
   sensors with a calibration offset made them look like noise, or like a step

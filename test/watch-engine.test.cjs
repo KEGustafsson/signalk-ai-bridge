@@ -474,3 +474,52 @@ describe('watch engine: discovery and redundant sources', () => {
     );
   });
 });
+
+describe('watch engine: operating states', () => {
+  it('judges a restarted engine against how it normally runs, not against its warm-up', () => {
+    const engine = newEngine();
+    const rand = noise(41);
+    const temp = 'propulsion.main.temperature';
+    const running = (value) => () => [
+      ['propulsion.main.revolutions', 30 + 0.2 * rand()],
+      [temp, value + 0.2 * rand()]
+    ];
+    const stopped = (value) => () => [
+      ['propulsion.main.revolutions', 0],
+      [temp, value + 0.2 * rand()]
+    ];
+    // Learn the stopped engine, then a running engine at 80 °C, then stop again.
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, stopped(290));
+    t = run(engine, t, t + 40 * MINUTE, SECOND, running(353));
+    t = run(engine, t, t + 30 * MINUTE, SECOND, stopped(300));
+    assert.deepEqual(detectors(engine), []);
+    // Restart: it settles 10 °C hotter than it normally runs.
+    t = run(engine, t, t + 18 * MINUTE, SECOND, running(363));
+    const change = engine.status().regimeChanges[0];
+    assert.equal(change.label, 'Engine main running');
+    assert.ok(change.restored >= 1, 'the running baseline should be restored');
+    const shift = engine.status().activeFindings.find((finding) => finding.path === temp);
+    assert.ok(shift, 'expected the hot restart to be reported once it settled');
+    assert.match(shift.message, /usual (?:79\.9|80\.\d) °C/);
+  });
+
+  it('ranks what is most unusual right now, below any alarm threshold', () => {
+    const engine = newEngine();
+    const rand = noise(43);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [
+      ['environment.inside.temperature', 293 + 0.5 * rand()],
+      ['electrical.batteries.house.voltage', 13.2 + 0.05 * rand()],
+      ['tanks.fuel.0.currentLevel', 0.5]
+    ]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [
+      ['environment.inside.temperature', 293 + 0.5 * rand()],
+      // Below the warn threshold, but the most unusual thing aboard.
+      ['electrical.batteries.house.voltage', 13.2 - 0.17 + 0.05 * rand()],
+      ['tanks.fuel.0.currentLevel', 0.5]
+    ]);
+    assert.deepEqual(detectors(engine), []);
+    const { rows } = engine.unusual(t);
+    assert.equal(rows[0].path, 'electrical.batteries.house.voltage');
+    assert.match(rows[0].title, /House battery voltage somewhat low/);
+  });
+});
