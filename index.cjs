@@ -423,6 +423,10 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return 400;
       case 'unauthorized':
         return 401;
+      // The request was valid but the stored state it refers to has moved on
+      // (a path another save removed, a list that is not stored at all).
+      case 'conflict':
+        return 409;
       case 'disabled':
         return 503;
       case 'timeout':
@@ -597,16 +601,22 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * Read-modify-save the plugin's options, one at a time. `change` gets the
    * options as they are once every earlier save has finished and returns the
    * new options; they are stored, then applied to the running plugin.
+   * Returning the options it was given unchanged (the same object) means
+   * "nothing to change": nothing is written, so a no-op neither rewrites the
+   * stored settings nor fails on a host that cannot store them.
    */
   const updatePluginOptions = (change) => {
     const run = optionsWriteQueue.then(async () => {
+      const updated = change(pluginOptions);
+      if (updated === pluginOptions) {
+        return updated;
+      }
       if (typeof app.savePluginOptions !== 'function') {
         const error = new Error('This Signal K server does not let plugins store their own settings.');
         error.code = 'unknown';
         error.statusCode = 501;
         throw error;
       }
-      const updated = change(pluginOptions);
       await new Promise((resolve, reject) => {
         app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
       });
@@ -686,11 +696,61 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
+   * Move one entry of a stored path list by one place, in the raw stored list.
+   *
+   * `normalizeOne` gives an entry's normalised form (or '' for an entry the
+   * normalised list drops), and `limit` how many distinct entries the
+   * normalised list keeps. The list the panel shows - first occurrences of
+   * each normalised form, up to `limit` - is mapped back to the raw entries
+   * that produced it, and the move swaps the two raw entries for `path` and
+   * its neighbour in that shown order. Everything else stored (wildcards the
+   * history list ignores, blanks, repeats, entries past the cap, spacing)
+   * stays where and as it was, so a move changes the order and nothing else.
+   *
+   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved', list }.
+   */
+  const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
+    const stored = Array.isArray(raw) ? raw : [];
+    const shown = [];
+    const seen = new Set();
+    for (let index = 0; index < stored.length && shown.length < limit; index += 1) {
+      const key = normalizeOne(stored[index]);
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        shown.push({ key, index });
+      }
+    }
+    if (shown.length === 0) {
+      return { outcome: 'no-stored-list' };
+    }
+    const position = shown.findIndex((entry) => entry.key === path);
+    if (position < 0) {
+      return { outcome: 'not-found' };
+    }
+    const target = position + delta;
+    if (target < 0 || target >= shown.length) {
+      return { outcome: 'unchanged' };
+    }
+    const list = [...stored];
+    const from = shown[position].index;
+    const to = shown[target].index;
+    [list[from], list[to]] = [list[to], list[from]];
+    return { outcome: 'moved', list };
+  };
+
+  /** One live entry as the shown list has it: trimmed, '' when blank. */
+  const normalizeLiveEntry = (item) => String(item || '').trim();
+  /** One history entry as the shown list has it: its spec, '' when dropped (blank, wildcard). */
+  const normalizeHistoryEntry = (item) => normalizeHistoryConfig({ historyPaths: [item] }).historyPaths[0] || '';
+
+  /**
    * POST /paths/move { kind: 'live' | 'history', path, delta }: move one path
    * in the stored selection, applied to the selection as stored when its turn
    * in the options-write queue comes - not to a list the panel read earlier,
    * which another save, another browser or a quick second click may have made
-   * stale. Returns both selections as they now are.
+   * stale. Every answer that gets this far (moved, already at the end, or a
+   * 409 conflict) carries both selections as they now are, so the panel can
+   * show the stored list whether or not the move happened.
    */
   const movePathHandler = async (req, res) => {
     if (rejectIfStopped(res)) {
@@ -706,56 +766,43 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const body = await readJsonBody(req);
       const kind = body && body.kind;
       const path = body && typeof body.path === 'string' ? body.path : '';
-      const delta = Number(body && body.delta);
+      // The number itself: `true`, "1" and [1] all coerce to 1 and are not a move.
+      const delta = body ? body.delta : undefined;
       if ((kind !== 'live' && kind !== 'history') || !path || (delta !== -1 && delta !== 1)) {
         res.status(400).json({
           error: { code: 'validation-failed', message: 'Send kind ("live" or "history"), path, and delta (-1 or 1).' }
         });
         return;
       }
-      let outcome = 'moved';
+      let outcome = 'unchanged';
       await updatePluginOptions((current) => {
         const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
-        // The list as the panel shows it: the live list deduplicated, the
-        // history list as normalised specs (wildcards and extras dropped).
-        const list = kind === 'live' ? normalizeServerConfig(current).aiDataPaths : normalizeHistoryConfig(current).historyPaths;
-        if (list.length === 0) {
-          // History reusing the live paths, or the default live selection:
-          // there is no stored list to reorder.
-          outcome = 'no-stored-list';
-          return current;
-        }
-        const index = list.indexOf(path);
-        if (index < 0) {
-          outcome = 'not-found';
-          return current;
-        }
-        const target = index + delta;
-        if (target < 0 || target >= list.length) {
-          return current;
-        }
-        const next = [...list];
-        next.splice(index, 1);
-        next.splice(target, 0, path);
-        return { ...current, [key]: next };
+        const result =
+          kind === 'live'
+            ? moveInStoredList(current.aiDataPaths, normalizeLiveEntry, Number.POSITIVE_INFINITY, path, delta)
+            : moveInStoredList(current.historyPaths, normalizeHistoryEntry, MAX_HISTORY_PATHS, path, delta);
+        // History reusing the live paths, or the default live selection, has
+        // no stored list to reorder (and reordering would freeze it into one).
+        outcome = result.outcome;
+        // The same object back when nothing moves, so nothing is written.
+        return result.outcome === 'moved' ? { ...current, [key]: result.list } : current;
       });
-      if (outcome !== 'moved') {
+      const config = getConfig();
+      const lists = { aiDataPaths: config.aiDataPaths, history: describeHistory(config) };
+      if (outcome === 'no-stored-list' || outcome === 'not-found') {
         res.status(409).json({
           error: {
-            code: 'validation-failed',
+            code: 'conflict',
             message:
               outcome === 'not-found'
                 ? `${path} is no longer in the saved selection; the list has been refreshed.`
                 : 'There is no saved list to reorder: save a selection from the picker first.'
-          }
+          },
+          ...lists
         });
         return;
       }
-      const config = getConfig();
-      res.status(200).json({
-        aiDataPaths: config.aiDataPaths,
-        history: describeHistory(config)
-      });
+      res.status(200).json(lists);
     } catch (error) {
       sendError(res, error, 500, 'Could not move the path.');
     }

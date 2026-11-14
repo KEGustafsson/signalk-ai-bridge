@@ -46,3 +46,51 @@ export function withUnlistedSelection(
 
   return [...new Set([...kept, ...added])];
 }
+
+/** The two stored path lists, as the status route and the move route carry them. */
+export interface SelectionLists<H> {
+  readonly aiDataPaths?: readonly string[];
+  readonly history?: H;
+}
+
+/**
+ * Put the lists a move answered with into the panel's status.
+ *
+ * Used for a 409 as well as a success: the server answers a stale move (a
+ * path another save removed, a list that is not stored) with the lists as
+ * they now are, and patching from them is what makes the stale entry go away.
+ * A list the reply did not carry is kept as it was.
+ */
+export function withSelectionLists<H, S extends SelectionLists<H>>(previous: S | null, lists: SelectionLists<H>): S | null {
+  if (!previous) {
+    return previous;
+  }
+  return {
+    ...previous,
+    aiDataPaths: lists.aiDataPaths ?? previous.aiDataPaths,
+    history: lists.history ?? previous.history
+  };
+}
+
+/**
+ * Apply a status reply without letting it put back an older order.
+ *
+ * `requestedAt` is the panel's list version when the status read was sent;
+ * `current` is the version now. Every time the panel applies a list change
+ * from a write (a move's reply, a picker save's re-read) the version goes up,
+ * so a status read sent before that change may have been answered from the
+ * lists as they were before it - a slow first load landing after a move, say.
+ * Such a reply still updates everything else on the card (backend, model,
+ * accelerator), but the lists stay as the newer change left them.
+ */
+export function statusKeepingNewerLists<H, S extends SelectionLists<H>>(
+  previous: S | null,
+  incoming: S,
+  requestedAt: number,
+  current: number
+): S {
+  if (requestedAt === current || !previous) {
+    return incoming;
+  }
+  return { ...incoming, aiDataPaths: previous.aiDataPaths, history: previous.history };
+}

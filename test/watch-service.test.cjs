@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createWatchService } = require('../lib/watch-service.cjs');
 const createPlugin = require('../index.cjs');
+const { MAX_HISTORY_PATHS } = require('../lib/history-service.cjs');
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -416,7 +417,8 @@ describe('path priority order', () => {
       await routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, moved);
       assert.equal(moved.statusCode, 200);
       assert.deepEqual(moved.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
-      assert.deepEqual(host.saved.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      // Only the order changes: the stored repeat stays where it was.
+      assert.deepEqual(host.saved.aiDataPaths, ['a.one', 'c.three', 'b.two', 'a.one']);
 
       // History reusing the live list has nothing of its own to reorder.
       const derived = recorder();
@@ -427,6 +429,116 @@ describe('path priority order', () => {
       const gone = recorder();
       await routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, gone);
       assert.equal(gone.statusCode, 409);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('moves a history path within the stored list, leaving what the shown list drops untouched', async () => {
+    const host = createHost();
+    host.savePluginOptions = (options, done) => {
+      host.saved = options;
+      done();
+    };
+    const { plugin, routes } = routesFor(host);
+    // Past the cap, so the tail is stored but not shown.
+    const tail = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `tail.p${index}`);
+    const stored = [' b.two ', 'navigation.*', '', 'a.one', 'b.two', 'c.three:average', ...tail];
+    plugin.start({ warmupOnStart: false, historyPaths: stored });
+    try {
+      const moved = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: -1 } }, moved);
+      assert.equal(moved.statusCode, 200);
+      assert.deepEqual(moved.body.history.paths.slice(0, 3), ['a.one', 'b.two', 'c.three:average']);
+      // The two raw entries swap places; the wildcard, the blank, the repeat,
+      // the spacing and the entries past the cap are all still stored as they were.
+      assert.deepEqual(host.saved.historyPaths, ['a.one', 'navigation.*', '', ' b.two ', 'b.two', 'c.three:average', ...tail]);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('writes nothing for a move that changes nothing, even on a host that cannot store settings', async () => {
+    const host = createHost();
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const atEnd = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: 1 } }, atEnd);
+      assert.equal(atEnd.statusCode, 200, 'already last is a no-op, not a 501');
+      assert.deepEqual(atEnd.body.aiDataPaths, ['a.one', 'b.two']);
+
+      const gone = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: -1 } }, gone);
+      assert.equal(gone.statusCode, 409);
+
+      const derived = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: 1 } }, derived);
+      assert.equal(derived.statusCode, 409);
+    } finally {
+      plugin.stop();
+    }
+
+    const counting = createHost();
+    let writes = 0;
+    counting.savePluginOptions = (options, done) => {
+      writes += 1;
+      done();
+    };
+    const second = routesFor(counting);
+    second.plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      await second.routes['POST /paths/move']({ body: { kind: 'live', path: 'a.one', delta: -1 } }, recorder());
+      await second.routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, recorder());
+      await second.routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: 1 } }, recorder());
+      assert.equal(writes, 0, 'no-op moves do not rewrite the stored settings');
+    } finally {
+      second.plugin.stop();
+    }
+  });
+
+  it('answers a stale move with 409 conflict and the lists as stored, so the panel can refresh', async () => {
+    const host = createHost();
+    host.savePluginOptions = (options, done) => done();
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const gone = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, gone);
+      assert.equal(gone.statusCode, 409);
+      assert.equal(gone.body.error.code, 'conflict');
+      assert.deepEqual(gone.body.aiDataPaths, ['a.one', 'b.two']);
+      assert.deepEqual(gone.body.history.paths, ['a.one', 'b.two']);
+      assert.equal(gone.body.history.derived, true);
+
+      const derived = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: 1 } }, derived);
+      assert.equal(derived.statusCode, 409);
+      assert.equal(derived.body.error.code, 'conflict');
+      assert.deepEqual(derived.body.aiDataPaths, ['a.one', 'b.two']);
+      assert.equal(derived.body.history.derived, true);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('takes delta only as the number 1 or -1', async () => {
+    const host = createHost();
+    let writes = 0;
+    host.savePluginOptions = (options, done) => {
+      writes += 1;
+      done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      for (const delta of [true, '1', '-1', [1], 2, 0.5, null]) {
+        const response = recorder();
+        await routes['POST /paths/move']({ body: { kind: 'live', path: 'a.one', delta } }, response);
+        assert.equal(response.statusCode, 400, `delta ${JSON.stringify(delta)} is refused`);
+        assert.equal(response.body.error.code, 'validation-failed');
+      }
+      assert.equal(writes, 0);
     } finally {
       plugin.stop();
     }

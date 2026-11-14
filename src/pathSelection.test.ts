@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { withUnlistedSelection } from './pathSelection.js';
+import { statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 
 describe('withUnlistedSelection', () => {
   it('keeps a configured path the listing could not show', () => {
@@ -79,4 +79,58 @@ describe('selection order', () => {
     assert.deepEqual(picked, ['notifications.*', 'navigation.position', 'electrical.batteries.house.voltage']);
   });
 
+});
+
+describe('applying list replies', () => {
+  interface History {
+    readonly paths: readonly string[];
+    readonly derived: boolean;
+  }
+  interface Status {
+    readonly model: string;
+    readonly aiDataPaths?: readonly string[];
+    readonly history?: History;
+  }
+  const before: Status = {
+    model: 'old-model',
+    aiDataPaths: ['a.one', 'b.two'],
+    history: { paths: ['a.one', 'b.two'], derived: true }
+  };
+
+  it('patches both lists from a move reply, including a 409 that carries them', () => {
+    const patched = withSelectionLists<History, Status>(before, {
+      aiDataPaths: ['b.two', 'a.one'],
+      history: { paths: ['b.two', 'a.one'], derived: true }
+    });
+    assert.deepEqual(patched, {
+      model: 'old-model',
+      aiDataPaths: ['b.two', 'a.one'],
+      history: { paths: ['b.two', 'a.one'], derived: true }
+    });
+  });
+
+  it('keeps a list the reply did not carry, and does nothing before the first status', () => {
+    assert.deepEqual(withSelectionLists<History, Status>(before, { aiDataPaths: ['b.two'] })?.history, before.history);
+    assert.equal(withSelectionLists<History, Status>(null, { aiDataPaths: ['b.two'] }), null);
+  });
+
+  it('applies a status reply whole when no list change landed while it was in flight', () => {
+    const incoming: Status = { model: 'new-model', aiDataPaths: ['c.three'], history: { paths: [], derived: true } };
+    assert.deepEqual(statusKeepingNewerLists<History, Status>(before, incoming, 3, 3), incoming);
+  });
+
+  it('keeps the newer lists when a list change landed after the status read was sent', () => {
+    // A move to ['b.two', 'a.one'] was applied (version 3 -> 4) while a status
+    // read sent at version 3 was still on its way, answered with the old order.
+    const moved = withSelectionLists<History, Status>(before, { aiDataPaths: ['b.two', 'a.one'] }) as Status;
+    const stale: Status = { model: 'new-model', aiDataPaths: ['a.one', 'b.two'], history: before.history };
+    const applied = statusKeepingNewerLists<History, Status>(moved, stale, 3, 4);
+    assert.deepEqual(applied.aiDataPaths, ['b.two', 'a.one'], 'the pre-move order is not put back');
+    assert.equal(applied.model, 'new-model', 'the rest of the status still updates');
+  });
+
+  it('takes a status reply as it is when there was nothing on screen to keep', () => {
+    const incoming: Status = { model: 'new-model', aiDataPaths: ['c.three'] };
+    assert.deepEqual(statusKeepingNewerLists<History, Status>(null, incoming, 0, 1), incoming);
+  });
 });

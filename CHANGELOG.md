@@ -44,11 +44,22 @@ this project uses [semantic versioning](https://semver.org/).
   one, and every save from the picker re-sorted the list. Saving from the
   picker now keeps the stored order and adds newly ticked paths at the end.
   Each move is made on the server (`POST /paths/move`) against the selection
-  as stored, so it cannot overwrite another browser's or an earlier save's
-  change with a stale copy. A history list that reuses the AI selection is
-  not reorderable on its own, so a click cannot freeze it into a fixed list.
+  as stored and sends no list, so a move cannot overwrite another browser's
+  or an earlier save's change with a stale copy. A history list that reuses
+  the AI selection is not reorderable on its own, so a click cannot freeze it
+  into a fixed list.
   History series reach the model in the stored order, not the provider's
-  column order. Repeats in an old stored selection are shown and kept once.
+  column order. Repeats in an old stored selection are shown once.
+- **Review fixes for path moves**: a move swaps the two entries in the list
+  as stored and leaves the rest alone (it used to rewrite a history list in
+  its normalised form, dropping wildcards, repeats and entries past the cap);
+  a move that changes nothing writes nothing, so it no longer fails with 501
+  on a server that cannot store plugin settings; `delta` must be the number
+  1 or -1; a stale move answers `409` with code `conflict` and the lists as
+  stored, and the card shows them. The panel makes one change to the path
+  lists at a time - Save and the arrows are disabled while a move or a save
+  is in flight, so a save can no longer undo a move - and a status read that
+  was sent before a list change no longer puts the older order back.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each

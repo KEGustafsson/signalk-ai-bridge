@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { withUnlistedSelection } from './pathSelection.js';
+import { statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -116,6 +116,8 @@ interface PathPickerProps {
   readonly setFilter: (value: string) => void;
   readonly notice: string | null;
   readonly saving: boolean;
+  /** Another write to the path lists is in flight: Save would race it. */
+  readonly locked: boolean;
   readonly onBrowse: () => void;
   readonly onSave: () => void;
   readonly idleLabel: string;
@@ -276,8 +278,8 @@ function PathPicker(props: PathPickerProps) {
                 <button
                   type="button"
                   onClick={props.onSave}
-                  disabled={props.saving}
-                  style={{ ...pickerButtonStyle, cursor: props.saving ? 'wait' : 'pointer' }}
+                  disabled={props.saving || props.locked}
+                  style={{ ...pickerButtonStyle, cursor: props.saving || props.locked ? 'wait' : 'pointer' }}
                 >
                   {props.saving ? 'Saving…' : `Save ${pickedCount} selected`}
                 </button>
@@ -505,6 +507,18 @@ export default function AppPanel(props: AppPanelProps) {
   const [livePathFilter, setLivePathFilter] = React.useState('');
   const [liveCopyNotice, setLiveCopyNotice] = React.useState<string | null>(null);
   const [savingSelection, setSavingSelection] = React.useState<'live' | 'history' | null>(null);
+  const [movingKind, setMovingKind] = React.useState<'live' | 'history' | null>(null);
+  // One write to the path lists at a time, across both cards: a picker save
+  // sends a whole list and then re-reads the status, which carries both lists,
+  // so a save beside a move - on either list - could land after the move and
+  // put the old order back. The ref closes the gap before React re-renders the
+  // disabled buttons; the state drives the rendering. (A mutable box held in
+  // state, which keeps the same object across renders, stands in for useRef.)
+  const [listWriteRef] = React.useState<{ current: boolean }>({ current: false });
+  const listWriteBusy = savingSelection !== null || movingKind !== null;
+  // Bumped each time a write's reply puts lists on screen. A status read sent
+  // at an older version (the first load, landing late) keeps today's lists.
+  const [listVersionRef] = React.useState<{ current: number }>({ current: 0 });
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -541,6 +555,7 @@ export default function AppPanel(props: AppPanelProps) {
     }
 
     let isActive = true;
+    const requestedAt = listVersionRef.current;
 
     fetchImpl(getStatusEndpoint(props), {
       method: 'GET',
@@ -555,7 +570,10 @@ export default function AppPanel(props: AppPanelProps) {
       })
       .then((payload) => {
         if (isActive && payload) {
-          setBackendStatus(payload);
+          // Read now, not inside the updater: React may run that later, after
+          // a write's reply has bumped the version again.
+          const current = listVersionRef.current;
+          setBackendStatus((previous) => statusKeepingNewerLists(previous, payload, requestedAt, current));
         }
       })
       .catch(() => {
@@ -719,21 +737,42 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, [props]);
 
+  // A picker save's re-read of the status: the lists it carries are the
+  // newest on screen unless another list change landed since the save began
+  // (the write lock should rule that out; the version check makes sure).
+  const applySavedStatus = React.useCallback((status: BackendStatus | undefined, requestedAt: number) => {
+    if (!status) {
+      return;
+    }
+    // The version is read before the bump below, not inside the updater,
+    // which React may run after it.
+    const current = listVersionRef.current;
+    setBackendStatus((previous) => statusKeepingNewerLists(previous, status, requestedAt, current));
+    listVersionRef.current += 1;
+  }, []);
+
   const onSavePickedLivePaths = React.useCallback(async () => {
     const picked = withUnlistedSelection(
       livePathsState.paths.filter((path) => pickedLivePaths[path]),
       livePathsState.paths,
       backendStatus?.aiDataPaths
     );
+    if (listWriteRef.current) {
+      return;
+    }
+    listWriteRef.current = true;
     setSavingSelection('live');
     setLiveCopyNotice(null);
-    const result = await saveSelection(props, { aiDataPaths: picked });
-    setSavingSelection(null);
-    setLiveCopyNotice(result.message);
-    if (result.status) {
-      setBackendStatus(result.status);
+    const requestedAt = listVersionRef.current;
+    try {
+      const result = await saveSelection(props, { aiDataPaths: picked });
+      setLiveCopyNotice(result.message);
+      applySavedStatus(result.status, requestedAt);
+    } finally {
+      listWriteRef.current = false;
+      setSavingSelection(null);
     }
-  }, [backendStatus, livePathsState, pickedLivePaths, props]);
+  }, [applySavedStatus, backendStatus, livePathsState, pickedLivePaths, props]);
 
   const onSavePickedPaths = React.useCallback(async () => {
     const picked = withUnlistedSelection(
@@ -741,15 +780,22 @@ export default function AppPanel(props: AppPanelProps) {
       historyPathsState.paths,
       backendStatus?.history?.paths
     );
+    if (listWriteRef.current) {
+      return;
+    }
+    listWriteRef.current = true;
     setSavingSelection('history');
     setCopyNotice(null);
-    const result = await saveSelection(props, { historyPaths: picked });
-    setSavingSelection(null);
-    setCopyNotice(result.message);
-    if (result.status) {
-      setBackendStatus(result.status);
+    const requestedAt = listVersionRef.current;
+    try {
+      const result = await saveSelection(props, { historyPaths: picked });
+      setCopyNotice(result.message);
+      applySavedStatus(result.status, requestedAt);
+    } finally {
+      listWriteRef.current = false;
+      setSavingSelection(null);
     }
-  }, [backendStatus, historyPathsState, pickedPaths, props]);
+  }, [applySavedStatus, backendStatus, historyPathsState, pickedPaths, props]);
 
   const watchEndpoint = React.useCallback(
     (route: string) => getPluginEndpoint(props, route),
@@ -772,13 +818,16 @@ export default function AppPanel(props: AppPanelProps) {
   // save, another browser or a quick second click may have made stale. The
   // reply carries both selections as they now are, so the cards follow the
   // server and not a status re-read that might fail or arrive out of order.
-  const [movingKind, setMovingKind] = React.useState<'live' | 'history' | null>(null);
   const onMoveSelected = React.useCallback(
     async (kind: 'live' | 'history', path: string, delta: number) => {
       const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
       if (typeof fetchImpl !== 'function') {
         return;
       }
+      if (listWriteRef.current) {
+        return;
+      }
+      listWriteRef.current = true;
       const setNotice = kind === 'live' ? setLiveCopyNotice : setCopyNotice;
       setNotice(null);
       setMovingKind(kind);
@@ -794,18 +843,20 @@ export default function AppPanel(props: AppPanelProps) {
           history?: AiHistoryStatus;
           error?: { message?: string };
         };
+        // A 409 (the path is gone, or the list is not stored) carries the
+        // lists as stored too, so the stale entry leaves the card.
+        if (payload.aiDataPaths !== undefined || payload.history !== undefined) {
+          const lists = { aiDataPaths: payload.aiDataPaths, history: payload.history };
+          setBackendStatus((previous) => withSelectionLists(previous, lists));
+          listVersionRef.current += 1;
+        }
         if (!response.ok) {
           setNotice(payload.error?.message ?? (response.status === 401 ? 'Saving needs a Signal K login with write access.' : 'Could not move the path.'));
-          return;
         }
-        setBackendStatus((previous) =>
-          previous
-            ? { ...previous, aiDataPaths: payload.aiDataPaths ?? previous.aiDataPaths, history: payload.history ?? previous.history }
-            : previous
-        );
       } catch (error) {
         setNotice(error instanceof Error ? error.message : 'Could not move the path.');
       } finally {
+        listWriteRef.current = false;
         setMovingKind(null);
       }
     },
@@ -822,7 +873,7 @@ export default function AppPanel(props: AppPanelProps) {
               type="button"
               aria-label={`Move ${path} up`}
               title="Move up: earlier paths are kept first when the context window is full"
-              disabled={index === 0 || movingKind !== null || savingSelection === kind}
+              disabled={index === 0 || listWriteBusy}
               onClick={() => onMoveSelected(kind, path, -1)}
               style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
             >
@@ -832,7 +883,7 @@ export default function AppPanel(props: AppPanelProps) {
               type="button"
               aria-label={`Move ${path} down`}
               title="Move down"
-              disabled={index === paths.length - 1 || movingKind !== null || savingSelection === kind}
+              disabled={index === paths.length - 1 || listWriteBusy}
               onClick={() => onMoveSelected(kind, path, 1)}
               style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
             >
@@ -986,6 +1037,7 @@ export default function AppPanel(props: AppPanelProps) {
             setFilter={setLivePathFilter}
             notice={liveCopyNotice}
             saving={savingSelection === 'live'}
+            locked={listWriteBusy}
             onBrowse={onBrowseLivePaths}
             onSave={onSavePickedLivePaths}
             idleLabel="Browse available paths"
@@ -1073,6 +1125,7 @@ export default function AppPanel(props: AppPanelProps) {
             setFilter={setPathFilter}
             notice={copyNotice}
             saving={savingSelection === 'history'}
+            locked={listWriteBusy}
             onBrowse={onBrowseHistoryPaths}
             onSave={onSavePickedPaths}
             idleLabel="Browse recorded paths"
