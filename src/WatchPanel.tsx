@@ -279,31 +279,34 @@ export default function WatchPanel(props: WatchPanelProps) {
       route: '/watch/rules/add' | '/watch/rules/remove',
       body: unknown,
       done: string,
-      submitted?: { readonly text: string; readonly compiled: WatchRuleCompileResult }
+      submitted?: { readonly generation: number }
     ) => {
       setNotice(null);
       try {
         const result = await post(route, body);
         setNotice(result.ok ? done : errorText(result.status, result.body, 'Could not save the watch rules.'));
-        // Only the draft that was added is cleared - not one typed while the
-        // request was pending, and not a draft at all when a stored watch
-        // was removed.
-        if (result.ok && submitted) {
-          setCompiled((current) => (current === submitted.compiled ? null : current));
-          setRuleText((current) => (current === submitted.text ? '' : current));
+        // Only the draft that was added is cleared, text and read-back
+        // together - not when the editor changed or a new read-back started
+        // while the request was pending (each bumps the draft generation),
+        // and not at all when a stored watch was removed.
+        if (result.ok && submitted && submitted.generation === compileGeneration.current) {
+          setCompiled(null);
+          setRuleText('');
         }
         setRefresh((value) => value + 1);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : 'Could not save the watch rules.');
       }
     },
-    [post]
+    [compileGeneration, post]
   );
 
   const onAddRule = React.useCallback(async () => {
     if (!compiled || compiled === 'working' || !compiled.ok || !compiled.rule) return;
-    await changeRule('/watch/rules/add', { rule: storedRule(compiled.rule) }, 'Watch added.', { text: ruleText, compiled });
-  }, [changeRule, compiled, ruleText]);
+    await changeRule('/watch/rules/add', { rule: storedRule(compiled.rule) }, 'Watch added.', {
+      generation: compileGeneration.current
+    });
+  }, [changeRule, compileGeneration, compiled]);
 
   const onDeleteRule = React.useCallback(
     async (id: string) => {

@@ -778,6 +778,7 @@ export default function AppPanel(props: AppPanelProps) {
     const current = listVersionRef.current;
     const newerShown = order < statusOrderRef.applied;
     statusOrderRef.applied = Math.max(statusOrderRef.applied, order);
+    latestStatusRef.current = statusKeepingNewerLists(latestStatusRef.current, status, requestedAt, current, newerShown);
     setBackendStatus((previous) => statusKeepingNewerLists(previous, status, requestedAt, current, newerShown));
     listVersionRef.current += 1;
   }, []);
@@ -889,6 +890,9 @@ export default function AppPanel(props: AppPanelProps) {
         // lists as stored too, so the stale entry leaves the card.
         if (payload.aiDataPaths !== undefined || payload.history !== undefined) {
           const lists = { aiDataPaths: payload.aiDataPaths, history: payload.history };
+          // Kept current at once, not at the next render: a path browse that
+          // finishes before React renders must see this list, not the old one.
+          latestStatusRef.current = withSelectionLists(latestStatusRef.current, lists);
           setBackendStatus((previous) => withSelectionLists(previous, lists));
           listVersionRef.current += 1;
           // Another browser may have changed the selection since a picker was
