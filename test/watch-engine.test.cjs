@@ -523,3 +523,78 @@ describe('watch engine: operating states', () => {
     assert.match(rows[0].title, /House battery voltage somewhat low/);
   });
 });
+
+describe('watch engine: feedback and the watch report', () => {
+  it('needs a bigger departure on a path the operator keeps dismissing, and recovers with "useful"', () => {
+    const engine = newEngine();
+    const rand = noise(51);
+    const path = 'environment.inside.temperature';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 293 + 0.1 * rand()]]);
+    // A departure of about 7 noise floors: reported at normal sensitivity.
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 295.1 + 0.1 * rand()]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`));
+
+    // Dismissed three times: the same departure no longer interrupts.
+    engine.giveFeedback(path, false, t);
+    engine.giveFeedback(path, false, t);
+    const { factor } = engine.giveFeedback(path, false, t);
+    assert.equal(factor, 1.75);
+    t = run(engine, t, t + 5 * MINUTE, SECOND, () => [[path, 293 + 0.1 * rand()]]);
+    assert.ok(!detectors(engine).includes(`shift:${path}`), 'recovered');
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => [[path, 295.1 + 0.1 * rand()]]);
+    assert.ok(!detectors(engine).includes(`shift:${path}`), 'the same departure no longer interrupts');
+    assert.equal(engine.status(t).lessSensitive[0].path, path);
+    assert.equal(engine.inventory(t).paths.find((row) => row.path === path).lessSensitive, 1.75);
+
+    // Marked useful again, and a fortnight later most of it has worn off anyway.
+    assert.equal(engine.giveFeedback(path, true, t).factor, 1.5);
+    assert.equal(engine.giveFeedback(path, true, t + 14 * 24 * 60 * MINUTE).factor, 1);
+  });
+
+  it('counts a mute of something that just fired as a dismissal', () => {
+    const engine = newEngine();
+    const rand = noise(52);
+    const path = 'environment.water.temperature';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 285 + 0.1 * rand()]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 290 + 0.1 * rand()]]);
+    engine.mute(path, t + 60 * MINUTE, t);
+    assert.equal(engine.status(t).lessSensitive[0].factor, 1.25);
+  });
+
+  it('writes a plain report of the last day', () => {
+    const engine = newEngine();
+    const rand = noise(53);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 0],
+      ['electrical.batteries.house.voltage', 12.8 + 0.02 * rand()],
+      ['environment.inside.engineRoom.temperature', 300 + 0.2 * rand()]
+    ]);
+    // The voltage sags for ten minutes and recovers; the engine-room sensor drops out for good.
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 0],
+      ['electrical.batteries.house.voltage', 12.2 + 0.02 * rand()]
+    ]);
+    t = run(engine, t, t + 70 * MINUTE, SECOND, () => [
+      ['propulsion.main.revolutions', 0],
+      ['electrical.batteries.house.voltage', 12.8 + 0.02 * rand()]
+    ]);
+    const result = engine.report(t, 24);
+    assert.equal(result.hours, 24);
+    assert.ok(result.findings >= 2);
+    const text = result.lines.join('\n');
+    assert.match(text, /^\d+ incidents? \(/);
+    assert.match(text, /Still active: Engine room temperature stopped updating/);
+    assert.match(text, /Longest: /);
+    assert.match(text, /Sensors and data: Engine room temperature stopped updating/);
+  });
+
+  it('keeps feedback and the finding log across a restart', () => {
+    const engine = newEngine();
+    engine.ingest('environment.inside.temperature', 293, T0);
+    engine.giveFeedback('environment.inside.temperature', false, T0);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(T0)));
+    const restored = createWatchEngine(normalizeWatchConfig({ watchEnabled: true }), { now: T0 });
+    restored.importState(saved, T0 + MINUTE);
+    assert.equal(restored.status(T0 + MINUTE).lessSensitive[0].path, 'environment.inside.temperature');
+  });
+});

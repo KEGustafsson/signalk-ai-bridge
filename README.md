@@ -508,9 +508,9 @@ of minutes; the result is reused on every start.
 
 In the web UI you will see:
 
-- `Watchkeeper`: active incidents with trend lines and a one-hour mute, your own
-  plain-language watches, **Most unusual now**, **What is watched?** and a
-  24-hour replay. See [Watchkeeper](#watchkeeper-background-watch-of-every-path)
+- `Watchkeeper`: active incidents with trend lines, **Mute 1 h** and **Not
+  useful**, your own plain-language watches, **Watch report**, **Most unusual
+  now**, **What is watched?** and a 24-hour replay. See [Watchkeeper](#watchkeeper-background-watch-of-every-path)
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
 - `AI Path Selection`: which Signal K paths are sent to AI. **Browse available
@@ -851,6 +851,23 @@ The language model is used as little as possible:
 Rules are stored with the plugin's options and can be about any path, including
 ones the statistical watch skips, such as depth or wind.
 
+### It learns from you, and reports
+
+- **Not useful** on a finding, or muting a path while it is firing, counts as a
+  dismissal. Each dismissal makes that path need a 25 % bigger departure before
+  it is reported again, up to twice the normal threshold. It applies to the
+  level and source checks and to how long a silence counts as a dropout. The
+  effect wears off with a 14-day half-life, the panel lists every path made less
+  sensitive this way, and **Restore** undoes it. Nothing is tuned behind your
+  back.
+- **Watch report** writes up the last 24 hours in plain lines: incidents and
+  alerts, what is still active, the longest finding, what repeated, sensor and
+  data trouble, GNSS, which of your watches fired, operating changes, and which
+  paths you have made less sensitive. It is a template, so it can go straight
+  into a logbook. **Ask AI for a logbook entry** turns it into a question for
+  the model, which you read and send. The same data is at
+  `GET /watch/report?hours=24`.
+
 ### Most unusual right now
 
 **Most unusual now** ranks every path by how far it sits from its own normal
@@ -896,7 +913,8 @@ with the plugin's options.
 | Your watches, at watch time | none, a stored rule compared on each tick | every 5 s |
 | Reading a new watch you typed | none: a parser reads thresholds, units, durations and "while" conditions | when you press **Read it back** |
 | Reading a watch the parser could not read | the main model, or a helper of under a billion parameters, choosing from at most 25 real paths, with the answer held to a JSON schema | only then, and only if `watchRuleAssist` allows it |
-| Explaining an incident | the main model | only when you press **Ask AI about this** and send the question |
+| Explaining an incident, the unusual list, or the report | the main model | only when you press an **Ask AI** button and send the question |
+| Learning from your dismissals | none, a per-path multiplier | when you press **Not useful** or mute a firing path |
 
 ### HTTP routes
 
@@ -914,6 +932,8 @@ real work, need a login with write access when Signal K security is on.
 | `POST /watch/replay` `{ duration }` | Run a fresh watch over recorded history (write access) |
 | `POST /watch/rules/compile` `{ text, path? }` | Read a plain-language watch back as a rule, without storing it (write access) |
 | `POST /watch/rules/save` `{ rules }` | Store the full list of watch rules (write access) |
+| `GET /watch/report?hours=24` | The watch report: counts and plain lines for the last 1–168 hours |
+| `POST /watch/feedback` `{ path, useful }` | `false` dismisses (less sensitive), `true` undoes one dismissal, `"reset"` forgets them (write access) |
 
 Like the rest of this plugin, Watchkeeper is experimental. It adds detection
 for things nobody set a threshold for; it does not replace the alarms you

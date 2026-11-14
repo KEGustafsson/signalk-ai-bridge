@@ -24,6 +24,7 @@ rule format, the HTTP API, and how to tune it. For a short introduction see the
 - [Operating states](#operating-states)
 - [Findings, incidents and notifications](#findings-incidents-and-notifications)
 - [Your own watches (rules)](#your-own-watches-rules)
+- [Feedback and the watch report](#feedback-and-the-watch-report)
 - [Where the language model is and is not used](#where-the-language-model-is-and-is-not-used)
 - [HTTP API](#http-api)
 - [Settings](#settings)
@@ -381,6 +382,49 @@ its current value and how often it held over the watch's last 90 minutes. A
 rule read by a model is labelled as such. Nothing is stored until the operator
 adds it.
 
+## Feedback and the watch report
+
+**Feedback.** The operator teaches the watch which findings are worth an
+interruption:
+
+- **Not useful** on a finding (`POST /watch/feedback { path, useful: false }`),
+  or muting an exact path while it has an open finding, is one dismissal.
+- Dismissals decay with a **14-day half-life**. A path with at least half a
+  dismissal left gets a threshold factor of `1 + 0.25 × dismissals`, capped at
+  **2**.
+- The factor multiplies `zWarn` and `zAlert` for the level (`shift`) and
+  source-disagreement checks, and the silence a `dropout` needs. Other checks
+  are unaffected.
+- An open finding is not closed by feedback: it clears through its normal
+  hysteresis. The next departure has to be bigger.
+- `useful: true` removes one dismissal, and `"reset"` forgets them all
+  (**Restore** in the panel).
+- `GET /watch/status` lists every affected path under `lessSensitive`, and the
+  inventory shows the factor per path, so nothing is tuned out of sight.
+- Feedback is saved with the rest of the state.
+
+**Watch report** (`GET /watch/report?hours=24`, 1–168 hours). It is built from
+the open findings and a log of the last 1,000 closed ones, kept for 7 days and
+saved across restarts. It returns counts (`incidents`, `alerts`, `findings`,
+`byDetector`) and plain `lines`:
+
+```
+2 incidents (1 alert, 1 warning) from 5 findings.
+Still active: Engine room temperature stopped updating.
+Longest: House battery voltage unusually low, 42 min.
+Repeated: House battery voltage unusually low ×2.
+Sensors and data: Engine room temperature stopped updating.
+GNSS: the position was corroborated throughout.
+Your watches fired: Main engine temperature is above 90.0 °C for 30 s.
+Operating changes: Engine main running at 08:12 UTC, Engine main stopped at 11:40 UTC.
+Less sensitive after your dismissals: Water temperature.
+```
+
+Times are in UTC, so the report means the same thing whatever the server's
+time zone. **Ask AI for a logbook entry** gives these lines to the model with
+the instruction to add no facts of its own. The operator reads and sends that
+question.
+
 ## Where the language model is and is not used
 
 | Part | Model |
@@ -389,7 +433,8 @@ adds it.
 | Finding, incident and notification text | none (templates) |
 | Stored rules at watch time | none |
 | Reading a typed rule | none, unless the parser fails and `watchRuleAssist` allows it |
-| Explaining an incident or the "most unusual" list | the main model, only when the operator presses the button and sends the question, which they can read and edit first |
+| Explaining an incident, the "most unusual" list or the watch report | the main model, only when the operator presses the button and sends the question, which they can read and edit first |
+| Learning from dismissals | none (a per-path threshold factor) |
 
 ## HTTP API
 
@@ -408,6 +453,8 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `pathsReplayed`, `rows`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `note`. `409` while another replay runs |
 | `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?` |
 | `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list. Invalid rules are dropped. Returns `{ rules }` |
+| `GET /watch/report?hours=24` | | `from`, `to`, `hours`, `incidents`, `alerts`, `findings`, `byDetector`, `lines[]` |
+| `POST /watch/feedback` | write | Body `{ path, useful }`: `false`, `true` or `"reset"`. Returns `{ path, factor }` |
 
 The replay reads the History API with the same credential rules as the rest of
 the plugin: the operator's session goes only to this machine, and a remote
@@ -436,7 +483,8 @@ The learned state is saved to `watch-state.json` in the plugin's data directory
 every 5 minutes and when the plugin stops. It is written to a temporary file
 and renamed, so a crash cannot leave half a file. The saved state includes each
 path's baseline, series, discrete states, per-state baselines and source
-statistics, plus recent incidents, mutes and the current operating states.
+statistics, plus recent incidents, the finding log for the report, operator
+feedback, mutes and the current operating states.
 
 On start, a saved state younger than 14 days is restored. Every path's
 last-seen time is reset to now, so the gap while the plugin was down is not
@@ -455,8 +503,11 @@ marked *plugin restarted*. About 1.2 MB per 1,000 paths.
 3. **Exclude, do not desensitise.** If one path is noisy by nature (a sensor
    that hunts, a value driven by the helm), add it to `watchExcludePaths`
    rather than lowering sensitivity for everything.
-4. **Mute for a known situation.** Use **Mute 1 h** when you know why something
-   is unusual (a deliberate test, a known fault being worked on).
+4. **Mute for a known situation; say "Not useful" for a noisy path.** **Mute 1 h**
+   silences a path you know about (a deliberate test, a fault being worked on).
+   **Not useful** tells the watch the finding was not worth the interruption,
+   so that path needs a bigger change next time. Both count as feedback when
+   the path is firing, and **Restore** undoes it.
 5. **Write a rule for a hard limit.** The statistics find what is unusual for
    this vessel. A rule states what is not acceptable, whatever is usual.
 

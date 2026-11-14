@@ -222,6 +222,19 @@ describe('watch routes', () => {
       );
       assert.equal(allowed.statusCode, 200);
       assert.equal(allowed.body.mutes[0].path, 'propulsion.main.temperature');
+
+      const report = recorder();
+      await routes['GET /watch/report']({ query: { hours: '12' } }, report);
+      assert.equal(report.statusCode, 200);
+      assert.equal(report.body.hours, 12);
+      assert.deepEqual(report.body.lines, ['Nothing unusual was found.']);
+
+      const deniedFeedback = recorder();
+      await routes['POST /watch/feedback']({ body: { path: 'a.b', useful: false } }, deniedFeedback);
+      assert.equal(deniedFeedback.statusCode, 401);
+      const feedback = recorder();
+      await routes['POST /watch/feedback']({ body: { path: 'a.b', useful: false }, skPrincipal: { permissions: 'readwrite' } }, feedback);
+      assert.deepEqual(feedback.body, { path: 'a.b', factor: 1.25 });
     } finally {
       plugin.stop();
     }

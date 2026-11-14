@@ -66,6 +66,7 @@ export interface WatchStatus {
     readonly indicators: Readonly<Record<string, 'ok' | 'active' | 'unavailable'>>;
   };
   readonly rules?: readonly WatchRuleStatus[];
+  readonly lessSensitive?: ReadonlyArray<{ readonly path: string; readonly dismissals: number; readonly factor: number }>;
   readonly mutes?: ReadonlyArray<{ readonly path: string; readonly until: number }>;
 }
 
@@ -181,6 +182,23 @@ export function describeCompileEvidence(result: WatchRuleCompileResult): string 
     );
   }
   return parts.length > 0 ? `${parts.join('; ')}.` : 'No data for this path has arrived yet.';
+}
+
+export interface WatchReport {
+  readonly hours: number;
+  readonly incidents: number;
+  readonly findings: number;
+  readonly lines: readonly string[];
+}
+
+/** The report as a question for the model: summarise for the log, nothing more. */
+export function buildReportQuestion(report: WatchReport): string {
+  return [
+    `Watch report for the last ${report.hours} h from the onboard watch (statistical, not AI). The facts below were measured:`,
+    ...report.lines.map((line) => `- ${line}`),
+    'Write a short logbook entry from this, and say what, if anything, deserves a check before the next passage. ' +
+      'Do not add facts that are not listed.'
+  ].join('\n');
 }
 
 export interface WatchUnusualRow {

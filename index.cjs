@@ -920,6 +920,22 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** GET /watch/report?hours=24: what the watch saw, as facts and plain lines. */
+  const watchReportHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      let hours = req && req.query ? req.query.hours : undefined;
+      if (hours === undefined && req && typeof req.url === 'string') {
+        hours = new URL(req.url, 'http://localhost').searchParams.get('hours') || undefined;
+      }
+      res.status(200).json(watchService.report(Number(hours) || 24));
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
   const rejectUnlessWriter = (req, res, action) => {
     if (isSelectionWriteAllowed(req)) {
       return false;
@@ -941,6 +957,23 @@ module.exports = function createPlugin(app, dependencies = {}) {
         ? watchService.unmute(body && body.path)
         : watchService.mute(body && body.path, body && body.minutes);
       res.status(200).json({ mutes });
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * POST /watch/feedback { path, useful }: "not useful" (false) makes the path
+   * need a bigger departure before it is reported again; true undoes one
+   * dismissal; "reset" forgets them all.
+   */
+  const watchFeedbackHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Giving watch feedback')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      res.status(200).json(watchService.feedback(body && body.path, body && body.useful));
     } catch (error) {
       sendError(res, error, 500, 'Unknown watch failure.');
     }
@@ -1105,6 +1138,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/watch/unusual', watchUnusualHandler);
       router.post('/watch/rules/compile', watchRuleCompileHandler);
       router.post('/watch/rules/save', watchRuleSaveHandler);
+      router.get('/watch/report', watchReportHandler);
+      router.post('/watch/feedback', watchFeedbackHandler);
       router.post('/watch/mute', watchMuteHandler(false));
       router.post('/watch/unmute', watchMuteHandler(true));
       router.post('/watch/replay', watchReplayHandler);

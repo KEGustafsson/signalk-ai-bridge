@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   buildIncidentQuestion,
+  buildReportQuestion,
   buildUnusualQuestion,
   describeCompileEvidence,
   describeDetectorCounts,
@@ -10,7 +11,7 @@ import {
   sparklinePoints,
   storedRule
 } from './watchText.js';
-import type { WatchIncident, WatchInventory, WatchReplayResult, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
+import type { WatchIncident, WatchInventory, WatchReplayResult, WatchReport, WatchRuleCompileResult, WatchStatus, WatchUnusualRow } from './watchText.js';
 
 interface WatchPanelProps {
   readonly fetchImpl?: typeof fetch;
@@ -77,6 +78,7 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [now, setNow] = React.useState<number>(Date.now());
   const [inventory, setInventory] = React.useState<WatchInventory | 'loading' | { error: string } | null>(null);
   const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
+  const [report, setReport] = React.useState<WatchReport | 'loading' | { error: string } | null>(null);
   const [ruleText, setRuleText] = React.useState<string>('');
   const [compiled, setCompiled] = React.useState<WatchRuleCompileResult | 'working' | null>(null);
   const [unusual, setUnusual] = React.useState<readonly WatchUnusualRow[] | 'loading' | { error: string } | null>(null);
@@ -139,6 +141,43 @@ export default function WatchPanel(props: WatchPanelProps) {
     },
     [post]
   );
+
+  const onFeedback = React.useCallback(
+    async (path: string, useful: boolean | 'reset') => {
+      setNotice(null);
+      try {
+        const result = await post('/watch/feedback', { path, useful });
+        const factor = (result.body as { factor?: number } | undefined)?.factor;
+        setNotice(
+          result.ok
+            ? useful === false
+              ? `Noted. ${path} now needs a ${factor && factor > 1 ? `${Math.round((factor - 1) * 100)} % ` : ''}bigger change before it is reported again.`
+              : `${path} is back to normal sensitivity${factor && factor > 1 ? ` (still ${Math.round((factor - 1) * 100)} % less sensitive)` : ''}.`
+            : errorText(result.status, result.body, 'Could not record that.')
+        );
+        setRefresh((value) => value + 1);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : 'Could not record that.');
+      }
+    },
+    [post]
+  );
+
+  const onReport = React.useCallback(async () => {
+    if (report && report !== 'loading') {
+      setReport(null);
+      return;
+    }
+    if (typeof fetchImpl !== 'function') return;
+    setReport('loading');
+    try {
+      const response = await fetchImpl(`${props.endpoint('/watch/report')}?hours=24`, { method: 'GET', credentials: 'include' });
+      const { ok, status: code, body } = await readJson(response);
+      setReport(ok ? (body as WatchReport) : { error: errorText(code, body, 'Could not build the report.') });
+    } catch (error) {
+      setReport({ error: error instanceof Error ? error.message : 'Could not build the report.' });
+    }
+  }, [fetchImpl, props.endpoint, report]);
 
   const onUnmute = React.useCallback(
     async (path: string) => {
@@ -321,6 +360,16 @@ export default function WatchPanel(props: WatchPanelProps) {
                     {finding.detector !== 'feed' ? (
                       <button type="button" style={buttonStyle} onClick={() => onMute(finding.path, 60)}>
                         Mute 1 h
+                      </button>
+                    ) : null}
+                    {finding.detector !== 'feed' && finding.detector !== 'rule' ? (
+                      <button
+                        type="button"
+                        style={buttonStyle}
+                        title="Make this path need a bigger change before it is reported again. Wears off over a few weeks."
+                        onClick={() => onFeedback(finding.path, false)}
+                      >
+                        Not useful
                       </button>
                     ) : null}
                   </div>
@@ -513,6 +562,20 @@ export default function WatchPanel(props: WatchPanelProps) {
             ) : null}
           </div>
 
+          {status.lessSensitive && status.lessSensitive.length > 0 ? (
+            <p style={{ margin: '0.6rem 0 0 0', color: '#475569' }}>
+              Less sensitive after your feedback:{' '}
+              {status.lessSensitive.map((item) => (
+                <span key={item.path} style={{ marginRight: '0.6rem' }}>
+                  <code>{item.path}</code> (+{Math.round((item.factor - 1) * 100)} %){' '}
+                  <button type="button" style={{ ...buttonStyle, padding: '0.1rem 0.4rem' }} onClick={() => onFeedback(item.path, 'reset')}>
+                    Restore
+                  </button>
+                </span>
+              ))}
+            </p>
+          ) : null}
+
           {status.mutes && status.mutes.length > 0 ? (
             <p style={{ margin: '0.6rem 0 0 0', color: '#475569' }}>
               Muted:{' '}
@@ -531,6 +594,9 @@ export default function WatchPanel(props: WatchPanelProps) {
             <button type="button" style={buttonStyle} onClick={() => setShowResolved((value) => !value)}>
               {showResolved ? 'Hide' : 'Show'} recent incidents ({resolvedIncidents.length})
             </button>
+            <button type="button" style={buttonStyle} onClick={onReport}>
+              {report && report !== 'loading' ? 'Hide report' : 'Watch report'}
+            </button>
             <button type="button" style={buttonStyle} onClick={onUnusual}>
               {unusual && unusual !== 'loading' ? 'Hide unusual' : 'Most unusual now'}
             </button>
@@ -543,6 +609,28 @@ export default function WatchPanel(props: WatchPanelProps) {
           </div>
           {notice ? <p style={{ margin: '0.4rem 0 0 0', color: '#475569' }}>{notice}</p> : null}
 
+          {report === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Writing the report…</p> : null}
+          {report && report !== 'loading' && 'error' in report ? (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{report.error}</p>
+          ) : null}
+          {report && report !== 'loading' && !('error' in report) ? (
+            <div style={{ marginTop: '0.5rem', padding: '0.6rem', borderRadius: '8px', background: '#ffffff', border: '1px solid #e2e8f0' }}>
+              <p style={{ margin: 0, fontWeight: 600 }}>Last {report.hours} h</p>
+              <ul style={{ margin: '0.3rem 0 0 0', paddingLeft: '1.1rem' }}>
+                {report.lines.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                style={{ ...buttonStyle, marginTop: '0.4rem' }}
+                disabled={!props.canAskAi}
+                onClick={() => props.onAskAboutIncident(buildReportQuestion(report))}
+              >
+                Ask AI for a logbook entry
+              </button>
+            </div>
+          ) : null}
           {unusual === 'loading' ? <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Ranking…</p> : null}
           {unusual && unusual !== 'loading' && 'error' in unusual ? (
             <p style={{ margin: '0.5rem 0 0 0', color: '#b45309' }}>{unusual.error}</p>

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncidentQuestion, buildUnusualQuestion, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
+import { buildIncidentQuestion, buildReportQuestion, buildUnusualQuestion, describeCompileEvidence, describeDetectorCounts, storedRule, describeInventoryRow, formatAgo, sparklinePoints } from './watchText.js';
 import type { WatchIncident } from './watchText.js';
 
 const incident: WatchIncident = {
@@ -125,5 +125,14 @@ describe('watch rules in the panel', () => {
       description: 'x', firing: true, current: '1'
     } as never);
     assert.deepEqual(Object.keys(stored).sort(), ['createdAt', 'forSeconds', 'id', 'op', 'path', 'severity', 'source', 'text', 'value']);
+  });
+});
+
+describe('buildReportQuestion', () => {
+  it('asks for a logbook entry from the measured lines only', () => {
+    const question = buildReportQuestion({ hours: 24, incidents: 1, findings: 2, lines: ['1 incident (0 alerts, 1 warning) from 2 findings.'] });
+    assert.match(question, /last 24 h/);
+    assert.match(question, /- 1 incident \(0 alerts, 1 warning\)/);
+    assert.match(question, /Do not add facts that are not listed\.$/);
   });
 });

@@ -48,6 +48,15 @@ this project uses [semantic versioning](https://semver.org/).
   path discovered and what the watch does with each: watched, learning, or
   skipped and by which rule. They also show which checks this vessel's data
   supports, and what a missing check would need.
+- **The watch learns from dismissals, and writes a report.** "Not useful" on a
+  finding, or muting a path while it fires, makes that path need a 25 % bigger
+  departure before it is reported again, up to double. This decays with a
+  14-day half-life, is listed in the panel and can be undone with "Restore".
+  `GET /watch/report` and the panel's "Watch report" sum up the last day in
+  plain template lines: incidents, what is still active, the longest and the
+  repeated findings, sensor trouble, GNSS, your watches, operating changes.
+  "Ask AI for a logbook entry" passes them to the model as an operator-sent
+  question. New routes: `GET /watch/report` and `POST /watch/feedback`.
 - **Watch rules in plain words, with as little language model as possible.**
   "Tell me if the coolant goes above 95 for 2 minutes" becomes a rule. A
   deterministic parser reads thresholds, units, durations, urgency and "while"
