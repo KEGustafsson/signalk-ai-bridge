@@ -7,6 +7,36 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Watchkeeper: a background watch of every Signal K path, with no language
+  model.** Off by default (`watchEnabled`). It subscribes to every self-vessel
+  path, learns each one's normal behaviour, and raises Signal K notifications
+  under `notifications.aiBridge.watch.*` for:
+  - sustained steps and ramps away from the baseline;
+  - sensors that stop updating or freeze;
+  - discrete values never seen before;
+  - pumps cycling unusually often;
+  - tanks, batteries and zoned values trending toward their limits;
+  - GNSS positions that dead reckoning, a second receiver or the fix's own
+    quality do not corroborate.
+
+  Findings are grouped into incidents with the earliest sign first. Text comes
+  from templates, so every number in it is a measured one. When an engine
+  starts or a charger changes mode, the affected paths re-learn instead of
+  alerting. The learned baseline survives restarts. Detection costs microseconds
+  per update on the CPU and keeps running with the inference host down. The
+  model is consulted only when the operator presses "Ask AI about this", which
+  fills the prompt box without sending anything.
+- **A Watchkeeper card in the panel**, showing active incidents with trend
+  lines, a one-hour mute per path, recent incidents, and a 24-hour replay of
+  the History API through a fresh watch to show what a sensitivity setting
+  would have raised.
+- New routes: `GET /watch/status`, `GET /watch/series`, `POST /watch/mute`,
+  `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
+  with write access when security is enabled.
+- `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+
 ### Changed
 
 - **A question no longer pays for a timestamp on every leaf.** Each value in

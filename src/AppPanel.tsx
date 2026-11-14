@@ -4,6 +4,7 @@ import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
 import { withUnlistedSelection } from './pathSelection.js';
+import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -89,6 +90,15 @@ function getHistoryPathsEndpoint(props: AppPanelProps): string {
   }
 
   return '/plugins/signalk-ai-bridge/history/paths';
+}
+
+/** `/watch/status` and friends, relative to wherever the plugin is mounted. */
+function getPluginEndpoint(props: AppPanelProps, route: string): string {
+  if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
+    return props.bridgeEndpoint.replace(/\/bridge\/execute$/, route);
+  }
+
+  return `/plugins/signalk-ai-bridge${route}`;
 }
 
 interface PathPickerState {
@@ -741,6 +751,22 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, [backendStatus, historyPathsState, pickedPaths, props]);
 
+  const watchEndpoint = React.useCallback(
+    (route: string) => getPluginEndpoint(props, route),
+    [props.bridgeEndpoint]
+  );
+
+  // Fills the prompt box only. The operator reads and sends it: an incident is
+  // never handed to the model on the plugin's own initiative.
+  const onAskAboutIncident = React.useCallback((question: string) => {
+    setAiInput({ prompt: question });
+    const box = typeof document === 'undefined' ? null : document.querySelector('textarea[aria-label="AI prompt"]');
+    if (box && typeof (box as HTMLTextAreaElement).scrollIntoView === 'function') {
+      (box as HTMLTextAreaElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+      (box as HTMLTextAreaElement).focus();
+    }
+  }, []);
+
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),
     [backendStatus]
@@ -755,6 +781,12 @@ export default function AppPanel(props: AppPanelProps) {
       <p>
         Embedded Admin UI panel for sending selected Signal K data to a local AI backend and reviewing the exact AI request.
       </p>
+      <WatchPanel
+        fetchImpl={props.bridgeFetch}
+        endpoint={watchEndpoint}
+        onAskAboutIncident={onAskAboutIncident}
+        canAskAi={canAskAi(backendStatus)}
+      />
       <div
         style={{
           display: 'grid',

@@ -42,6 +42,7 @@ const {
   resolveHistoryPaths,
   resolveWindow
 } = require('./lib/history-service.cjs');
+const { createWatchService } = require('./lib/watch-service.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -62,6 +63,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
   // stopped (or restarted with new options) cannot overwrite the live status.
   let lifecycleGeneration = 0;
   const bridgeService = createBridgeService(app, dependencies);
+  // Watchkeeper runs beside the AI pipeline, not through it: no model is
+  // called, so it keeps watching with the inference host down.
+  const watchService = createWatchService(app, { ...dependencies, pluginId: 'signalk-ai-bridge' });
 
   function normalizeServerConfig(options = {}) {
     const aiDataPaths = Array.isArray(options.aiDataPaths)
@@ -283,6 +287,70 @@ module.exports = function createPlugin(app, dependencies = {}) {
         default: DEFAULT_HISTORY_TIMEOUT_MS,
         minimum: 0,
         maximum: 120000
+      },
+      watchEnabled: {
+        type: 'boolean',
+        title: 'Watch all Signal K paths (Watchkeeper)',
+        description:
+          'Learn how every self-vessel path normally behaves and raise a Signal K notification when one departs from ' +
+          'it: a sustained jump or ramp, a sensor that stops updating or freezes, a state never seen before, a pump ' +
+          'cycling more than usual, a tank or battery trending toward its limit, or a GNSS fix that dead reckoning and ' +
+          'the other receivers do not corroborate. Uses no language model - it runs on the CPU in microseconds per ' +
+          'update and keeps working with the inference host down. Experimental: not a substitute for real alarms.',
+        default: false
+      },
+      watchSensitivity: {
+        type: 'string',
+        title: 'Watch sensitivity',
+        description:
+          'How far from normal a value must move before it is reported. Start at normal; use the panel\'s replay to see what a setting would have raised over the last day before changing it.',
+        enum: ['low', 'normal', 'high'],
+        default: 'normal'
+      },
+      watchLearningMinutes: {
+        type: 'integer',
+        title: 'Watch learning period (minutes)',
+        description:
+          'How long a newly seen path is observed before it can raise anything. The learned baseline is saved, so this is paid once, not after every restart.',
+        default: 30,
+        minimum: 1,
+        maximum: 1440
+      },
+      watchNotifications: {
+        type: 'boolean',
+        title: 'Publish watch findings as Signal K notifications',
+        description:
+          'Under notifications.aiBridge.watch.*, at warn or alert - never alarm or emergency, which belong to real alarm sources.',
+        default: true
+      },
+      watchSound: {
+        type: 'boolean',
+        title: 'Ask for sound on watch alerts',
+        description: 'Adds "sound" to the notification method for alert-level findings. Warnings are always visual only.',
+        default: false
+      },
+      watchDefaultExclusions: {
+        type: 'boolean',
+        title: 'Skip paths that change with the helm, wind and seabed',
+        description:
+          'Heading, course, speed, attitude, wind, depth, steering and similar paths change quickly by their nature, so the watch skips them by default. Position and fix quality are still read, by the GNSS integrity check.',
+        default: true
+      },
+      watchExcludePaths: {
+        type: 'array',
+        title: 'Also skip these paths',
+        description:
+          'Signal K paths or patterns: a path covers everything beneath it, * matches within one segment, ** across segments (for example environment.inside, propulsion.*.exhaustTemperature, **.signalStrength).',
+        items: { type: 'string' },
+        default: []
+      },
+      watchMaxPaths: {
+        type: 'integer',
+        title: 'Most paths to watch',
+        description: 'A bound on memory and CPU. Paths beyond it are counted in the panel but not watched.',
+        default: 1500,
+        minimum: 10,
+        maximum: 10000
       }
     }
   });
@@ -771,6 +839,89 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
+  /** GET /watch/status: what the watch has learned and what it has found. */
+  const watchStatusHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      res.status(200).json(watchService.status());
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /** GET /watch/series?path=…: the learned series behind a finding, for the panel's sparkline. */
+  const watchSeriesHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    try {
+      // Express parses the query string; a bare Node request (the preview
+      // host, some test harnesses) only has the URL.
+      let path = req && req.query && typeof req.query.path === 'string' ? req.query.path : '';
+      if (!path && req && typeof req.url === 'string') {
+        path = new URL(req.url, 'http://localhost').searchParams.get('path') || '';
+      }
+      const series = watchService.series(path);
+      if (!series) {
+        res.status(404).json({ error: { code: 'not-found', message: `The watch has no series for ${path}.` } });
+        return;
+      }
+      res.status(200).json(series);
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  const rejectUnlessWriter = (req, res, action) => {
+    if (isSelectionWriteAllowed(req)) {
+      return false;
+    }
+    res.status(401).json({
+      error: { code: 'unauthorized', message: `${action} requires a Signal K login with write access.` }
+    });
+    return true;
+  };
+
+  /** POST /watch/mute { path, minutes } and /watch/unmute { path }. */
+  const watchMuteHandler = (unmute) => async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Muting a watched path')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const mutes = unmute
+        ? watchService.unmute(body && body.path)
+        : watchService.mute(body && body.path, body && body.minutes);
+      res.status(200).json({ mutes });
+    } catch (error) {
+      sendError(res, error, 500, 'Unknown watch failure.');
+    }
+  };
+
+  /**
+   * POST /watch/replay { duration? }: run a fresh watch over recorded history
+   * and report what it would have raised. Read-only, but it is the heaviest
+   * thing this plugin does short of inference, so it is a writer's action.
+   */
+  const watchReplayHandler = async (req, res) => {
+    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Replaying history through the watch')) {
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const result = await watchService.replay(body || {}, getConfig(), { authHeaders: authHeadersFromRequest(req) });
+      res.status(200).json(result);
+    } catch (error) {
+      if (errorCode(error) === 'busy') {
+        res.status(409).json({ error: { code: 'busy', message: errorMessage(error, 'Busy.') } });
+        return;
+      }
+      sendError(res, error, 500, 'Unknown replay failure.');
+    }
+  };
+
   // Without this the admin UI renders apiKey as an ordinary text input, so the
   // token is on screen in cleartext and echoed back on every config page load.
   const uiSchema = () => ({
@@ -789,6 +940,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       pluginOptions = options;
       running = true;
       bridgeService.reset();
+      watchService.start(options);
       resetRuntimeState();
       lifecycleGeneration += 1;
       const generation = lifecycleGeneration;
@@ -857,6 +1009,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/history/paths', historyPathsHandler);
       router.get('/signalk/paths', selfPathsHandler);
       router.post('/paths/selection', saveSelectionHandler);
+      router.get('/watch/status', watchStatusHandler);
+      router.get('/watch/series', watchSeriesHandler);
+      router.post('/watch/mute', watchMuteHandler(false));
+      router.post('/watch/unmute', watchMuteHandler(true));
+      router.post('/watch/replay', watchReplayHandler);
       routesRegistered = true;
     },
     stop: () => {
@@ -865,6 +1022,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         app.setPluginStatus('AI Bridge stopped.');
       }
       bridgeService.reset();
+      watchService.stop();
       resetRuntimeState();
       pluginOptions = {};
       running = false;

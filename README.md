@@ -53,6 +53,9 @@ With this plugin you can:
 - check whether Ollama and the configured model are available
 - watch the answer stream in as the model generates it
 - see whether the model is actually running on the GPU, and how fast it generates
+- have **Watchkeeper** watch every Signal K path in the background and tell you
+  when something departs from normal — with no language model involved (see
+  [Watchkeeper](#watchkeeper-background-watch-of-every-path))
 
 ## What You Need
 
@@ -694,6 +697,90 @@ target and nowhere else. A `historyServerUrl` pointing at another host is never
 sent it; give that host a credential issued for itself in `historyApiKey`, or
 leave it blank if it needs none.
 
+## Watchkeeper: background watch of every path
+
+Watchkeeper learns how each of this vessel's Signal K paths normally behaves and
+raises a Signal K notification when one departs from it. It is off by default;
+turn on **Watch all Signal K paths (Watchkeeper)** in the plugin settings.
+
+**It uses no language model.** A small model is the wrong tool for watching
+thousands of values: the whole data tree does not fit in its context window, a
+scan costs tens of seconds of GPU time, and it would hold the single inference
+slot the operator's own questions need. So detection is statistics — constant
+work per update, on the CPU — and incident text is filled from templates, so
+every number in it is one the detector measured. The model only gets involved
+when the operator presses **Ask AI about this** on an incident, which puts a
+question in the Ask AI box for them to read and send. Watchkeeper keeps running
+with the inference host down or the AI pipeline disabled.
+
+### What it notices
+
+| Finding | What it means |
+| --- | --- |
+| Unusually high / low | A sustained step or a ramp away from the path's learned baseline, scaled by its own normal variation. Brief spikes are ignored. |
+| Stopped updating | A path that normally updates every few seconds has gone quiet. If half the vessel goes quiet at once, that is reported once, as the data feed stopping. |
+| Looks stuck | A normally lively sensor repeats exactly the same value. |
+| Changed to a new state | A string, boolean or small integer path takes a value it has never taken before (an inverter going to `fault`). |
+| Switching unusually often | A pump or switch changing state far more often in the last hour than it does on average. |
+| Heading for its limit | The trend reaches a tank's or battery's low limit within hours, or a zone in the path's `meta.zones` within 30 minutes. |
+| GNSS position not corroborated | The fix jumps further than the boat can move, walks away from dead reckoning (heading and speed through water), disagrees with a second receiver, stops moving while the log reads speed, loses satellites, or its clock jumps. Two of these at once raise an alert. |
+
+Findings that start together, or in the same system (for example `propulsion.main`),
+are grouped into one **incident**, listed earliest first, because the first sign
+is usually nearest the cause. GNSS findings are always kept in an incident of
+their own.
+
+### What it leaves alone
+
+- **The learning period.** A new path is observed for `watchLearningMinutes` (30
+  by default) before it can raise anything. The learned baseline is saved to
+  the plugin's data directory, so a restart does not start over.
+- **Operating-state changes.** When an engine starts or stops, a charger changes
+  mode or `navigation.state` changes, the affected paths re-learn for a settling
+  period instead of alerting about the temperatures and voltages that change as
+  a result.
+- **Paths that change by their nature**: heading, course, speed, attitude, wind,
+  depth, steering, performance and similar, plus counters such as engine hours.
+  The GNSS check still reads position, heading and speed through water. Add your
+  own exclusions in `watchExcludePaths`.
+- **A level that stays changed.** After an hour, an excursion is treated as
+  the new normal and re-learned, so the watch does not alert about it forever.
+
+### Where findings appear
+
+- Signal K notifications under `notifications.aiBridge.watch.<path>` (and
+  `.gnss`, `.dataFeed`), at `warn` or `alert`, never `alarm` or `emergency`:
+  those levels belong to real alarm sources. Any notification consumer — KIP,
+  Freeboard, WilhelmSK — shows them with no extra setup.
+- The **Watchkeeper** card at the top of the panel: active incidents, a trend
+  line for each finding, **Mute 1 h** for a path, and recent incidents.
+
+### Tuning with replay
+
+**Replay last 24 h** runs a fresh watch over the History API's record of the
+last day and reports what it would have raised. Use it before changing
+`watchSensitivity`: "this would have fired twice yesterday" is a better basis
+for tuning than a false alarm at sea. It needs a history provider (see
+[Vessel History](#vessel-history)). History is aggregated and smoother than
+live data, so read the replay result as a lower bound.
+
+### Settings
+
+| Setting | Default | |
+| --- | --- | --- |
+| `watchEnabled` | `false` | Turn the watch on. |
+| `watchSensitivity` | `normal` | `low`, `normal` or `high`: how far from normal a value must move. |
+| `watchLearningMinutes` | `30` | How long a new path is observed before it can raise anything. |
+| `watchNotifications` | `true` | Publish findings as Signal K notifications. |
+| `watchSound` | `false` | Ask for sound on alert-level findings. |
+| `watchDefaultExclusions` | `true` | Skip the fast-changing paths listed above. |
+| `watchExcludePaths` | `[]` | More paths or patterns to skip: a path covers everything beneath it, `*` matches within one segment, `**` across segments. |
+| `watchMaxPaths` | `1500` | Upper bound on watched paths, for memory and CPU. |
+
+Like the rest of this plugin, Watchkeeper is experimental. It adds detection
+for things nobody set a threshold for; it does not replace the alarms you
+already have.
+
 ## Notes About Model Names
 
 The plugin defaults to the Gemma 4 family.
@@ -721,6 +808,11 @@ backend, so no model is needed:
 node scripts/preview-host.mjs --stub
 SIGNALK_AI_BRIDGE_DEV_TARGET=http://127.0.0.1:3100 npm run dev
 ```
+
+Add `--watch-demo` to the preview host to see the Watchkeeper card working: it
+pre-rolls 45 minutes of a normal passage so the watch has a baseline, then the
+alternator stops charging, the engine runs hot, a sensor drops off the bus and
+the GNSS fix drifts away from dead reckoning. Findings appear within a minute.
 
 Useful checks:
 
