@@ -500,6 +500,48 @@ describe('collectHistoryContext', () => {
     assert.equal(calls[0].init.headers.authorization, undefined);
   });
 
+  // Loopback is not proof of identity: another service on this machine is on
+  // loopback too, and must not be handed the operator's session.
+  it('does not send the operator session to another port on localhost', async () => {
+    const calls = [];
+    await collectHistoryContext(
+      { config: { settings: { port: 3000 } } },
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'http://localhost:8086',
+        historyApiKey: 'local-service-token'
+      }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token', authorization: 'Bearer local-session' } }
+    );
+
+    assert.match(calls[0].url, /^http:\/\/localhost:8086\//);
+    assert.equal(calls[0].init.headers.cookie, undefined);
+    assert.equal(calls[0].init.headers.authorization, 'Bearer local-service-token');
+  });
+
+  it('still sends the session when historyServerUrl names this server explicitly', async () => {
+    const calls = [];
+    await collectHistoryContext(
+      { config: { settings: { port: 3000 } } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://127.0.0.1:3000' }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token' } }
+    );
+
+    assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
+  });
+
+  it('decides "this server" by loopback host and port', () => {
+    const { isOwnServer } = require('../lib/history-service.cjs');
+    assert.equal(isOwnServer('http://localhost:3000', 'http://localhost:3000'), true);
+    assert.equal(isOwnServer('https://[::1]:3000', 'http://localhost:3000'), true);
+    assert.equal(isOwnServer('http://localhost:3001', 'http://localhost:3000'), false);
+    assert.equal(isOwnServer('http://localhost', 'http://localhost:3000'), false);
+    assert.equal(isOwnServer('http://boat.local:3000', 'http://localhost:3000'), false);
+    assert.equal(isOwnServer('http://localhost:3000', undefined), false);
+  });
+
   it('gives a remote history server its own credential', async () => {
     const calls = [];
     await collectHistoryContext(

@@ -108,14 +108,10 @@ read themselves.
 
 That reasoning only holds when the History API is this Signal K server. A cookie
 minted here is replayable against another Signal K instance, so the operator's
-session is forwarded only to a loopback address (`localhost`, `127.0.0.1`,
-`::1`) and never to another host. A `historyServerUrl` pointing at another host
-is never sent it; give that host a credential issued for itself in
-`historyApiKey`, or leave it blank if it needs none.
-
-**A loopback address is not proof that the target is this server.** The plugin
-checks the hostname, not which process answers. If `historyServerUrl` names
-`localhost` at a *different port* — another service on this machine — that
-service receives the operator's cookie or bearer token too. Leave
-`historyServerUrl` blank to use this server, and only point it at a local port
-you trust with Signal K sessions.
+session is forwarded only to **this server**: a loopback address (`localhost`,
+`127.0.0.1`, `::1`) on the port this server listens on. Loopback alone is not
+enough, because any other service on this machine is on loopback too, so a
+`historyServerUrl` of `localhost` at a different port is treated like another
+host. Another host, or another port, is never sent the session. Give it a
+credential issued for itself in `historyApiKey`, or leave that blank if it needs
+none.

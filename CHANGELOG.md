@@ -58,8 +58,11 @@ this project uses [semantic versioning](https://semver.org/).
     and refuses a second "while" instead of dropping it.
   - The panel says when its status could not be refreshed, instead of
     showing the last snapshot as a current all-clear.
-  - The history docs say plainly that a `historyServerUrl` on `localhost` at
-    another port also receives the operator's session.
+  - **Security:** the operator's session is forwarded to the History API only
+    when it is this Signal K server: a loopback host on this server's own port.
+    A `historyServerUrl` of `localhost` at another port used to receive the
+    operator's cookie or bearer token, because only the hostname was checked.
+    It is now treated like another host and given `historyApiKey`, if set.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
     dead reckoning or a second receiver was checking it; signed angles (roll,
