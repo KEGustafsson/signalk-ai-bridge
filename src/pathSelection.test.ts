@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { pickerFromBrowse, retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 
 describe('withUnlistedSelection', () => {
   it('keeps a configured path the listing could not show', () => {
@@ -165,5 +165,34 @@ describe('applying list replies', () => {
   it('takes a status reply as it is when there was nothing on screen to keep', () => {
     const incoming: Status = { model: 'new-model', aiDataPaths: ['c.three'] };
     assert.deepEqual(statusKeepingNewerLists<History, Status>(null, incoming, 0, 1), incoming);
+  });
+});
+
+describe('a history browse that finishes after a move reply', () => {
+  interface History {
+    readonly paths: readonly string[];
+    readonly derived: boolean;
+  }
+  interface Status {
+    readonly aiDataPaths?: readonly string[];
+    readonly history?: History;
+  }
+
+  it('keeps a path another browser removed unticked, and out of the next Save', () => {
+    // The panel's mirror of the newest status, as the move reply updates it
+    // before React renders (the same calls AppPanel makes, in the same order).
+    const mirror: { current: Status | null } = {
+      current: { aiDataPaths: ['a', 'b', 'c'], history: { paths: ['a', 'b', 'c'], derived: false } }
+    };
+    // The browse starts with [a, b, c] stored. Before it finishes, another
+    // browser removes c and a local move answers [b, a].
+    mirror.current = withSelectionLists<History, Status>(mirror.current, { history: { paths: ['b', 'a'], derived: false } });
+    // Then the browse finishes and reads the mirror.
+    const picker = pickerFromBrowse(['a', 'b', 'c', 'd'], mirror.current?.history?.paths ?? []);
+    assert.deepEqual(picker.picked, { a: true, b: true, c: false, d: false });
+    assert.deepEqual(picker.base, ['b', 'a']);
+    // Save sends what is ticked, in the stored order: c is not put back.
+    const ticked = Object.keys(picker.picked).filter((path) => picker.picked[path]);
+    assert.deepEqual(withUnlistedSelection(ticked, ['a', 'b', 'c', 'd'], picker.base), ['b', 'a']);
   });
 });

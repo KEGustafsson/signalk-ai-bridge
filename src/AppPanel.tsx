@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { pickerFromBrowse, retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -710,10 +710,9 @@ export default function AppPanel(props: AppPanelProps) {
       // the current configuration instead of from nothing - as it is when the
       // browse finishes, not when it started: a move meanwhile may have
       // changed it.
-      const stored = latestStatusRef.current?.history?.paths ?? [];
-      pickerBaseRef.history = stored;
-      const configured = new Set(stored.map((path) => path.split(':')[0]));
-      setPickedPaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
+      const picker = pickerFromBrowse(paths, latestStatusRef.current?.history?.paths ?? []);
+      pickerBaseRef.history = picker.base;
+      setPickedPaths(picker.picked);
     } catch (error) {
       setHistoryPathsState({
         status: 'loaded',

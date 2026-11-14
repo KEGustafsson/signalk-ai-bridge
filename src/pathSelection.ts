@@ -130,3 +130,17 @@ export function retickedFromChange(
     })
   );
 }
+
+/**
+ * A browse that finished: the picker's base and ticks for the paths it
+ * found, taken from `stored` - the newest stored selection the panel knows
+ * when the browse finishes (a move reply may have changed it while the browse
+ * was running), not the one it started with.
+ */
+export function pickerFromBrowse(
+  browsed: readonly string[],
+  stored: readonly string[]
+): { readonly base: readonly string[]; readonly picked: Record<string, boolean> } {
+  const configured = new Set(stored.map((path) => path.split(':')[0]));
+  return { base: stored, picked: Object.fromEntries(browsed.map((path) => [path, configured.has(path)])) };
+}
