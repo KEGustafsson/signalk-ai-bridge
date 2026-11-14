@@ -91,10 +91,9 @@ rising?" at a fraction of the tokens.
   A specific provider plugin id. Blank uses the server's default provider
 
 - `historyServerUrl`
-  Where the History API lives. Blank calls this server on `localhost`, on the
+  Where the History API lives. Blank calls this server over loopback, on the
   port it listens on (see below). Set it for history served by another Signal K
-  instance on the boat, or when this server runs behind TLS with a certificate
-  `localhost` cannot verify
+  instance on the boat. With TLS on, see [Servers with TLS](#servers-with-tls)
 
 - `historyTimeoutMs`
   How long to wait before answering from live data alone. Default 5000, kept
@@ -111,9 +110,28 @@ read themselves.
 
 That reasoning only holds when the History API is this Signal K server. A cookie
 minted here is replayable against another Signal K instance, so the operator's
-session is forwarded only to **this server**: a loopback address (`localhost`,
-`127.0.0.1`, `::1`) on a port this server listens on. The plugin works those
-ports out the way Signal K itself picks them:
+session is forwarded only to **this server**: a loopback address that
+reaches it, on the port it listens on.
+
+The plugin asks the server: Signal K hands plugins its HTTP(S) server, and
+that server reports the address and port it is listening on, whatever they
+came from - `PORT`, the settings, or a socket systemd handed it. That port is
+this server's port, and a blank `historyServerUrl` calls it there (HTTPS with
+TLS on). With TLS on, the HTTP port beside it carries only a redirect to the
+port Signal K advertises (`EXTERNALPORT`, which may be a reverse proxy), so it
+is not sent the session.
+
+`signalk-server-setup` runs every systemd install with socket activation:
+systemd opens the listening socket (`ListenStream=`, two of them with TLS on,
+`LISTEN_FDS=2`) and hands it to Signal K, which then listens on none of its
+configured ports. `EXTERNALPORT` is set there too, but it is the port Signal K
+advertises - nginx on 80 in front of `ListenStream=3000`, say - not the port
+it holds, so it never counts. The server's own report is what names the
+socket's port.
+
+Only when the server does not report an address (before it has started
+listening, or under a host that does not hand plugins its server) are the
+ports worked out the way Signal K picks them:
 
 - the HTTP port is `PORT` if set, else `port` in its settings, else 3000;
 - with TLS on, the HTTPS port is `SSLPORT` if set, else `sslport`, else 3443.
@@ -122,19 +140,17 @@ ports out the way Signal K itself picks them:
 - only the value Signal K uses counts: with `PORT` set, a different `port` in
   the settings is not one of its ports, and the same for `SSLPORT` and
   `sslport`;
-- under systemd socket activation (`LISTEN_FDS` set, as the
-  `signalk-server-setup` install that serves on port 80 does), Signal K listens
-  on the socket systemd hands it and on none of the ports above, so 3000 and
-  3443 do not count. The socket's port cannot be read from the plugin, so the
-  port named by `EXTERNALPORT` (which that install sets to the same port) is
-  taken as the socket's. Without `EXTERNALPORT`, no port counts and the session
-  is sent nowhere; set `EXTERNALPORT` to the socket's port to have it sent.
+- under socket activation (`LISTEN_FDS` set) none of these is its port, and
+  the socket's cannot be known, so no port counts.
 
-`EXTERNALPORT` without socket activation, and `proxy_port`, are the ports a
-reverse proxy publishes, not ones this server listens on, and do not count. A
-blank `historyServerUrl` calls this server on its main port (HTTPS with TLS on),
-which is always one of the ports above — or, under socket activation without
-`EXTERNALPORT`, on 3000 with no session.
+`EXTERNALPORT` and `proxy_port` are the ports a reverse proxy publishes, not
+ones this server listens on, and never count. When no port of this server is
+known - socket activation with no address reported, a configured port that is
+not a valid port, a listener on a LAN address or a local socket only - a blank
+`historyServerUrl` calls nothing, rather than send the paths and time window to
+whatever holds a guessed port: the history context says why. A
+`historyServerUrl` set then is not sent the session either; give it a
+`historyApiKey`.
 
 Loopback alone is not enough, because any other service on this machine is on
 loopback too, so a `historyServerUrl` of `localhost` at a different port is
@@ -144,14 +160,53 @@ that blank if it needs none. When a key is configured and the server still
 answers 401 or 403, the error shows the server's own reason and says the key
 was rejected.
 
-Any loopback address on one of these ports counts, IPv4 or IPv6 alike. That is
-safe because of how the port is held, not because the address is checked:
-Signal K listens without naming a host, which binds the dual-stack wildcard
-(`::`), and a systemd `ListenStream=80` socket binds the dual-stack wildcard
-too. While Signal K holds the port that way, no other process can hold
-`127.0.0.1` or `[::1]` on it. The exposure that remains is a listener that
-covers one address family only: with `net.ipv6.bindv6only=1` (or a socket unit
-with `BindIPv6Only=ipv6-only`) the wildcard is IPv6-only, and another service
-could take `127.0.0.1` on the same port; a socket unit bound to an IPv4 address
-leaves `[::1]` free the same way. On such a host, a `historyServerUrl` naming
-the address family Signal K is not on would hand that service the session.
+Which loopback addresses count depends on what the listener is bound to, as
+the server reports it:
+
+- the dual-stack wildcard (`::`): `localhost`, `127.0.0.1` and `[::1]` all
+  count. Signal K listens without naming a host, and Node then binds `::` as
+  dual-stack (or `0.0.0.0` on a host without IPv6, where nobody can bind
+  `[::1]` either); a systemd `ListenStream=3000` socket binds the dual-stack
+  wildcard too by default. While Signal K holds the port that way, no other
+  process can hold `127.0.0.1` or `[::1]` on it;
+- an IPv4 address (`0.0.0.0`, `127.0.0.1`): only `127.0.0.1` counts, since
+  another process could hold `[::1]` on the same port. `localhost` resolves
+  to both, and Node tries both, so it counts only when this machine has no
+  IPv6 loopback address for anyone to bind; otherwise a blank
+  `historyServerUrl` calls `127.0.0.1`;
+- `[::1]`: only `[::1]` counts, the same way round;
+- any other address (a LAN address only): no loopback address reaches it, and
+  nothing counts.
+
+The exposure that remains is an IPv6 wildcard that is IPv6-only, which the
+server's report cannot tell apart from a dual-stack one: a socket unit with
+`BindIPv6Only=ipv6-only`, or `net.ipv6.bindv6only=1` with the default
+`BindIPv6Only=`. Another service could then take `127.0.0.1` on the same port,
+and a `historyServerUrl` naming it would hand that service the session; the
+blank default calls `localhost`, which can resolve there too. Avoid that
+combination, or bind the socket to `[::1]` explicitly.
+
+## Servers with TLS
+
+With TLS on, a blank `historyServerUrl` calls `https://localhost:<port>`.
+Node does not trust Signal K's generated certificate, so that call fails with
+`DEPTH_ZERO_SELF_SIGNED_CERT` until it is told to. Setting `historyServerUrl`
+does not change that: every address of this machine is presented with the same
+certificate. What works:
+
+- Signal K's generated certificate (`ssl-cert.pem` in its configuration
+  directory, normally `~/.signalk`) is issued to `localhost`, so starting
+  Signal K with `NODE_EXTRA_CA_CERTS` pointing at it makes
+  `https://localhost:<port>` verify. In a systemd install, add
+  `Environment=NODE_EXTRA_CA_CERTS=/home/<user>/.signalk/ssl-cert.pem` to the
+  service (`systemctl edit signalk`) and restart it. `https://127.0.0.1` still
+  fails (`ERR_TLS_CERT_ALTNAME_INVALID`), because the certificate names only
+  `localhost`;
+- a certificate of your own: add its issuer to `NODE_EXTRA_CA_CERTS` the same
+  way, and call a name it is issued to. A name that is not a loopback address
+  is not this server as far as the session goes, so give it a
+  `historyApiKey`.
+
+When a call fails, the history context names the cause (`fetch failed:
+ECONNREFUSED`, `fetch failed: DEPTH_ZERO_SELF_SIGNED_CERT`, ...), and a
+rejected certificate comes with this advice.

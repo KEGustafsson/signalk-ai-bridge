@@ -58,6 +58,25 @@ async function withSignalkEnv(vars, fn) {
   }
 }
 
+/** A Signal K server whose listener reports `address` (app.server.address()). */
+function listeningOn(address, family, port) {
+  return { server: { address: () => ({ address, family, port }) } };
+}
+
+/** Run `fn` with os.networkInterfaces() reporting only `addresses` on lo. */
+async function withInterfaces(addresses, fn) {
+  const os = require('node:os');
+  const original = os.networkInterfaces;
+  os.networkInterfaces = () => ({
+    lo: addresses.map((address) => ({ address, family: address.includes(':') ? 'IPv6' : 'IPv4', internal: true }))
+  });
+  try {
+    return await fn();
+  } finally {
+    os.networkInterfaces = original;
+  }
+}
+
 function historyConfig(overrides = {}) {
   return {
     ...normalizeHistoryConfig({ historyEnabled: true, ...overrides }, {}),
@@ -728,7 +747,7 @@ describe('collectHistoryContext', () => {
 
 // The panel's picker: what has the provider actually recorded?
 describe('which ports are this server', () => {
-  const { isOwnServer, ownServerPorts } = require('../lib/history-service.cjs');
+  const { isOwnServer, ownServer, ownServerPorts } = require('../lib/history-service.cjs');
   const session = { authHeaders: { cookie: 'JAUTHENTICATION=token' } };
 
   async function cookieSentTo(app, historyServerUrl) {
@@ -742,39 +761,205 @@ describe('which ports are this server', () => {
     return { url: calls[0].url, cookie: calls[0].init.headers.cookie };
   }
 
-  // The signalk-server-setup "port 80" install: systemd hands the server a
-  // socket on 80 (LISTEN_FDS=1, EXTERNALPORT=80) and settings.json has no
-  // port. Nothing of Signal K's is on 3000 then, and whatever is - Grafana,
-  // typically - must not be sent the operator's session.
-  it('does not count the default 3000 under socket activation', async () => {
+  // A signalk-server-setup install: systemd hands the server its socket
+  // (LISTEN_FDS=1) and EXTERNALPORT is the port it advertises - here an nginx
+  // on 80 in front of ListenStream=3000. The socket's real port comes from
+  // the server's own address(); EXTERNALPORT is the proxy's and must not be
+  // sent the operator's session.
+  it('takes the socket-activated port from the server, not from EXTERNALPORT', async () => {
     await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
-      const app = { config: { settings: {}, getExternalPort: () => 80 } };
-      assert.deepEqual([...ownServerPorts(app)], ['80']);
-      assert.equal(isOwnServer('http://localhost:3000', ownServerPorts(app)), false);
-      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:80');
+      const app = { config: { settings: {} }, ...listeningOn('::', 'IPv6', 3000) };
+      assert.deepEqual([...ownServerPorts(app)], ['3000']);
+      assert.equal(isOwnServer('http://localhost:80', ownServer(app)), false);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
 
-      const grafana = await cookieSentTo(app, 'http://localhost:3000');
-      assert.equal(grafana.cookie, undefined);
+      const proxy = await cookieSentTo(app, 'http://localhost:80');
+      assert.equal(proxy.cookie, undefined);
       const own = await cookieSentTo(app);
-      assert.match(own.url, /^http:\/\/localhost(:80)?\/signalk\//);
+      assert.match(own.url, /^http:\/\/localhost:3000\/signalk\//);
       assert.equal(own.cookie, 'JAUTHENTICATION=token');
     });
   });
 
-  it('counts no port under socket activation when EXTERNALPORT does not name it', async () => {
-    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
-      const app = { config: { settings: {}, getExternalPort: () => 3000 } };
-      assert.equal(ownServerPorts(app).size, 0);
-      assert.equal((await cookieSentTo(app)).cookie, undefined);
+  // Without the server's address nothing names the socket: neither the
+  // default 3000 (Grafana, typically, when Signal K is on an activated 80)
+  // nor EXTERNALPORT counts, and nothing is called on a guessed port.
+  it('counts no port, and calls nothing, under socket activation without an address', async () => {
+    for (const app of [
+      { config: { settings: {} } },
+      { config: { settings: {} }, server: { address: () => null } }
+    ]) {
+      await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
+        assert.equal(ownServerPorts(app).size, 0);
+        assert.equal(isOwnServer('http://localhost:3000', ownServer(app)), false);
+        assert.equal(isOwnServer('http://localhost:80', ownServer(app)), false);
 
+        const history = await collectHistoryContext(
+          app,
+          historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+          { fetchImpl: () => assert.fail('no request expected') },
+          session
+        );
+        assert.match(history.message, /History API was not called: this Signal K server's port is not known/);
+        assert.match(history.message, /socket activation/);
+
+        const listing = await listHistoryPaths(app, historyConfig(), {
+          fetchImpl: () => assert.fail('no request expected')
+        });
+        assert.deepEqual(listing.paths, []);
+        assert.match(listing.message, /port is not known/);
+      });
+    }
+  });
+
+  // An operator who names the server explicitly when its port is unknown is
+  // not told to "leave the URL blank" - blank would call nothing.
+  it('words the 401 hint from why no port is known', async () => {
+    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
       const history = await collectHistoryContext(
-        app,
-        historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+        { config: { settings: {} } },
+        historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://localhost:3000' }),
         { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) },
         session
       );
-      assert.match(history.message, /socket activation without EXTERNALPORT/);
+      assert.match(history.message, /its port is not known: it was started by systemd socket activation/);
+      assert.match(history.message, /History API key/);
+      assert.doesNotMatch(history.message, /leave "Signal K server URL" blank/);
     });
+
+    // Not socket activation: an invalid port is named as what it is.
+    const invalid = await collectHistoryContext(
+      { config: { settings: { port: 70000 } } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://localhost:3000' }),
+      { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) },
+      session
+    );
+    assert.match(invalid.message, /its configured port \(70000\) is not a valid TCP port/);
+    assert.doesNotMatch(invalid.message, /socket activation/);
+  });
+
+  it('does not call the default port when the configured one is invalid', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: { port: 70000 } } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+      { fetchImpl: () => assert.fail('no request expected') },
+      session
+    );
+    assert.match(history.message, /not called: this Signal K server's port is not known \(its configured port \(70000\)/);
+  });
+
+  it('does not replay against an unknown port', async () => {
+    const { createWatchService } = require('../lib/watch-service.cjs');
+    await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
+      const host = {
+        selfId: 'vessels.self',
+        config: { settings: {} },
+        setPluginStatus() {},
+        handleMessage() {},
+        getSelfPath() {}
+      };
+      const service = createWatchService(host, {
+        now: () => Date.parse('2026-06-02T08:00:00Z'),
+        fetchImpl: () => assert.fail('no request expected')
+      });
+      const result = await service.replay(
+        { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
+        { historyTimeoutMs: 5000 }
+      );
+      assert.equal(result.ok, false);
+      assert.match(result.message, /not called: this Signal K server's port is not known/);
+    });
+  });
+
+  // The server's address wins over the settings even without socket
+  // activation: it is the port actually held.
+  it('prefers the port the server reports over its settings', async () => {
+    const app = { config: { settings: { port: 3000 } }, ...listeningOn('::', 'IPv6', 8080) };
+    assert.deepEqual([...ownServerPorts(app)], ['8080']);
+    assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:8080');
+    assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
+  });
+
+  // With TLS on, app.server is the https server; the http redirect beside it
+  // only redirects to the advertised port and is not sent the session.
+  it('counts only the https listener the server reports under TLS', async () => {
+    const app = { config: { settings: { ssl: true, port: 3000 } }, ...listeningOn('::', 'IPv6', 3443) };
+    assert.deepEqual([...ownServerPorts(app)], ['3443']);
+    assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:3443');
+    assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
+  });
+
+  // An IPv4-only listener leaves [::1] on the same port to whoever binds it,
+  // and `localhost` may resolve there, so only 127.0.0.1 is this server -
+  // unless this machine has no IPv6 loopback for anyone to bind.
+  it('trusts only the IPv4 loopback for an IPv4-only listener', async () => {
+    const app = { config: { settings: {} }, ...listeningOn('0.0.0.0', 'IPv4', 3000) };
+    await withInterfaces(['127.0.0.1', '::1'], async () => {
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://127.0.0.1:3000');
+      assert.equal((await cookieSentTo(app, 'http://[::1]:3000')).cookie, undefined);
+      assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
+      assert.equal((await cookieSentTo(app)).cookie, 'JAUTHENTICATION=token');
+      const own = ownServer(app);
+      assert.equal(isOwnServer('http://[::1]:3000', own), false);
+      assert.equal(isOwnServer('http://localhost:3000', own), false);
+      assert.equal(isOwnServer('http://127.0.0.1:3000', own), true);
+    });
+    await withInterfaces(['127.0.0.1'], async () => {
+      assert.equal(isOwnServer('http://localhost:3000', ownServer(app)), true);
+      assert.equal(isOwnServer('http://[::1]:3000', ownServer(app)), false);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
+    });
+    const listener127 = { config: { settings: {} }, ...listeningOn('127.0.0.1', 4, 3000) };
+    await withInterfaces(['127.0.0.1', '::1'], async () => {
+      assert.equal(isOwnServer('http://127.0.0.1:3000', ownServer(listener127)), true);
+      assert.equal(isOwnServer('http://[::1]:3000', ownServer(listener127)), false);
+    });
+  });
+
+  it('trusts only the IPv6 loopback for an IPv6-only listener', async () => {
+    const app = { config: { settings: {} }, ...listeningOn('::1', 'IPv6', 3000) };
+    await withInterfaces(['127.0.0.1', '::1'], async () => {
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://[::1]:3000');
+      assert.equal((await cookieSentTo(app, 'http://127.0.0.1:3000')).cookie, undefined);
+      const own = ownServer(app);
+      assert.equal(isOwnServer('http://127.0.0.1:3000', own), false);
+      assert.equal(isOwnServer('http://localhost:3000', own), false);
+      assert.equal(isOwnServer('http://[::1]:3000', own), true);
+
+      const history = await collectHistoryContext(
+        app,
+        historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://localhost:3000' }),
+        { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) },
+        session
+      );
+      assert.match(history.message, /its ports: 3000, reached at \[::1\] only/);
+    });
+  });
+
+  // Unchanged behaviour, kept as a guard: nobody else can hold either
+  // loopback address on a port the dual-stack wildcard holds.
+  it('trusts every loopback name for a dual-stack listener', async () => {
+    const app = { config: { settings: {} }, ...listeningOn('::', 'IPv6', 3000) };
+    for (const url of ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']) {
+      assert.equal((await cookieSentTo(app, url)).cookie, 'JAUTHENTICATION=token', url);
+    }
+  });
+
+  it('calls nothing when the server is not on loopback or not on TCP', async () => {
+    for (const server of [
+      { address: () => ({ address: '192.168.1.5', family: 'IPv4', port: 3000 }) },
+      { address: () => '/run/signalk.sock' }
+    ]) {
+      const app = { config: { settings: {} }, server };
+      assert.equal(ownServerPorts(app).size, 0);
+      const history = await collectHistoryContext(
+        app,
+        historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+        { fetchImpl: () => assert.fail('no request expected') },
+        session
+      );
+      assert.match(history.message, /port is not known \(it listens on /);
+    }
   });
 
   // Signal K listens on Number(SSLPORT) || settings.sslport || 3443: with
@@ -812,6 +997,92 @@ describe('which ports are this server', () => {
       assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
       assert.equal((await cookieSentTo(app, 'http://localhost:80')).cookie, undefined);
     });
+  });
+});
+
+// fetch reports every network failure as "fetch failed" and keeps the reason
+// in error.cause; without its code an operator cannot tell a refused
+// connection from a certificate Node will not accept.
+describe('a History API that cannot be reached', () => {
+  function failingFetch(code, message = code) {
+    return async () => {
+      throw new TypeError('fetch failed', { cause: Object.assign(new Error(message), { code }) });
+    };
+  }
+
+  it('names the cause, and what makes a rejected certificate verify', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: { ssl: true } } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+      { fetchImpl: failingFetch('DEPTH_ZERO_SELF_SIGNED_CERT', 'self-signed certificate') }
+    );
+    assert.match(history.message, /unreachable \(fetch failed: DEPTH_ZERO_SELF_SIGNED_CERT, the server's TLS certificate is not trusted/);
+    assert.match(history.message, /NODE_EXTRA_CA_CERTS/);
+    assert.match(history.message, /https:\/\/localhost/);
+  });
+
+  it('names a connection failure without the certificate advice', async () => {
+    const history = await collectHistoryContext(
+      {},
+      historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+      { fetchImpl: failingFetch('ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:3000') }
+    );
+    assert.match(history.message, /unreachable \(fetch failed: ECONNREFUSED\)/);
+    assert.doesNotMatch(history.message, /NODE_EXTRA_CA_CERTS/);
+
+    // Both address families refused: the cause is an AggregateError whose
+    // own code may be missing; the first inner code is the reason.
+    const aggregate = await collectHistoryContext(
+      {},
+      historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+      {
+        fetchImpl: async () => {
+          throw new TypeError('fetch failed', {
+            cause: new AggregateError([Object.assign(new Error('refused'), { code: 'ECONNREFUSED' })])
+          });
+        }
+      }
+    );
+    assert.match(aggregate.message, /fetch failed: ECONNREFUSED/);
+  });
+
+  it('names the cause of a real refused connection', async () => {
+    const net = require('node:net');
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+
+    const history = await collectHistoryContext(
+      {},
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: `http://127.0.0.1:${port}` }),
+      {}
+    );
+    assert.match(history.message, /unreachable \(fetch failed: ECONNREFUSED\)/);
+  });
+
+  it('names the cause in the path listing', async () => {
+    const result = await listHistoryPaths(
+      {},
+      historyConfig({ historyServerUrl: 'https://127.0.0.1:3443' }),
+      { fetchImpl: failingFetch('ERR_TLS_CERT_ALTNAME_INVALID', "Hostname/IP does not match certificate's altnames") }
+    );
+    assert.match(result.message, /unreachable \(fetch failed: ERR_TLS_CERT_ALTNAME_INVALID, the server's TLS certificate is not trusted/);
+  });
+
+  it('names the cause in a watch replay', async () => {
+    const { createWatchService } = require('../lib/watch-service.cjs');
+    const host = { selfId: 'vessels.self', setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
+    const service = createWatchService(host, {
+      now: () => Date.parse('2026-06-02T08:00:00Z'),
+      fetchImpl: failingFetch('SELF_SIGNED_CERT_IN_CHAIN', 'self-signed certificate in certificate chain')
+    });
+    const result = await service.replay(
+      { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
+      { historyTimeoutMs: 5000 }
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.message, /could not be read \(fetch failed: SELF_SIGNED_CERT_IN_CHAIN, the server's TLS certificate is not trusted/);
   });
 });
 

@@ -102,8 +102,8 @@ this project uses [semantic versioning](https://semver.org/).
   - **Security:** under systemd socket activation (`LISTEN_FDS`, the
     `signalk-server-setup` port-80 install) the defaults 3000 and 3443 no
     longer count as this server, since nothing of Signal K's listens there and
-    another service (Grafana on 3000, say) would have been sent the session;
-    the activated port is taken from `EXTERNALPORT`. A settings `port` or
+    another service (Grafana on 3000, say) would have been sent the session.
+    A settings `port` or
     `sslport` overridden by `PORT` or `SSLPORT` no longer counts either, and
     `EXTERNALPORT` outside socket activation is no longer the port the default
     History API URL is called on. With TLS on, that URL is now the HTTPS port
@@ -111,6 +111,17 @@ this project uses [semantic versioning](https://semver.org/).
     server that was sent the configured `historyApiKey` now shows the server's
     error and says the key was rejected, instead of saying the session was not
     sent.
+  - **Security:** this server's port is now the one its listener reports
+    (`app.server.address()`), so a socket-activated install no longer trusts
+    `EXTERNALPORT`, the advertised port that is often a reverse proxy's (nginx
+    on 80 in front of `ListenStream=3000`), with the session. An IPv4-only
+    listener no longer counts `[::1]`, or `localhost` while IPv6 loopback
+    exists, and an IPv6-only one no longer counts `127.0.0.1`. With no port
+    known, the default History API URL is not called at all instead of
+    falling back to `localhost:3000`, and the reason (socket activation, an
+    invalid port) is what the message gives. A failed call names its cause
+    (`fetch failed: ECONNREFUSED`), and a rejected TLS certificate says how
+    to make it verify (`NODE_EXTRA_CA_CERTS`; see docs/history.md).
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
     dead reckoning or a second receiver was checking it; signed angles (roll,
