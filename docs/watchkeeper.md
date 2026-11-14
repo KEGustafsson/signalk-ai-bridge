@@ -84,22 +84,23 @@ standard Signal K path or a plugin's own.
   that has never fallen over at least 30 samples is a *counter* (engine hours,
   energy, fuel used), and the level and stuck-sensor checks skip it. Never
   falling is not enough on its own:
+  - A path listed in `watchCounterPaths` is a counter, whatever it does.
+    This is how a plugin's own counter under a name the watch does not know
+    is declared.
   - A path named as a measurement is never a counter, whatever else its name
     says (`…Voltage`, `…Current`, `…Temperature`, `…Level`, `…Pressure`,
     `…Power`, `…Rate`, `…Stored`, `…Remaining` and the like, and anything
     about satellites). Neither is a path whose unit is not one a cumulative
-    quantity has (s, m³, J, C; m for a log).
-  - A path named as a counter is one (`runTime`, `…Hours`, `…Count`,
-    `…Total`, `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
-    `…Consumed`, `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`). A
-    drop to (nearly) zero is a reset - a daily yield at midnight, a trip log
+    quantity has (s, m³, J, C, or m for a log).
+  - Otherwise, a path that has never fallen is a counter if it is named as
+    one (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`,
+    `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`, `…Consumed`,
+    `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`). A drop to
+    (nearly) zero is a reset - a daily yield at midnight, a trip log
     cleared - and does not end it.
-  - Any other path is a counter only after rising in at least six different
-    clock hours, and on at least a fifth of its updates. Hours with a rise in
-    them count, not the path's age: four flat hours and two climbing ones are
-    two hours of evidence, and time the plugin was stopped is none.
-  A value that sat still and then jumped, or a voltage or tank level climbing
-  for hours, is not a counter.
+  Nothing is taken for a counter from its behaviour alone: a voltage under
+  an unknown name and without units can climb for hours without a dip too,
+  and the checks that would report it must stay on.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -523,6 +524,7 @@ per row and at most 10,000 rows, for up to 80 paths in requests of 10.
 | `watchSound` | `false` | Add `sound` to the method of alert-level findings |
 | `watchDefaultExclusions` | `true` | Skip the paths listed under [Skipped by default](#skipped-by-default) |
 | `watchExcludePaths` | `[]` | More paths or patterns to skip |
+| `watchCounterPaths` | `[]` | Paths or patterns that only count up, under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors |
 | `watchMaxPaths` | `1500` | Most paths watched (10–10000) |
 | `watchRuleAssist` | `main` | `main`, `helper` or `off` |
 | `watchHelperModel` | empty | Ollama model for `helper`, for example `qwen3:0.6b` |

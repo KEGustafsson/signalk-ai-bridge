@@ -747,16 +747,35 @@ describe('watch engine: review follow-ups', () => {
     assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'continuous');
   });
 
-  it('never makes a measurement a counter by its climb alone, however long', () => {
-    const state = monitor.createPathState('electrical.batteries.house.voltage', T0);
-    Object.assign(state, { n: 5000, rose: true, monotonic: true, rises: 5000, units: 'V', riseHours: [1, 2, 3, 4, 5, 6, 7, 8] });
-    assert.equal(monitor.isCounterState(state), false);
-    const tank = monitor.createPathState('tanks.blackWater.0.currentLevel', T0);
-    Object.assign(tank, { n: 5000, rose: true, monotonic: true, rises: 5000, riseHours: [1, 2, 3, 4, 5, 6, 7, 8] });
-    assert.equal(monitor.isCounterState(tank), false, 'a level rising for hours is news, with or without units');
-    const pulses = monitor.createPathState('plugins.example.pulses', T0);
-    Object.assign(pulses, { n: 5000, rose: true, monotonic: true, rises: 5000, riseHours: [1, 2, 3, 4, 5, 6] });
-    assert.equal(monitor.isCounterState(pulses), true);
+  it('never guesses a counter from a climb alone, however long', () => {
+    const climbing = (path, units) => {
+      const state = monitor.createPathState(path, T0);
+      // Rises in eight different hours: what the old fallback took for a counter.
+      Object.assign(state, { n: 5000, rose: true, monotonic: true, rises: 5000, units, riseHours: [1, 2, 3, 4, 5, 6, 7, 8] });
+      return monitor.isCounterState(state);
+    };
+    assert.equal(climbing('electrical.batteries.house.voltage', 'V'), false);
+    assert.equal(climbing('tanks.blackWater.0.currentLevel'), false, 'a level rising for hours is news, with or without units');
+    // A voltage under an unknown name and with no units looks like anything.
+    assert.equal(climbing('plugins.example.reading'), false);
+  });
+
+  it('treats a path the operator listed as a counter as one, and nothing else under that name', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.example.pulses'] });
+    let pulses = 0;
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => {
+      pulses += 1;
+      return [['plugins.example.pulses', pulses], ['plugins.example.reading', 13.2]];
+    });
+    const kinds = Object.fromEntries(engine.inventory(t).paths.map((item) => [item.path, item.kind]));
+    assert.equal(kinds['plugins.example.pulses'], 'counter');
+    assert.notEqual(kinds['plugins.example.reading'], 'counter');
+    // Saved and restored under settings that no longer list it: not a counter.
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const restarted = newEngine();
+    restarted.importState(saved, t);
+    t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.example.pulses', (pulses += 1)]]);
+    assert.notEqual(restarted.inventory(t).paths.find((item) => item.path === 'plugins.example.pulses').kind, 'counter');
   });
 
   it('tells counters from measurements that carry a counter-like word', () => {
@@ -801,8 +820,8 @@ describe('watch engine: review follow-ups', () => {
     assert.equal(monitor.isCounterState(restored), false);
   });
 
-  it('still treats real counters as counters: fuel used, and an unnamed one that climbed for hours', () => {
-    const engine = newEngine();
+  it('still treats real counters as counters: fuel used, and a listed one under a plugin\'s own name', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.example.*'] });
     let used = 0;
     let custom = 0;
     // Two hours of climbing with the engine on, then a long stop.
@@ -819,7 +838,7 @@ describe('watch engine: review follow-ups', () => {
       ['plugins.example.pulses', custom]
     ]);
     assert.ok(!detectors(engine).some((key) => key.includes('propulsion.main.fuel.used')), 'fuel used holding still is not a stuck sensor');
-    assert.ok(!detectors(engine).some((key) => key.includes('plugins.example.pulses')), 'a counter under an unknown name is still a counter');
+    assert.ok(!detectors(engine).some((key) => key.includes('plugins.example.pulses')), 'a counter the operator listed is still a counter');
   });
 
   it('keeps the frozen-fix check for a receiver that reports every 10 s', () => {

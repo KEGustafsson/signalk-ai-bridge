@@ -348,6 +348,16 @@ module.exports = function createPlugin(app, dependencies = {}) {
         items: { type: 'string' },
         default: []
       },
+      watchCounterPaths: {
+        type: 'array',
+        title: 'Counters under other names',
+        description:
+          'Paths that only count up - engine hours, energy, pulses - which the watch does not judge as levels or stuck sensors. ' +
+          'Standard names (runTime, fuel.used, lifetimeDischarge, energy..., log, ...Today and the like) are recognised already; ' +
+          'list a plugin\'s own counters here, with the same patterns as above.',
+        items: { type: 'string' },
+        default: []
+      },
       watchRuleAssist: {
         type: 'string',
         title: 'Interpreting watch rules',

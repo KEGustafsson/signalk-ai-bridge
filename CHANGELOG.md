@@ -136,9 +136,11 @@ this project uses [semantic versioning](https://semver.org/).
     watch that cannot fire; adding a 51st watch returns 409 instead of
     reporting success for a dropped rule; and a stale speed log ends a
     frozen-fix candidate.
-  - Independent reviews of 3a14b76 and bddf473: the unnamed-counter rule
-    counts hours with a rise in them, not the path's age or downtime, and a
-    measurement (by name or unit) is never a counter; named counters survive
+  - Independent reviews of 3a14b76 and bddf473: a counter under a name the
+    watch does not know is no longer guessed from hours of climbing, which a
+    voltage without units can also do; it is listed in the new
+    `watchCounterPaths` setting instead. A measurement (by name or unit) is
+    never a counter; named counters survive
     a reset to zero and the name list no longer catches `totalPower` or
     `energyStored`; a "changes" rule reports a change once, though its guard
     goes quiet and returns; on/off on a measurement is refused, also when a
