@@ -479,6 +479,12 @@ describe('watch detection: replay', () => {
     // A column that names no path is not taken for the path at its position.
     const unnamed = await replayed([{ method: 'average' }], (at) => [jumping(at)]);
     assert.equal(unnamed.byDetector.shift, undefined, 'a column without a path is not read');
+    // An empty list declares no columns: nothing is read by position.
+    const empty = await replayed([], (at) => [jumping(at)]);
+    assert.equal(empty.byDetector?.shift, undefined, 'an empty values list declares no columns');
+    // No list at all: the columns are the paths in the order asked.
+    const absent = await replayed(undefined, (at) => [jumping(at)]);
+    assert.ok(absent.byDetector.shift >= 1, 'without a values list, columns follow the request');
   });
 
   it('evaluates a feed silence that spans a gap in the history', async () => {
