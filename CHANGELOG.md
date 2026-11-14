@@ -279,7 +279,22 @@ this project uses [semantic versioning](https://semver.org/).
     value; the "while" hint survives filler such as "alert immediately";
     "below 12 on the house bank" reads the qualifier; ArrayBuffer chunks are
     read; more lowercase count names (`runtimeInState`); the assist keeps the
-    HTTP status when `text()` throws.
+    HTTP status when `text()` throws. And the review of that: a request
+    with no subject before the comparison takes the qualifier as its
+    subject; which paths fit the subject is decided by its words alone (not
+    the role, depth or display name), so freezers, relearning sensors,
+    named banks and twin engines named differently are picked again; two
+    words a path writes as one ("engine room") match it; a repeated
+    qualifier with on/of/for/from is fine, a path picked from the
+    alternatives is not refused for its qualifier, and a qualifier that
+    names none of the subject's paths is refused by name; blank quotes are
+    refused with a reason. A repeating burst-and-outage cycle (a pair of
+    readings every five minutes) is learned as the sender's rhythm after
+    eight outages of about one size; a muted path counts toward a silent
+    feed only if it went quiet with the others; replay merges requests'
+    rows that are a few seconds apart (one tick a row), gathers values only
+    for rows kept, and reports a reply with no rows as no data; any
+    ArrayBuffer or view chunk is read.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).
