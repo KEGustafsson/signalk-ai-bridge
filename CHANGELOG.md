@@ -240,7 +240,9 @@ this project uses [semantic versioning](https://semver.org/).
     "Running", "started" and "stopped" published as words match the parsed
     on and off. The parser refuses a unit it cannot convert ("30 cm"), words
     left over after the comparison, and two comparisons joined by "and"
-    instead of dropping one. The model fallback bounds the read of an error
+    instead of dropping one, and words left after a state or a change
+    ("switches on during rough weather") too; punctuation no longer turns
+    "switches on, please" into "changes". The model fallback bounds the read of an error
     reply, reports a JSON answer that is not an object, and converts numbers
     for `equals` / `notEquals` from the shown unit too.
   - CodeRabbit full review (detection and replay): replay enforces its row

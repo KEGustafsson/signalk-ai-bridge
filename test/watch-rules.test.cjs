@@ -434,6 +434,20 @@ describe('review of ac5804f', () => {
   });
 });
 
+describe('nothing after a state or a change is dropped', () => {
+  it('refuses words left after a state or a change, and keeps filler and punctuation harmless', () => {
+    const refused = parseRule('tell me if the bilge pump switches on during rough weather', VESSEL);
+    assert.equal(refused.ok, false);
+    assert.match(refused.reason, /Could not read "during rough weather" after "switches on"/);
+    const change = parseRule('notify me if the inverter mode changes a lot today', VESSEL);
+    assert.equal(change.ok, false);
+    const polite = parsed('tell me if the bilge pump switches on, please');
+    assert.equal(polite.op, 'equals');
+    assert.equal(polite.value, true);
+    assert.equal(parsed('alert when house battery voltage below 12,2 V.').value, 12.2);
+  });
+});
+
 describe('values a measurement can never have', () => {
   it('refuses on/off on a measured path, and does not pass it to the model', () => {
     const result = parseRule('tell me if the fridge temperature switches on', VESSEL);
