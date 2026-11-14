@@ -498,6 +498,27 @@ describe('path priority order', () => {
     }
   });
 
+  it('refuses a hand-written watch that a measurement can never meet', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const host = createHost();
+    host.savePluginOptions = (options, done) => done();
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, watchEnabled: true });
+    try {
+      host.deltaCallback({ context: 'vessels.self', updates: [{ values: [{ path: 'propulsion.main.coolantTemperature', value: 353 }] }] });
+      const bad = { id: 'r-bad', text: 'x', path: 'propulsion.main.coolantTemperature', op: 'equals', value: true, forSeconds: 0, severity: 'warn', source: 'manual' };
+      const added = recorder();
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: bad } }, added);
+      assert.equal(added.statusCode, 400);
+      assert.match(added.body.error.message, /is a measurement/);
+      const saved = recorder();
+      await routes['POST /watch/rules/save']({ ...writer, body: { rules: [bad] } }, saved);
+      assert.equal(saved.statusCode, 400);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('writes nothing for a watch change that changes nothing', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });

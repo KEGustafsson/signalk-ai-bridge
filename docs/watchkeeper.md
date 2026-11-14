@@ -81,26 +81,32 @@ standard Signal K path or a plugin's own.
   *discrete*. Numbers are *continuous*, unless the first 20 samples are all
   integers with at most 4 distinct values (a pump state, a mode code), in which
   case they are discrete until a fifth value or a fraction appears. A number
-  that has never fallen over at least 30 samples is a *counter* (engine hours,
-  energy, fuel used), and the level and stuck-sensor checks skip it. Never
-  falling is not enough on its own:
-  - A path listed in `watchCounterPaths` is a counter, whatever it does.
-    This is how a plugin's own counter under a name the watch does not know
-    is declared.
-  - A path named as a measurement is never a counter, whatever else its name
-    says (`…Voltage`, `…Current`, `…Temperature`, `…Level`, `…Pressure`,
-    `…Power`, `…Rate`, `…Stored`, `…Remaining` and the like, and anything
-    about satellites). Neither is a path whose unit is not one a cumulative
-    quantity has (s, m³, J, C, or m for a log).
-  - Otherwise, a path that has never fallen is a counter if it is named as
-    one (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`,
-    `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`, `…Consumed`,
-    `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`). A drop to
-    (nearly) zero is a reset - a daily yield at midnight, a trip log
-    cleared - and does not end it.
+  that only counts up is a *counter* (engine hours, energy, fuel used), and
+  the level and stuck-sensor checks skip it. Never falling is not enough on
+  its own:
+  - A number listed in `watchCounterPaths` by its exact path is a counter,
+    whatever it does. This is how a plugin's own counter under a name the
+    watch does not know is declared.
+  - Otherwise a measurement is never a counter: a path named as one
+    (`…Voltage`, `…Current`, `…Temperature`, `…Level`, `…Volume`,
+    `…Pressure`, `…Power`, `…Rate`, `…Stored`, `…Remaining` and the like,
+    and anything about satellites), or with a measurement's unit (V, A, W,
+    K, Pa, ratio, Hz, m/s, rad). This holds under a pattern in
+    `watchCounterPaths` too: under `plugins.example` its counters are
+    counters, and the `batteryVoltage` beside them is still judged.
+  - A number covered by a pattern in `watchCounterPaths` is then a counter.
+  - Any other number is a counter if, over at least 30 samples, it has never
+    fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
+    `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
+    `…Consumed`, `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`), in
+    any unit that is not a measurement's (s, m³, J, C, m, but also h, Ah or
+    kWh from a plugin). A drop to (nearly) zero is a reset - a daily yield
+    at midnight, a trip log cleared - and does not end it.
   Nothing is taken for a counter from its behaviour alone: a voltage under
   an unknown name and without units can climb for hours without a dip too,
-  and the checks that would report it must stay on.
+  and the checks that would report it must stay on. A listed counter is
+  never treated as a discrete value either, however few values it has had,
+  and the inventory says which pattern listed it (`counterBy`).
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -125,7 +131,7 @@ Each watched path keeps a small, serialisable state object
 | Update interval | Moving average of the time between accepted samples |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
-| Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, a quarter for a tank or other ratio, ten times the unit's floor otherwise; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
+| Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
 | Transitions | Counted per minute, so a switch cycling every second is counted exactly. "The last hour" is the minute buckets that start inside it — 59 to 60 minutes, never more |
 | Change rate | How often consecutive samples differ, for the frozen check |
 | Discrete states | Count per value (up to 32 values) |
@@ -241,7 +247,7 @@ indicator uses evidence the receiver does not control:
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
 | `frozen` | Consecutive fixes (no more than `max(5 s, 3 × the usual fix interval)` apart, so a receiver reporting every 10 s keeps the check) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
-| `lost` | After 30 fixes, none for `max(30 s, 10 × usual fix interval)`. Outages are left out of the usual interval, so a receiver that drops out twice is reported both times. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
+| `lost` | After 30 fixes, none for `max(30 s, 4 × usual fix interval)`. Outages are left out of the usual interval, so a receiver that drops out twice is reported both times; only a steady run of five long gaps, each within a quarter of the first, is taken as the receiver's new, slower rate. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
 Two indicators at once escalate every GNSS finding to `alert`. All GNSS
@@ -524,7 +530,7 @@ per row and at most 10,000 rows, for up to 80 paths in requests of 10.
 | `watchSound` | `false` | Add `sound` to the method of alert-level findings |
 | `watchDefaultExclusions` | `true` | Skip the paths listed under [Skipped by default](#skipped-by-default) |
 | `watchExcludePaths` | `[]` | More paths or patterns to skip |
-| `watchCounterPaths` | `[]` | Paths or patterns that only count up, under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors |
+| `watchCounterPaths` | `[]` | Paths that only count up, under names the watch does not recognise (a plugin's own pulse or energy counter); they are not judged as levels or stuck sensors. A pattern covers the paths beneath it but not the measurements among them; list a path exactly to override that |
 | `watchMaxPaths` | `1500` | Most paths watched (10–10000) |
 | `watchRuleAssist` | `main` | `main`, `helper` or `off` |
 | `watchHelperModel` | empty | Ollama model for `helper`, for example `qwen3:0.6b` |

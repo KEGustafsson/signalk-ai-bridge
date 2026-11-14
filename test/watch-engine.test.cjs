@@ -793,6 +793,53 @@ describe('watch engine: review follow-ups', () => {
     assert.equal(counter('navigation.gnss.satellitesInView.count'), false);
   });
 
+  it('keeps named counters in a plugin\'s own units, and a tank volume a measurement', () => {
+    const counter = (path, units) => {
+      const state = monitor.createPathState(path, T0);
+      Object.assign(state, { n: 100, rose: true, monotonic: true, rises: 100, units, kind: 'continuous' });
+      return monitor.isCounterState(state);
+    };
+    assert.equal(counter('propulsion.main.runTime', 'h'), true);
+    assert.equal(counter('electrical.batteries.house.lifetimeDischarge', 'Ah'), true);
+    assert.equal(counter('electrical.solar.energyTotal', 'kWh'), true);
+    assert.equal(counter('tanks.blackWater.0.currentVolume', 'm3'), false, 'a tank filling for hours is news');
+  });
+
+  it('never judges a listed counter as a discrete value, and lists it as counted by its pattern', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.example.starts'] });
+    let starts = 12;
+    // An engine-start count: a small whole number, one more every two hours.
+    let t = run(engine, T0, T0 + 12 * 60 * MINUTE, MINUTE, (now) => {
+      if ((now - T0) % (2 * 60 * MINUTE) === 0 && now > T0) starts += 1;
+      return [['plugins.example.starts', starts], ['plugins.example.status', 'ok']];
+    });
+    assert.ok(!detectors(engine).some((key) => key.includes('plugins.example.starts')), detectors(engine).join(', '));
+    const rows = Object.fromEntries(engine.inventory(t).paths.map((item) => [item.path, item]));
+    assert.equal(rows['plugins.example.starts'].kind, 'counter');
+    assert.equal(rows['plugins.example.starts'].counterBy, 'plugins.example.starts');
+    assert.notEqual(rows['plugins.example.status'].kind, 'counter', 'a word is never a counter');
+  });
+
+  it('lets a pattern list counters but not the measurements beside them', () => {
+    const rand = noise(5);
+    const sample = (voltage) => () => [
+      ['plugins.ex.pulses', (pulses += 1)],
+      ['plugins.ex.batteryVoltage', voltage + 0.02 * rand()]
+    ];
+    let pulses = 0;
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, sample(13.1));
+    t = run(engine, t, t + 2 * MINUTE, SECOND, sample(11.0));
+    const kinds = Object.fromEntries(engine.inventory(t).paths.map((item) => [item.path, item.kind]));
+    assert.equal(kinds['plugins.ex.pulses'], 'counter');
+    assert.notEqual(kinds['plugins.ex.batteryVoltage'], 'counter');
+    assert.ok(detectors(engine).includes('shift:plugins.ex.batteryVoltage'), 'a voltage collapse under a counter pattern is still reported');
+    // Listed by its exact path, the operator's word stands.
+    const exact = newEngine({ watchCounterPaths: ['plugins.ex.batteryVoltage'] });
+    t = run(exact, T0, T0 + 40 * MINUTE, SECOND, sample(13.1));
+    assert.equal(exact.inventory(t).paths.find((item) => item.path === 'plugins.ex.batteryVoltage').kind, 'counter');
+  });
+
   it('keeps a named counter a counter after it is reset to zero', () => {
     const state = monitor.createPathState('electrical.solar.mppt.yieldToday', T0);
     let value = 0;
@@ -806,7 +853,7 @@ describe('watch engine: review follow-ups', () => {
     assert.equal(monitor.isCounterState(voltage), false);
   });
 
-  it('does not count the time the plugin was stopped as hours of climbing', () => {
+  it('does not make a counter of a climb that is restored after a long stop', () => {
     const state = monitor.createPathState('plugins.example.reading', T0);
     // Forty flat minutes, then twenty climbing: one or two hours with a rise.
     let value = 13.2;
@@ -899,6 +946,24 @@ describe('GNSS: a receiver that really slows down', () => {
     t = run(engine, t, t + 35 * SECOND, SECOND, () => []);
     assert.notEqual(engine.status(t).gnss.status, 'lost');
     assert.ok(!detectors(engine).includes('gnss.lost:navigation.position'));
+  });
+
+  it('does not stretch the usual interval from a few irregular dropouts', () => {
+    for (const gap of [20, 45]) {
+      const engine = newEngine();
+      let lat = 60;
+      let t = run(engine, T0, T0 + 2 * MINUTE, SECOND, () => {
+        lat += 0.00001;
+        return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+      });
+      // Three fixes, each one gap apart (a receiver dropping out), then nothing.
+      for (let i = 0; i < 3; i += 1) {
+        t = run(engine, t, t + gap * SECOND, SECOND, () => []);
+        engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
+      }
+      t = run(engine, t, t + 60 * SECOND, SECOND, () => []);
+      assert.ok(detectors(engine).includes('gnss.lost:navigation.position'), `a receiver gone for a minute after ${gap} s dropouts is lost`);
+    }
   });
 
   it('keeps the frozen-fix check after a 1 Hz receiver settles at one fix every 10 s', () => {
@@ -1013,8 +1078,15 @@ describe('watch report: GNSS cross-check within the window', () => {
     const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
     const restarted = newEngine();
     assert.equal(restarted.importState(saved, t + MINUTE), true);
-    // No fix yet since the restart: the day's cross-checking still counts.
-    assert.match(restarted.report(t + MINUTE, 24).lines.join('\n'), /cross-checked the fix \(last at/);
+    // No fix since the restart: the earlier cross-check is kept, but the
+    // report does not call a receiver it has not heard from "no warnings".
+    const quiet = restarted.report(t + MINUTE, 24).lines.join('\n');
+    assert.match(quiet, /GNSS: no fix since the watch restarted \(the fix was last cross-checked at/);
+    assert.doesNotMatch(quiet, /no warnings/);
+    // A fix arrives: the day's cross-checking counts again.
+    restarted.ingest('navigation.position', { latitude: lat, longitude: 24 }, t + 2 * MINUTE, 'gps');
+    restarted.tick(t + 2 * MINUTE);
+    assert.match(restarted.report(t + 2 * MINUTE, 24).lines.join('\n'), /no warnings; dead reckoning or a second receiver cross-checked the fix \(last at/);
   });
 });
 
@@ -1074,6 +1146,16 @@ describe('review of 9366cdb, and the stale-log case', () => {
     // Then it settles one step up.
     t = run(engine, t, t + 10 * MINUTE, SECOND, () => [[path, 300000 + step]]);
     assert.ok(!detectors(engine).some((key) => key.includes(path)), detectors(engine).join(', '));
+  });
+
+  it('still reports a tank on an eighths sender going from full to empty', () => {
+    const engine = newEngine();
+    const path = 'tanks.fuel.0.currentLevel';
+    // Full, flickering one eighth now and then: the sender's resolution is learned.
+    let t = run(engine, T0, T0 + 60 * MINUTE, 10 * SECOND, (now) => [[path, (now - T0) % (5 * MINUTE) < 10 * SECOND ? 0.875 : 1]]);
+    assert.ok(!detectors(engine).some((key) => key.includes(path)), 'one eighth step is not news');
+    t = run(engine, t, t + 5 * MINUTE, 10 * SECOND, () => [[path, 0]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`), 'full to empty must be reported');
   });
 
   it('treats one count on a small whole-number path as one count', () => {

@@ -354,7 +354,8 @@ module.exports = function createPlugin(app, dependencies = {}) {
         description:
           'Paths that only count up - engine hours, energy, pulses - which the watch does not judge as levels or stuck sensors. ' +
           'Standard names (runTime, fuel.used, lifetimeDischarge, energy..., log, ...Today and the like) are recognised already; ' +
-          'list a plugin\'s own counters here, with the same patterns as above.',
+          'list a plugin\'s own counters here. A pattern (as above) covers the paths beneath it, except measurements such as ' +
+          'a voltage or a level; list a path exactly to make it a counter regardless.',
         items: { type: 'string' },
         default: []
       },
@@ -1214,6 +1215,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
         return;
       }
+      const problem = watchService.checkRule(rule);
+      if (problem) {
+        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
+        return;
+      }
       let full = false;
       const rules = await changeWatchRules((current) => {
         const others = current.filter((item) => item.id !== rule.id);
@@ -1265,6 +1271,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const body = await readJsonBody(req);
       if (!body || !Array.isArray(body.rules)) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
+        return;
+      }
+      const problem = normalizeRules(body.rules)
+        .map((rule) => watchService.checkRule(rule))
+        .find(Boolean);
+      if (problem) {
+        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
         return;
       }
       const rules = await changeWatchRules(() => body.rules);

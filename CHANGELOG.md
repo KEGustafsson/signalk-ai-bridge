@@ -128,7 +128,7 @@ this project uses [semantic versioning](https://semver.org/).
     conditions is not passed to the model; and the panel's stale-status
     warning shows even when the last status said the watch was off.
   - Independent review of those commits: real counters under other names
-    (`fuel.used`, `lifetimeDischarge`, a plugin's own) are counters again; the
+    (`fuel.used`, `lifetimeDischarge`) are counters again; the
     frozen-fix check adapts to a receiver's fix rate instead of needing a fix
     every 5 s; an unreadable extra phrase ("if possible") is no longer a
     terminal refusal; true wind angle keeps its sign; a "changes" rule no
@@ -147,8 +147,11 @@ this project uses [semantic versioning](https://semver.org/).
   - Independent reviews of 3a14b76 and bddf473: a counter under a name the
     watch does not know is no longer guessed from hours of climbing, which a
     voltage without units can also do; it is listed in the new
-    `watchCounterPaths` setting instead. A measurement (by name or unit) is
-    never a counter; named counters survive
+    `watchCounterPaths` setting instead (exactly, or by a pattern that still
+    leaves the measurements under it judged; a listed counter is never taken
+    for a discrete value). A measurement (by name or unit, `…Volume`
+    included) is never a counter, while named counters in a plugin's own
+    units (h, Ah, kWh) are; named counters survive
     a reset to zero and the name list no longer catches `totalPower` or
     `energyStored`; a "changes" rule reports a change once, though its guard
     goes quiet and returns; on/off on a measurement is refused, also when a
@@ -158,6 +161,16 @@ this project uses [semantic versioning](https://semver.org/).
     really slows down is learned instead of being reported lost after every
     fix; coarse pressure and tank senders keep their resolution, and a
     glitch out and back is recognised as one step.
+  - Independent review of 3fe0e2f: a tank on an eighths sender no longer
+    loses every drop, full to empty included, to its learned resolution; a
+    "changes" rule marks a change reported only once its finding exists, so
+    a guard going stale just after a change no longer loses it; a few
+    irregular GNSS dropouts no longer stretch the usual fix interval (a new
+    rate needs five steady long gaps, and lost is four missed fixes); the
+    report no longer says "no warnings" for a receiver not heard from since
+    a restart; hand-written watches (`/watch/rules/add` and `/save`) get the
+    same measurement check as compiled ones; and the parser takes on/off on
+    a path whose data is a flag, whatever its name.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

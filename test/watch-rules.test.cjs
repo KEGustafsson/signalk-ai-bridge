@@ -380,22 +380,48 @@ describe('review of ac5804f', () => {
     assert.equal(verdict.evidence.from, 'idle');
   });
 
+  // Drive an engine with one "changes" rule; count how often its finding opens.
+  function changesRun(script, endSeconds, forSeconds = 0) {
+    const rule = { id: 'r-light', text: 'anchor light changes', path: 'electrical.switches.anchorLight.state', op: 'changes', forSeconds, when: { path: 'navigation.state', op: 'equals', value: 'anchored' } };
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchRules: [rule] }), { now: T0 });
+    let opens = 0;
+    let open = false;
+    for (let s = 0; s <= endSeconds; s += 1) {
+      const t = T0 + s * SECOND;
+      for (const [path, value] of script(s)) engine.ingest(path, value, t);
+      if (s % 5 === 0) {
+        engine.tick(t);
+        const now = engine.status(t).activeFindings.some((finding) => finding.detector === 'rule');
+        if (now && !open) opens += 1;
+        open = now;
+      }
+    }
+    return opens;
+  }
+
   it('reports a change once, though its guard goes quiet and comes back within the hold', () => {
-    const rule = normalizeRule({ path: 'a.mode', op: 'changes', when: { path: 'a.power', op: 'equals', value: true } }, T0);
-    const data = new Map([['a.mode', { value: 'idle', at: T0 }], ['a.power', { value: true, at: T0 }]]);
-    const memory = {};
-    const at = (t) => evaluateRule(rule, (path) => data.get(path), t, memory);
-    at(T0);
-    data.set('a.mode', { value: 'fault', at: T0 + SECOND });
-    assert.equal(at(T0 + SECOND).active, true);
-    // The guard is published only every six minutes: stale in between.
-    data.set('a.mode', { value: 'fault', at: T0 + 5 * MINUTE + 30 * SECOND });
-    assert.equal(at(T0 + 5 * MINUTE + 30 * SECOND), null);
-    data.set('a.power', { value: true, at: T0 + 6 * MINUTE });
-    assert.equal(at(T0 + 6 * MINUTE).active, false, 'the same change must not be reported again');
-    // A new change is still reported.
-    data.set('a.mode', { value: 'idle', at: T0 + 6 * MINUTE + SECOND });
-    assert.equal(at(T0 + 6 * MINUTE + SECOND).active, true);
+    // The guard is republished every six minutes; the light changes once.
+    const opens = changesRun((s) => [
+      ...(s % 360 === 0 ? [['navigation.state', 'anchored']] : []),
+      ['electrical.switches.anchorLight.state', s < 10 ? 0 : 1]
+    ], 1200);
+    assert.equal(opens, 1);
+  });
+
+  it('still reports a change made just before the guard goes stale', () => {
+    // Changed at 297 s, guard last heard at 0 s: stale at 300 s, before the
+    // finding could open. It must open once the guard is heard again.
+    const script = (s) => [
+      ...(s % 360 === 0 ? [['navigation.state', 'anchored']] : []),
+      ['electrical.switches.anchorLight.state', s < 297 ? 0 : 1]
+    ];
+    assert.equal(changesRun(script, 600), 1);
+    // The same with a "for 2 minutes" rule and the change at 200 s.
+    const slow = (s) => [
+      ...(s % 360 === 0 ? [['navigation.state', 'anchored']] : []),
+      ['electrical.switches.anchorLight.state', s < 200 ? 0 : 1]
+    ];
+    assert.equal(changesRun(slow, 900, 120), 1);
   });
 });
 
@@ -422,6 +448,14 @@ describe('values a measurement can never have', () => {
     assert.throws(() => engine.proveRule({ path: 'propulsion.main.temperature', op: 'equals', value: 'warm' }, T0), /is a measurement/);
     engine.ingest('electrical.switches.bank.0.state', 'on', T0);
     assert.doesNotThrow(() => engine.proveRule({ path: 'electrical.switches.bank.0.state', op: 'equals', value: 'on' }, T0));
+  });
+
+  it('takes on/off on a path whose data is a flag, whatever its name suggests', () => {
+    const result = parseRule('tell me if the autopilot locked heading active switches off', [
+      { path: 'steering.autopilot.lockedHeadingActive', valueType: 'boolean' }
+    ]);
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.rule.value, false);
   });
 
   it('names the other condition when one of two cannot be read', () => {
