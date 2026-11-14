@@ -317,3 +317,31 @@ describe('review fixes (minor)', () => {
     assert.equal(evaluateRule(rule, (path) => data.get(path), T0 + 1000, memory).active, false);
   });
 });
+
+describe('rule compilation: review follow-ups', () => {
+  it('does not hand a two-condition request to the model, which would drop one too', async () => {
+    let onDelta;
+    let calls = 0;
+    const service = createWatchService(
+      { subscriptionmanager: { subscribe(command, unsubscribes, onError, callback) { onDelta = callback; } } },
+      { now: () => T0, fetchImpl: async () => { calls += 1; return new Response('{}', { status: 500 }); } }
+    );
+    service.start({ watchEnabled: true, watchRuleAssist: 'main' });
+    try {
+      onDelta({ updates: [{ values: [
+        { path: 'propulsion.main.temperature', value: 353 },
+        { path: 'propulsion.main.revolutions', value: 30 },
+        { path: 'electrical.ac.shore.state', value: true }
+      ] }] });
+      const result = await service.compileRule(
+        { text: 'coolant above 95 while rpm above 600 only when shore is on' },
+        { enabled: true, baseUrl: 'http://ollama:11434', model: 'gemma4', backend: 'ollama' }
+      );
+      assert.equal(result.ok, false);
+      assert.match(result.reason, /one "while" condition/);
+      assert.equal(calls, 0, 'no model was asked');
+    } finally {
+      service.stop();
+    }
+  });
+});

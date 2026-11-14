@@ -675,3 +675,68 @@ describe('watch engine: review fixes', () => {
     assert.equal(engine.status(t).gnss.status, 'lost');
   });
 });
+
+describe('watch engine: review follow-ups', () => {
+  const monitor = require('../lib/watch/path-monitor.cjs');
+  const sourcesModule = require('../lib/watch/sources.cjs');
+
+  it('does not take a voltage climbing on every update for a counter', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(71);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 13.2 + 0.01 * rand()]]);
+    // Then it climbs a little on every single update: never down, always up.
+    let value = 13.2;
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => {
+      value += 0.002;
+      return [[path, value]];
+    });
+    assert.ok(detectors(engine).includes(`shift:${path}`), 'a runaway voltage must not be excused as a counter');
+  });
+
+  it('counts the last hour to the minute, never reaching past it', () => {
+    const t = T0 + 10 * 60 * MINUTE;
+    const state = monitor.createPathState('electrical.switches.pump.state', T0);
+    state.kind = 'discrete';
+    state.firstAt = T0;
+    // 9 transitions in the minute that started 61 minutes ago; 2 inside the hour.
+    const outside = Math.floor((t - 61 * MINUTE) / MINUTE) * MINUTE;
+    const inside = Math.floor((t - 10 * MINUTE) / MINUTE) * MINUTE;
+    state.transitionMinutes = [[outside, 9], [inside, 2]];
+    state.transitionTotal = 11;
+    const cond = monitor.evaluateCycling(state, t, { cyclingLearningMs: 6 * 60 * MINUTE, cyclingMinPerHour: 4 });
+    assert.equal(cond.evidence.lastHour, 2);
+  });
+
+  it('does not report a frozen fix across a gap in the feed', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    const fix = { latitude: 60, longitude: 24 };
+    // A few identical fixes while the log reads speed start a candidate...
+    let t = run(engine, T0, T0 + 3 * SECOND, SECOND, () => [
+      ['navigation.position', fix, 'gps'],
+      ['navigation.speedThroughWater', 6 * knots]
+    ]);
+    // ...then the position feed stops and the boat slows to a stop.
+    t = run(engine, t, t + 5 * MINUTE, SECOND, () => [['navigation.speedThroughWater', 0]]);
+    // Later both resume, at speed, with the old fix repeated.
+    t = run(engine, t, t + 10 * SECOND, SECOND, () => [
+      ['navigation.position', fix, 'gps'],
+      ['navigation.speedThroughWater', 6 * knots]
+    ]);
+    assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
+  });
+
+  it('makes room for the current primary when the pair table is full of former primaries', () => {
+    const state = sourcesModule.createSourceState();
+    for (let index = 0; index < 16; index += 1) {
+      state.pairs[`old${index}|x`] = { primary: `old${index}`, secondary: 'x', mean: 0, variance: 0, n: 40, last: { at: index } };
+    }
+    const options = { intervalMean: 1000, angle: false, scaleOf: () => 0.1, zClear: 3 };
+    sourcesModule.routeSample(state, 'a', 1, 1000, options);
+    sourcesModule.routeSample(state, 'b', 1.05, 1100, options);
+    assert.ok(state.pairs['a|b'], 'the current pair must be learned');
+    assert.equal(Object.keys(state.pairs).length, 16);
+    assert.equal(state.pairs['old0|x'], undefined, 'the least recently compared former pair goes first');
+  });
+});

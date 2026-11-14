@@ -70,6 +70,12 @@ this project uses [semantic versioning](https://semver.org/).
     rules read; a stale compile result can no longer appear beside new text;
     and the docs on prompt budget, history wildcards and the preview host
     were corrected.
+  - Follow-ups: a counter needs a counter's name (a voltage climbing on
+    every update is not one); the hourly cycling count never reaches past the
+    hour; a gap in the position feed ends a frozen-fix candidate; a full pair
+    table makes room for the current primary; a request with two "while"
+    conditions is not passed to the model; and the panel's stale-status
+    warning shows even when the last status said the watch was off.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

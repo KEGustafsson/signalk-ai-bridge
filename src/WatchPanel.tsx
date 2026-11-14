@@ -445,6 +445,15 @@ export default function WatchPanel(props: WatchPanelProps) {
         <span style={{ fontSize: '0.8rem', color: '#475569' }}>Statistical watch of every path · no language model</span>
       </div>
 
+      {unreachable && status ? (
+        // A poll that failed after earlier ones succeeded: the server went
+        // away or the session expired. Shown whatever the last snapshot said -
+        // on, off or busy - because none of it is current any more.
+        <p style={{ margin: '0.5rem 0 0 0', color: '#b45309', fontWeight: 600 }}>
+          Watch status could not be refreshed since {formatClockTime(updatedAt ?? undefined)}: what is shown below may be out of
+          date.
+        </p>
+      ) : null}
       {unreachable && !status ? (
         <p style={{ margin: '0.5rem 0 0 0', color: '#475569' }}>Watch status unavailable.</p>
       ) : !status ? (
@@ -456,15 +465,7 @@ export default function WatchPanel(props: WatchPanelProps) {
         </p>
       ) : (
         <>
-          {unreachable ? (
-            // A poll that failed after earlier ones succeeded: the server went
-            // away or the session expired. The last snapshot is still shown,
-            // but never as a current all-clear.
-            <p style={{ margin: '0.5rem 0 0 0', color: '#b45309', fontWeight: 600 }}>
-              Watch status could not be refreshed since {formatClockTime(updatedAt ?? undefined)}: what is shown below may be out
-              of date.
-            </p>
-          ) : null}
+
           <p style={{ margin: '0.5rem 0 0 0' }}>
             {unreachable ? (
               <strong style={{ color: '#475569' }}>Status unknown.</strong>
