@@ -63,7 +63,10 @@ rising?" at a fraction of the tokens.
   these are explicit paths; a path may carry an aggregation method, for example
   `navigation.speedOverGround:average` (`average`, `min`, `max`, `first`,
   `last`, `mid`, `middle_index`, `sma`, `ema`). Select none to reuse the exact
-  paths from the AI data path selection. At most 12 paths are requested
+  paths from the AI data path selection. Only exact paths are reused: wildcards
+  such as `navigation.*` are not expanded, so if the live selection is all
+  wildcards, select history paths explicitly or no history is requested. At
+  most 12 paths are requested
 
 - `historyDuration`
   How far back to look: `PT1H`, `P1D`, `30m`, or a plain number of seconds.

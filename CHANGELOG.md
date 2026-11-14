@@ -26,8 +26,9 @@ this project uses [semantic versioning](https://semver.org/).
   starts or a charger changes mode, the affected paths re-learn instead of
   alerting. The learned baseline survives restarts. Detection costs microseconds
   per update on the CPU and keeps running with the inference host down. The
-  model is consulted only when the operator presses "Ask AI about this", which
-  fills the prompt box without sending anything.
+  model is consulted only when the operator asks: "Ask AI about this" fills
+  the prompt box without sending anything, and a plain-language watch rule the
+  parser cannot read goes to a model only if `watchRuleAssist` allows it.
 - **A Watchkeeper card in the panel**, showing active incidents with trend
   lines, a one-hour mute per path, recent incidents, and a 24-hour replay of
   the History API through a fresh watch to show what a sensitivity setting
@@ -59,6 +60,16 @@ this project uses [semantic versioning](https://semver.org/).
     showing the last snapshot as a current all-clear.
   - The history docs say plainly that a `historyServerUrl` on `localhost` at
     another port also receives the operator's session.
+  - Minor review points: feedback now also applies to disagreeing sources on
+    skipped paths; the watch report says the fix was "cross-checked" only when
+    dead reckoning or a second receiver was checking it; signed angles (roll,
+    pitch, rudder) keep their sign; null coordinates are not read as 0° 0°;
+    a "changes" rule keeps up with its value while its guard is false; a
+    restart in the same process restores the final in-memory snapshot, and
+    saves of the state file are serialised; replay includes the paths your
+    rules read; a stale compile result can no longer appear beside new text;
+    and the docs on prompt budget, history wildcards and the preview host
+    were corrected.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use
@@ -82,7 +93,9 @@ this project uses [semantic versioning](https://semver.org/).
   supports, and what a missing check would need.
 - **The watch learns from dismissals, and writes a report.** "Not useful" on a
   finding, or muting a path while it fires, makes that path need a 25 % bigger
-  departure before it is reported again, up to double. This decays with a
+  departure before it is reported again, up to double. This applies to the
+  level, source-disagreement and dropout checks; a stuck-sensor or other
+  finding can recur as before. This decays with a
   14-day half-life, is listed in the panel and can be undone with "Restore".
   `GET /watch/report` and the panel's "Watch report" sum up the last day in
   plain template lines: incidents, what is still active, the longest and the

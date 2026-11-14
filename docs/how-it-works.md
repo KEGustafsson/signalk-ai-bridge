@@ -55,13 +55,18 @@ describe what a notification UI may do with it and answer no question.
 The budget follows `numCtx`. llama.cpp resolves a prompt that will not fit by
 truncating the prompt itself, to whatever `num_predict` leaves it, and says so
 only in the inference server's log — so the plugin sizes its own context to the
-window and drops whole paths, from the end of your selection, rather than let
-the backend cut the prompt mid-JSON. When it drops any, it says how many in the
-prompt, so the model can tell you the answer may be incomplete.
+window and leaves out whole paths rather than let the backend cut the prompt
+mid-JSON. When it leaves any out, it says how many in the prompt, so the model
+can tell you the answer may be incomplete.
 
-**Order your path selection by what matters most.** The budget keeps entries in
-the order you chose them and drops from the tail, so alarms and engine data
-belong ahead of signal strengths and camera URLs.
+**Which paths are left out.** The budget walks the selected data in order and
+skips any entry that does not fit in what is left, then carries on — so a large
+entry early on can be skipped while smaller ones after it are kept. The order is
+the order the selection is stored in, which is the picker's list order (branch
+wildcards first, then paths alphabetically), not the order you ticked them; the
+panel has no control for reordering. The dependable way to protect what matters
+is to keep the selection small enough to fit: select alarms and engine data,
+and leave out signal strengths, camera URLs and other bulky paths.
 
 The operator's question is charged against the same window. A short question
 costs nothing worth counting, but a pasted checklist near the 4,000-character

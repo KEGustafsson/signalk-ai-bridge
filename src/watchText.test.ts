@@ -114,7 +114,7 @@ describe('watch rules in the panel', () => {
   it('summarises the evidence for a rule before it is added', () => {
     assert.equal(
       describeCompileEvidence({ ok: true, current: { text: '79.9 °C' }, wouldFireNow: false, recent: { minutes: 90, share: 0 } }),
-      'Now 79.9 °C; it would not fire now; true for 0 % of the last 90 min the watch has recorded.'
+      'Now 79.9 °C; the condition does not hold now; true for 0 % of the last 90 min the watch has recorded.'
     );
     assert.equal(describeCompileEvidence({ ok: true }), 'No data for this path has arrived yet.');
   });

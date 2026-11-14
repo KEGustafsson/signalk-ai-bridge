@@ -172,9 +172,11 @@ export function describeCompileEvidence(result: WatchRuleCompileResult): string 
     parts.push(`Now ${result.current.text}`);
   }
   if (result.wouldFireNow === true) {
-    parts.push('it would fire straight away');
+    // The live watch also waits out the rule's duration, so "holds now" is
+    // the honest reading; the description already says how long.
+    parts.push('the condition holds now');
   } else if (result.wouldFireNow === false) {
-    parts.push('it would not fire now');
+    parts.push('the condition does not hold now');
   }
   if (result.recent && result.recent.minutes > 0) {
     parts.push(

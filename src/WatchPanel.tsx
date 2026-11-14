@@ -82,6 +82,10 @@ export default function WatchPanel(props: WatchPanelProps) {
   const [inventoryFilter, setInventoryFilter] = React.useState<string>('');
   const [report, setReport] = React.useState<WatchReport | 'loading' | { error: string } | null>(null);
   const [ruleText, setRuleText] = React.useState<string>('');
+  // Which compile request is current. A reply for text the operator has since
+  // changed, or one overtaken by a later request, must not put its read-back
+  // (and its "Add this watch") beside different text.
+  const [compileGeneration] = React.useState<{ current: number }>({ current: 0 });
   const [compiled, setCompiled] = React.useState<WatchRuleCompileResult | 'working' | null>(null);
   const [unusual, setUnusual] = React.useState<readonly WatchUnusualRow[] | 'loading' | { error: string } | null>(null);
 
@@ -247,19 +251,23 @@ export default function WatchPanel(props: WatchPanelProps) {
   const onCompile = React.useCallback(
     async (path?: string) => {
       if (!ruleText.trim()) return;
+      compileGeneration.current += 1;
+      const generation = compileGeneration.current;
       setCompiled('working');
       try {
         const result = await post('/watch/rules/compile', { text: ruleText, ...(path ? { path } : {}) });
+        if (generation !== compileGeneration.current) return;
         setCompiled(
           result.ok
             ? (result.body as WatchRuleCompileResult)
             : { ok: false, reason: errorText(result.status, result.body, 'Could not read that.') }
         );
       } catch (error) {
+        if (generation !== compileGeneration.current) return;
         setCompiled({ ok: false, reason: error instanceof Error ? error.message : 'Could not read that.' });
       }
     },
-    [post, ruleText]
+    [compileGeneration, post, ruleText]
   );
 
   // One rule per request, applied on the server to the rules as they are
@@ -519,6 +527,7 @@ export default function WatchPanel(props: WatchPanelProps) {
                 value={ruleText}
                 maxLength={300}
                 onChange={(event: { target: { value: string } }) => {
+                  compileGeneration.current += 1;
                   setRuleText(event.target.value);
                   setCompiled(null);
                 }}

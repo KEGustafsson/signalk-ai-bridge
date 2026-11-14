@@ -9,11 +9,19 @@ npm run dev
 ```
 
 To render the panel against the real plugin routes without a Signal K server,
-run the preview host in a second shell — `--stub` also stubs the inference
-backend, so no model is needed:
+run the preview host and the dev server in **two separate shells** (the preview
+host keeps running). `--stub` also stubs the inference backend, so no model is
+needed.
+
+First shell:
 
 ```bash
 node scripts/preview-host.mjs --stub
+```
+
+Second shell:
+
+```bash
 SIGNALK_AI_BRIDGE_DEV_TARGET=http://127.0.0.1:3100 npm run dev
 ```
 

@@ -294,3 +294,28 @@ describe('watch routes', () => {
     assert.equal(stopped.statusCode, 503);
   });
 });
+
+describe('watch service: restart and saves', () => {
+  it('restarts from the final in-memory snapshot, not a file whose save is still in flight', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-'));
+    try {
+      const host = createHost({ dataDir });
+      const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
+      const service = createWatchService(host, { now: () => clock.t });
+      service.start({ watchEnabled: true, watchLearningMinutes: 10 });
+      drive(host, service, clock, 15 * MINUTE, (t) => 353.15 + ((t / 1000) % 3) * 0.05);
+      // No file yet; restart straight away, as a settings change does.
+      service.start({ watchEnabled: true, watchLearningMinutes: 10 });
+      const status = service.status();
+      assert.equal(status.restoredBaseline, true);
+      assert.equal(status.paths.watched, 1);
+      service.stop();
+      // Both pending saves complete in order and leave a readable file.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'watch-state.json'), 'utf8'));
+      assert.equal(saved.paths.length, 1);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+});

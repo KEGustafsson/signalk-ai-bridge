@@ -153,7 +153,7 @@ been watched for `watchLearningMinutes` (default 30).
 
 | Check | Fires when | Severity | Persist / clear |
 | --- | --- | --- | --- |
-| **Unusually high / low** (`shift`) | `|z| ≥ zWarn`; clears below `zClear` | `alert` at `|z| ≥ zAlert`, else `warn` | 15 s / 60 s |
+| **Unusually high / low** (`shift`) | `\|z\| ≥ zWarn`; clears below `zClear` | `alert` at `\|z\| ≥ zAlert`, else `warn` | 15 s / 60 s |
 | **Stopped updating** (`dropout`) | A path that updates at least once a minute (30+ samples) has been silent for more than `max(30 s, 10 × usual interval)` | `warn` | immediate / on next update |
 | **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path | `alert` | immediate |
 | **Looks stuck** (`frozen`) | A continuous path that changed on at least half its updates repeats exactly the same non-zero value 30+ times over 5+ minutes (100+ samples learned) | `warn` | immediate |
@@ -411,8 +411,10 @@ interruption:
   dismissal left gets a threshold factor of `1 + 0.25 × dismissals`, capped at
   **2**.
 - The factor multiplies `zWarn` and `zAlert` for the level (`shift`) and
-  source-disagreement checks, and the silence a `dropout` needs. Other checks
-  are unaffected.
+  source-disagreement checks (on watched and skipped paths alike), and the
+  silence a `dropout` needs. Other checks — stuck sensors, new states,
+  cycling, forecasts, GNSS, your own watches — are unaffected, so a dismissed
+  stuck-sensor finding can recur just as before; mute the path for that.
 - An open finding is not closed by feedback: it clears through its normal
   hysteresis. The next departure has to be bigger.
 - `useful: true` removes one dismissal, and `"reset"` forgets them all

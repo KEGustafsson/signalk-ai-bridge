@@ -107,8 +107,9 @@ OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d      # t
   when the server cannot be reached.
 - **AI Path Selection**: which paths are sent to the model. **Browse available
   paths** lists what this vessel publishes; tick and save. The selection is made
-  here, not in the plugin settings. Put the most important paths first: when the
-  context window is full, paths are dropped from the end.
+  here, not in the plugin settings. When the context window is full, paths that
+  do not fit are left out (and the prompt says how many), so select what the
+  model needs rather than everything.
 - **History Context**: the history window, the last read, and **Browse recorded
   paths**.
 - **GPU Acceleration**: whether the model is fully on the GPU, and the board's
@@ -144,8 +145,10 @@ What makes it work on any boat:
   K notifications under `notifications.aiBridge.watch.*` at `warn` or `alert`
   (never `alarm` or `emergency`). KIP, Freeboard, WilhelmSK and any other
   notification consumer show them with no setup.
-- **It learns from you.** **Not useful** makes a path need a bigger change next
-  time; **Restore** undoes it.
+- **It learns from you.** **Not useful** makes a path need a bigger change before
+  its level, source-disagreement or dropout checks report again; **Restore**
+  undoes it. Other findings, such as a stuck sensor, are not affected: mute
+  those.
 - **Tune before trusting it.** **Replay last 24 h** runs a fresh watch over
   recorded history and shows what it would have raised.
 

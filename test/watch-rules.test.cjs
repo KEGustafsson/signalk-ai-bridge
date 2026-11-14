@@ -287,3 +287,33 @@ describe('rule parser: review fixes', () => {
     assert.match(result.reason, /one "while" condition; this has 2/);
   });
 });
+
+describe('review fixes (minor)', () => {
+  const { formatValue } = require('../lib/watch/format.cjs');
+  const { toPosition } = require('../lib/watch/stats.cjs');
+
+  it('keeps the sign of a roll, and wraps only directions', () => {
+    assert.equal(formatValue('navigation.attitude.roll', -Math.PI / 18, 'rad'), '-10.0 °');
+    assert.equal(formatValue('navigation.headingTrue', -Math.PI / 18, 'rad'), '350.0 °');
+  });
+
+  it('does not read null coordinates as 0° 0°', () => {
+    assert.equal(toPosition({ latitude: null, longitude: null }), undefined);
+    assert.equal(toPosition({ latitude: '', longitude: '' }), undefined);
+    assert.deepEqual(toPosition({ latitude: 60.1, longitude: '24.9' }), { latitude: 60.1, longitude: 24.9 });
+  });
+
+  it('keeps a "changes" rule up to date while its guard is false', () => {
+    const rule = normalizeRule({ path: 'a.mode', op: 'changes', when: { path: 'a.power', op: 'equals', value: true } }, T0);
+    const data = new Map([['a.mode', { value: 'idle', at: T0 }], ['a.power', { value: true, at: T0 }]]);
+    const memory = {};
+    evaluateRule(rule, (path) => data.get(path), T0, memory);
+    // Power off; the mode changes while nobody is watching for it.
+    data.set('a.power', { value: false, at: T0 });
+    data.set('a.mode', { value: 'fault', at: T0 });
+    assert.equal(evaluateRule(rule, (path) => data.get(path), T0, memory), null);
+    // Power back on: the mode has not changed since, so nothing fires.
+    data.set('a.power', { value: true, at: T0 + 1000 });
+    assert.equal(evaluateRule(rule, (path) => data.get(path), T0 + 1000, memory).active, false);
+  });
+});
