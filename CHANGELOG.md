@@ -93,6 +93,15 @@ this project uses [semantic versioning](https://semver.org/).
     longer forgets a change made while its guard was stale; the report's GNSS
     line is judged on its own window; and replay puts rule inputs first so the
     80-path cap cannot cut them.
+  - Independent review of 9366cdb: a baseline saved before per-pair source
+    statistics no longer crashes the watch on the next secondary sample (and
+    one bad value can no longer take a whole delta down); an outage no longer
+    stretches the GNSS fix interval so the next one goes unreported; a single
+    out-and-back glitch no longer sets the sensor resolution, which is also
+    capped; "becomes warm" on a temperature is refused instead of stored as a
+    watch that cannot fire; adding a 51st watch returns 409 instead of
+    reporting success for a dropped rule; and a stale speed log ends a
+    frozen-fix candidate.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

@@ -113,7 +113,7 @@ Each watched path keeps a small, serialisable state object
 | Update interval | Moving average of the time between accepted samples |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
-| Sensor resolution | The smallest non-zero step seen at least twice (within 10 %) among the last 8 steps. The noise floor is at least twice this. A single step is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
+| Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 9 steps; the noise floor is at least twice it, but never more than ten times the floor for the unit (or 5 % of the value). A single step, or a glitch that goes out and comes straight back (two equal steps), is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
 | Transitions | Counted per minute, so a switch cycling every second is counted exactly. "The last hour" is the minute buckets that start inside it — 59 to 60 minutes, never more |
 | Change rate | How often consecutive samples differ, for the frozen check |
 | Discrete states | Count per value (up to 32 values) |
@@ -229,7 +229,7 @@ indicator uses evidence the receiver does not control:
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
 | `frozen` | Consecutive fixes (no more than `max(5 s, 3 × the usual fix interval)` apart, so a receiver reporting every 10 s keeps the check) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
-| `lost` | After 30 fixes, none for `max(30 s, 10 × usual fix interval)`. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
+| `lost` | After 30 fixes, none for `max(30 s, 10 × usual fix interval)`. Outages are left out of the usual interval, so a receiver that drops out twice is reported both times. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
 Two indicators at once escalate every GNSS finding to `alert`. All GNSS
@@ -361,6 +361,10 @@ A rule is stored data, checked deterministically on every tick:
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
+- A word is a value only on a path that has states: "becomes warm" on a
+  temperature, or "changes to empty" on a tank level, is refused with a request
+  for a number, rather than stored as a watch that can never fire. "Switches on
+  and off" means any change.
 - One `while` condition per rule. A request with two is refused rather than
   stored with one of them silently dropped, and it is not passed to a model,
   which could only drop one too.
@@ -483,7 +487,7 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `POST /watch/unmute` | write | Body `{ path }`. Returns `{ mutes }` |
 | `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `pathsReplayed`, `rows`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `note`. `409` while another replay runs |
 | `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?` |
-| `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }` |
+| `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }`; `409` when 50 watches already exist |
 | `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }` |
 | `POST /watch/rules/save` | write | Body `{ rules: [...] }`, the full list, for tools that manage it as a unit. Invalid rules are dropped. Returns `{ rules }` |
 | `GET /watch/report?hours=24` | | `from`, `to`, `hours`, `incidents`, `alerts`, `findings`, `byDetector`, `lines[]` |

@@ -410,3 +410,17 @@ describe('replay keeps rule inputs within the path cap', () => {
     }
   });
 });
+
+describe('rule parser: words on measurements', () => {
+  it('refuses a word as the value of a measured path, instead of storing a watch that cannot fire', () => {
+    for (const text of ['tell me if the fridge temperature becomes warm', 'tell me if the fresh water tank level changes to empty']) {
+      const result = parseRule(text, VESSEL);
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, /is a measurement/);
+    }
+  });
+
+  it('reads "switches on and off" as any change', () => {
+    assert.equal(parsed('tell me if the bilge pump switches on and off').op, 'changes');
+  });
+});

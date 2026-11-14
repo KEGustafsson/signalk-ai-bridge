@@ -43,7 +43,7 @@ const {
   resolveWindow
 } = require('./lib/history-service.cjs');
 const { createWatchService } = require('./lib/watch-service.cjs');
-const { normalizeRules } = require('./lib/watch/rules.cjs');
+const { MAX_RULES, normalizeRules } = require('./lib/watch/rules.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -1058,7 +1058,23 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
         return;
       }
-      const rules = await changeWatchRules((current) => [...current.filter((item) => item.id !== rule.id), rule]);
+      let full = false;
+      const rules = await changeWatchRules((current) => {
+        const others = current.filter((item) => item.id !== rule.id);
+        // At the cap, the new rule is the one truncation would drop: refuse
+        // instead of reporting success for a rule that was never stored.
+        if (others.length >= MAX_RULES) {
+          full = true;
+          return current;
+        }
+        return [...others, rule];
+      });
+      if (full) {
+        res.status(409).json({
+          error: { code: 'validation-failed', message: `There are already ${MAX_RULES} watches; remove one first.` }
+        });
+        return;
+      }
       res.status(200).json({ rules });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the watch rules.');

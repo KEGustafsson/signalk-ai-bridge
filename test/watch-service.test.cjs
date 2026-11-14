@@ -277,6 +277,18 @@ describe('watch routes', () => {
       assert.deepEqual(host.saved.aiDataPaths, ['navigation.position']);
       assert.deepEqual(host.saved.watchRules.map((item) => item.id).sort(), ['r-one', 'r-two']);
 
+      // At the 50-watch cap, adding one is refused rather than dropped.
+      host.saved.watchRules = Array.from({ length: 50 }, (_, index) => rule(`r-fill-${index}`, 300 + index));
+      const filler = recorder();
+      await routes['POST /watch/rules/save']({ ...writer, body: { rules: host.saved.watchRules } }, filler);
+      assert.equal(filler.body.rules.length, 50);
+      const overflow = recorder();
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-new', 400) } }, overflow);
+      assert.equal(overflow.statusCode, 409);
+      assert.ok(!host.saved.watchRules.some((item) => item.id === 'r-new'));
+      const restore = recorder();
+      await routes['POST /watch/rules/save']({ ...writer, body: { rules: [rule('r-one', 360), rule('r-two', 370)] } }, restore);
+
       const removed = recorder();
       await routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-one' } }, removed);
       assert.deepEqual(removed.body.rules.map((item) => item.id), ['r-two']);

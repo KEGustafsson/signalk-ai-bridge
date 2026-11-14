@@ -813,3 +813,71 @@ describe('watch report: GNSS cross-check within the window', () => {
     assert.match(engine.report(t, 1).lines.join('\n'), /nothing independent cross-checked the fix in this period/);
   });
 });
+
+describe('review of 9366cdb, and the stale-log case', () => {
+  it('restores a baseline saved before per-pair statistics without crashing on the next secondary sample', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => [[path, 13.2, 'a'], [path, 13.21, 'b']]);
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    // What an older version wrote: one shared gap, no pair table.
+    for (const item of saved.paths) {
+      if (item.sources) {
+        delete item.sources.pairs;
+        Object.assign(item.sources, { diffMean: 0.01, diffVar: 0, diffN: 40, lastDiff: undefined });
+      }
+    }
+    const restored = createWatchEngine(normalizeWatchConfig({ watchEnabled: true }), { now: t });
+    restored.importState(saved, t);
+    assert.doesNotThrow(() => run(restored, t, t + 10 * SECOND, SECOND, () => [[path, 13.2, 'a'], [path, 13.21, 'b']]));
+  });
+
+  it('still reports a receiver lost a second time, after an earlier outage', () => {
+    const engine = newEngine();
+    let lat = 60;
+    const fix = () => {
+      lat += 3 / 111195;
+      return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+    };
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, fix);
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => []);
+    assert.equal(engine.status(t).gnss.status, 'lost');
+    t = run(engine, t, t + 5 * SECOND, SECOND, fix);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    assert.equal(engine.status(t).gnss.status, 'lost');
+    assert.ok(detectors(engine).includes('gnss.lost:navigation.position'));
+  });
+
+  it('does not let one glitch that comes straight back set the sensor resolution', () => {
+    const engine = newEngine();
+    const path = 'tanks.freshWater.0.currentLevel';
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 0.8]]);
+    t = run(engine, t, t + SECOND, SECOND, () => [[path, 0.2]]);
+    t = run(engine, t, t + 5 * MINUTE, SECOND, () => [[path, 0.8]]);
+    t = run(engine, t, t + MINUTE, SECOND, () => [[path, 0.2]]);
+    assert.ok(detectors(engine).includes(`shift:${path}`));
+  });
+
+  it('does not open a frozen fix from an old candidate when the log comes back before the fixes', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    const fix = { latitude: 60, longitude: 24 };
+    let lat = 60;
+    // Learn a 1 Hz receiver while moving.
+    let t = run(engine, T0, T0 + MINUTE, SECOND, () => {
+      lat += (6 * knots) / 111195;
+      return [['navigation.speedThroughWater', 6 * knots], ['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+    });
+    fix.latitude = lat;
+    // 50 s of an unmoving fix at speed: a candidate, not yet a finding.
+    t = run(engine, t, t + 50 * SECOND, SECOND, () => [
+      ['navigation.speedThroughWater', 6 * knots],
+      ['navigation.position', fix, 'gps']
+    ]);
+    assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
+    // Both go quiet for 9 s; then the log returns before any fix does.
+    t = run(engine, t, t + 9 * SECOND, SECOND, () => []);
+    t = run(engine, t, t + 5 * SECOND, SECOND, () => [['navigation.speedThroughWater', 6 * knots]]);
+    assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
+  });
+});
