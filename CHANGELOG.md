@@ -36,6 +36,15 @@ this project uses [semantic versioning](https://semver.org/).
   `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
   with write access when security is enabled.
 - `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+- **A shorter README, with the depth moved to `docs/`.** The README had grown
+  to 1,100 lines, and it is also the plugin's App Store page, so a new user
+  scrolled past 350 lines of Jetson memory tuning before reaching how to use
+  the panel. It is now a 190-line landing page: what the plugin does, the two
+  parts it needs (and that Watchkeeper needs only the plugin), quick start,
+  compose files, the panel, Watchkeeper, the key settings and a documentation
+  index. The detailed sections moved unchanged to `docs/jetson.md`,
+  `docs/how-it-works.md`, `docs/history.md`, `docs/settings.md` and
+  `docs/development.md`, with their cross-links updated.
 - **Watchkeeper documentation.** `docs/watchkeeper.md` is the reference: the
   pipeline, every check with its thresholds, GNSS integrity, redundant
   sources, operating states, the rule format and parser, where the model is

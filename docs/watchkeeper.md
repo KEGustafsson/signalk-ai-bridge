@@ -6,7 +6,7 @@ notification when one departs from it.
 
 This page is the reference: how it works, every check and its thresholds, the
 rule format, the HTTP API, and how to tune it. For a short introduction see the
-[README](../README.md#watchkeeper-background-watch-of-every-path).
+[README](../README.md#watchkeeper).
 
 > Watchkeeper is experimental. It adds detection for things nobody set a
 > threshold for. It does not replace the alarms already on the boat, and it is
