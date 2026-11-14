@@ -590,7 +590,8 @@ response is read oldest row first, and rows closer together than three
 quarters of the requested resolution (apart from the first and last, which a
 provider may clip to the window), outside the window (by more than one row)
 or past a third more than the window holds are left out, and so are columns
-for paths that were not asked for (or a path declared twice). The result says so
+for paths that were not asked for, a path's second column, and a column
+that names no path (it is not guessed from its position). The result says so
 (`truncated: true`, `rowsDropped`, and a sentence in `note`), so a provider
 that ignores the resolution cannot make a replay hold a week of one-second
 rows, while rows with a little jitter are all kept.

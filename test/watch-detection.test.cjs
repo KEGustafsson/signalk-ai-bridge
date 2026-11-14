@@ -450,6 +450,37 @@ describe('watch detection: replay', () => {
     assert.ok(ingested > 300);
   });
 
+  it('reads a path declared twice from its first column only, and no column without a path', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - HOUR;
+    const path = 'propulsion.main.temperature';
+    const replayed = async (values, rowFor) => {
+      const fetchImpl = async (url) => {
+        if (url.includes('/history/paths')) return new Response(JSON.stringify([path]), { status: 200 });
+        const data = [];
+        for (let at = start; at <= end; at += 10 * SECOND) data.push([new Date(at).toISOString(), ...rowFor(at)]);
+        return new Response(JSON.stringify({ values, data }), { status: 200 });
+      };
+      const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+      service.start({ watchEnabled: true });
+      try {
+        return await service.replay({ duration: 'PT1H', paths: [path] }, { historyTimeoutMs: 5000 });
+      } finally {
+        service.stop();
+      }
+    };
+    // Steady for 50 minutes, then 999: read, it is a shift.
+    const jumping = (at) => (at > end - 10 * MINUTE ? 999 : 353.15 + ((at / 10000) % 3) * 0.05);
+    const control = await replayed([{ path }], (at) => [jumping(at)]);
+    assert.ok(control.byDetector.shift >= 1, 'the jump is a shift when read');
+    // The first column for the path is empty; the duplicate after it jumps.
+    const duplicate = await replayed([{ path }, { path }], (at) => [null, jumping(at)]);
+    assert.equal(duplicate.byDetector.shift, undefined, 'the second column for the path is not read');
+    // A column that names no path is not taken for the path at its position.
+    const unnamed = await replayed([{ method: 'average' }], (at) => [jumping(at)]);
+    assert.equal(unnamed.byDetector.shift, undefined, 'a column without a path is not read');
+  });
+
   it('evaluates a feed silence that spans a gap in the history', async () => {
     const end = Date.parse('2026-06-02T08:00:00Z');
     const start = end - 6 * HOUR;
