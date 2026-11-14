@@ -74,6 +74,21 @@ describe('watch detection: feed mutes', () => {
   });
 });
 
+describe('watch detection: the feed and muted paths', () => {
+  it('does not report a feed made silent only by paths that are muted', () => {
+    const engine = newEngine();
+    const muted = Array.from({ length: 6 }, (_, index) => `environment.sensor${index}.temperature`);
+    const live = Array.from({ length: 4 }, (_, index) => `electrical.batteries.bank${index}.voltage`);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [...muted.map((name) => [name, 290.15]), ...live.map((name) => [name, 12.8])]);
+    engine.mute('environment.*', t + HOUR, t);
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => live.map((name) => [name, 12.8]));
+    assert.deepEqual(detectors(engine), [], 'the muted paths went quiet; the rest of the feed is fine');
+    // The unmuted paths going quiet too is a silent feed.
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+  });
+});
+
 describe('watch detection: the learned update interval', () => {
   it('reports a second outage after a one-hour outage of a 30 s sensor', () => {
     const engine = newEngine();
@@ -89,7 +104,7 @@ describe('watch detection: the learned update interval', () => {
     assert.ok(detectors(engine).includes(`dropout:${path}`), 'the second outage must be reported too');
   });
 
-  it('keeps the usual interval across outages, and learns a steady slower rate', () => {
+  it('keeps the usual interval regular across outages, and learns a steady slower rate', () => {
     const options = { minIntervalMs: 1000, dropoutMinMs: 30000, dropoutFactor: 10 };
     const state = monitor.createPathState('electrical.batteries.house.voltage', T0);
     let t = T0;
@@ -101,30 +116,46 @@ describe('watch detection: the learned update interval', () => {
     };
     feed(60, 30 * SECOND);
     assert.ok(Math.abs(state.intervalMean - 30 * SECOND) < 1, 'learns 30 s');
-    // Outages of different lengths, each followed by regular updates.
+    // Outages of different lengths, each followed by 15 minutes of regular
+    // updates: an outage moves the interval at most to the dropout limit's
+    // tenth, so it stays regular (under a minute) and comes back.
     for (const outage of [HOUR, 10 * MINUTE, 25 * MINUTE]) {
       feed(1, outage);
-      feed(5, 30 * SECOND);
-      assert.ok(Math.abs(state.intervalMean - 30 * SECOND) < 1, `a ${outage / MINUTE} min outage is not the rate`);
+      assert.ok(state.intervalMean < MINUTE, `a ${outage / MINUTE} min outage left ${state.intervalMean} ms`);
+      feed(30, 30 * SECOND);
+      assert.ok(state.intervalMean < 33 * SECOND, `back to about 30 s after a ${outage / MINUTE} min outage`);
     }
-    // Seven long gaps of about one size are still outages...
-    feed(7, 6 * MINUTE);
-    assert.ok(Math.abs(state.intervalMean - 30 * SECOND) < 1);
-    // ...the eighth makes it the new rate.
-    feed(1, 6 * MINUTE);
-    assert.ok(Math.abs(state.intervalMean - 6 * MINUTE) < 1, `learned ${state.intervalMean} ms`);
-    // Growing gaps never settle into a rate.
-    const other = monitor.createPathState('electrical.batteries.start.voltage', T0);
-    t = T0;
-    for (let index = 0; index < 40; index += 1) {
-      t += SECOND;
-      monitor.observe(other, 12.6, t, options);
+    // A steady slower rate is learned.
+    feed(40, 6 * MINUTE);
+    assert.ok(Math.abs(state.intervalMean - 6 * MINUTE) < 0.1 * 6 * MINUTE, `learned ${state.intervalMean} ms`);
+  });
+
+  it('does not report every quiet night of a sender that reports on change', () => {
+    const engine = newEngine();
+    const path = 'environment.inside.temperature';
+    let seed = 1;
+    const random = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 0xffffffff;
+    };
+    const times = [];
+    for (let at = T0; at < T0 + 3 * 24 * HOUR; ) {
+      const hour = new Date(at).getUTCHours();
+      at += hour >= 8 && hour < 20 ? 10 * SECOND : Math.round((2 + 38 * random()) * MINUTE);
+      times.push(at);
     }
-    for (let index = 0; index < 12; index += 1) {
-      t += 60 * SECOND * 2 ** index;
-      monitor.observe(other, 12.6, t, options);
+    let index = 0;
+    for (let t = T0; t <= times[times.length - 1]; t += 5 * SECOND) {
+      while (index < times.length && times[index] <= t) {
+        engine.ingest(path, 293 + 0.5 * Math.sin(times[index] / 600000) + (index % 5) * 0.01, times[index]);
+        index += 1;
+      }
+      engine.tick(t);
     }
-    assert.ok(other.intervalMean < 2 * SECOND, `growing outages stretched the interval to ${other.intervalMean} ms`);
+    const opened = engine.stats().byDetector.dropout || 0;
+    // Three nights of 2-40 minute gaps: about one dropout per night as it
+    // goes quiet, not one per gap (64 when long gaps were left out).
+    assert.ok(opened <= 12, `${opened} dropouts`);
   });
 
   it('learns a genuine slow-down from a steady run of long gaps', () => {
@@ -248,10 +279,11 @@ describe('watch detection: replay', () => {
       assert.equal(result.ok, true);
       assert.equal(result.resolutionSeconds, 10);
       assert.ok(requests.some((url) => /resolution=10/.test(decodeURIComponent(url))), 'ten-second rows were asked for');
-      assert.ok(result.rows <= 10000 + 3, `${result.rows} rows held`);
+      // Rows closer than three quarters of the resolution are extra.
+      assert.ok(result.rows <= Math.ceil(8640 / 0.75) + 3, `${result.rows} rows held`);
       assert.ok(result.rows >= 8640, 'the whole window is still replayed, at the asked resolution');
       assert.equal(result.truncated, true);
-      assert.ok(result.rowsDropped >= 24 * 3600 - 8650, `${result.rowsDropped} rows reported dropped`);
+      assert.ok(result.rowsDropped >= 24 * 3600 - Math.ceil(8640 / 0.75) - 3, `${result.rowsDropped} rows reported dropped`);
       assert.match(result.note, /rows more than were asked for/);
     } finally {
       service.stop();
@@ -309,6 +341,78 @@ describe('watch detection: replay', () => {
     } finally {
       service.stop();
     }
+  });
+
+  const replayWith = async (paths, rowsFor, duration, end) => {
+    const { fetchImpl } = historyFetch(paths, rowsFor);
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      return await service.replay({ duration }, { historyTimeoutMs: 5000 });
+    } finally {
+      service.stop();
+    }
+  };
+
+  it('keeps rows with jitter, clipped edge buckets and newest-first order', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const paths = ['propulsion.main.temperature'];
+    const value = (at) => 353.15 + ((at / 10000) % 3) * 0.05;
+    // Ten-second rows, each up to 50 ms early or late.
+    const jittered = [];
+    for (let at = start, index = 0; at <= end; at += 10 * SECOND, index += 1) {
+      const stamp = at + (index % 2 === 0 ? -50 : 50);
+      jittered.push([new Date(stamp).toISOString(), value(at)]);
+    }
+    const jitterResult = await replayWith(paths, () => jittered, 'PT6H', end);
+    assert.equal(jitterResult.ok, true);
+    assert.equal(jitterResult.rows, jittered.length, 'no jittered row is extra');
+    assert.equal(jitterResult.truncated, undefined);
+
+    // Buckets stamped by their end and clipped at the window: the last row is
+    // the window's end, 3 s after the one before it.
+    const clipped = [];
+    for (let at = start + 10 * SECOND; at < end; at += 10 * SECOND) clipped.push([new Date(at - 3 * SECOND).toISOString(), value(at)]);
+    clipped.push([new Date(end).toISOString(), value(end)]);
+    const clippedResult = await replayWith(paths, () => clipped, 'PT6H', end);
+    assert.equal(clippedResult.rows, clipped.length, 'the newest, clipped bucket is kept');
+    assert.equal(clippedResult.truncated, undefined);
+
+    // Newest first: the same rows as oldest first, not a limit's worth of the newest.
+    const descending = await replayWith(paths, () => [...jittered].reverse(), 'PT6H', end);
+    assert.equal(descending.rows, jittered.length);
+    assert.equal(descending.truncated, undefined);
+  });
+
+  it('checks dropouts in a week-long replay, and says where nothing was recorded', async () => {
+    const end = Date.parse('2026-06-08T08:00:00Z');
+    const start = end - 7 * 24 * HOUR;
+    const paths = ['environment.sensor0.temperature', 'environment.sensor1.temperature'];
+    const quietFrom = start + 3 * 24 * HOUR;
+    const offFrom = start + 5 * 24 * HOUR;
+    const result = await replayWith(
+      paths,
+      () => {
+        const data = [];
+        for (let at = start; at <= end; at += 60 * SECOND) {
+          // The server was off for eight hours: nothing at all.
+          if (at > offFrom && at < offFrom + 8 * HOUR) continue;
+          // One sensor is silent for two hours while the other reports.
+          const first = at > quietFrom && at < quietFrom + 2 * HOUR ? null : 290.15 + ((at / 60000) % 3) * 0.05;
+          data.push([new Date(at).toISOString(), first, 291.15 + ((at / 60000) % 3) * 0.05]);
+        }
+        return data;
+      },
+      'P7D',
+      end
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.resolutionSeconds, 61);
+    assert.ok(result.byDetector.dropout >= 1, `a 61 s row interval is still checked: ${JSON.stringify(result.byDetector)}`);
+    assert.equal(result.historyGaps.count, 1);
+    assert.ok(result.historyGaps.longestSeconds >= 8 * 3600 - 61);
+    assert.match(result.note, /Nothing was recorded for any replayed path in 1 gap \(the longest 48\d min\)/);
   });
 
   it('evaluates a feed silence that spans a gap in the history', async () => {

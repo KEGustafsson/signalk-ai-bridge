@@ -276,7 +276,16 @@ this project uses [semantic versioning](https://semver.org/).
     offset again); History API responses (replay, Ask AI history, the path
     list) are read at most 16 MB far, so a huge body is refused before it is
     held in the server's memory; and the persistence test waits for the saves to finish
-    (`whenSaved()`) instead of a fixed delay.
+    (`whenSaved()`) instead of a fixed delay. From the review of that: an
+    outage counts in a path's interval up to the dropout limit, so a sender
+    that reports on change is not reported at every quiet gap (64 dropouts
+    over three nights became 9) while a 30 s sensor's second outage still
+    is; replay keeps rows with jitter (only rows closer than three quarters
+    of the resolution are extra), keeps clipped edge buckets, reads rows
+    newest-first too, caps rows across all requests, checks dropouts at a
+    week's 61 s rows, and reports gaps where nothing was recorded
+    (`historyGaps`, as possible recorder downtime); a feed made silent only
+    by muted paths is not reported.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use
