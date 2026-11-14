@@ -243,6 +243,19 @@ this project uses [semantic versioning](https://semver.org/).
     instead of dropping one. The model fallback bounds the read of an error
     reply, reports a JSON answer that is not an object, and converts numbers
     for `equals` / `notEquals` from the shown unit too.
+  - CodeRabbit full review (detection and replay): replay enforces its row
+    limit on what the History API returns (rows closer than the requested
+    resolution, outside the window or past the limit are left out, and the
+    result reports `truncated` and `rowsDropped`), and ticks through gaps in
+    the returned history, so a dropout or silent feed spanning a gap is
+    reported; muting `feed` now mutes the data-feed finding; an outage no
+    longer stretches a path's learned update interval so its next outage
+    goes unreported (a slower rate needs eight long gaps of about one size,
+    as for GNSS); two sources are judged by their difference's departure
+    from their signed usual offset, so one moving from a volt above the
+    other to a volt below it disagrees (pairs saved before this learn their
+    offset again); and the persistence test waits for the saves to finish
+    (`whenSaved()`) instead of a fixed delay.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

@@ -141,7 +141,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage and is left out, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage. A path that really slowed down is learned from eight long gaps in a row, each within half of the run's mean (the run's mean is the new interval); scattered or growing gaps stay outages. The same rule as the GNSS fix interval |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -189,7 +189,7 @@ been watched for `watchLearningMinutes` (default 30).
 | --- | --- | --- | --- |
 | **Unusually high / low** (`shift`) | `\|z\| ≥ zWarn`; clears below `zClear` | `alert` at `\|z\| ≥ zAlert`, else `warn` | 15 s / 60 s |
 | **Stopped updating** (`dropout`) | A path that updates at least once a minute (30+ samples) has been silent for more than `max(30 s, 10 × usual interval)` | `warn` | immediate / on next update |
-| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path | `alert` | immediate |
+| **Data feed silent** (`feed`) | At least 4 regularly updating paths, and at least half of them, are silent at once. Reported once instead of per path. Muting `feed` mutes it; the silent paths' dropouts stay folded into it while muted | `alert` | immediate |
 | **Looks stuck** (`frozen`) | A continuous path that changed on at least half its updates repeats exactly the same non-zero value 30+ times over 5+ minutes (100+ samples learned) | `warn` | immediate |
 | **New state** (`newState`) | A discrete path takes a value never seen before, after learning. Held 10 minutes | `warn` | immediate |
 | **Cycling** (`cycling`) | After 6 h of observation, transitions in the last hour ≥ `max(4, 3 × usual hourly rate + 2)` | `alert` at twice that, else `warn` | immediate / 10 min |
@@ -274,11 +274,14 @@ seen is primary and only its samples feed the baseline. Mixing them would make
 a calibration offset look like noise, or a step at every switch.
 
 - **Disagree**: each other source is compared with a fresh primary sample
-  (within `max(5 s, 2 × interval)`). The usual gap is learned **per
-  primary/secondary pair**, so a constant offset is normal and one sensor's
-  offset cannot hide another's fault. It fires when a pair's gap exceeds its
-  usual one by `zWarn` spreads and is at least 3 noise floors, after 30
-  comparisons. Pairs learned under an earlier primary are kept but not judged.
+  (within `max(5 s, 2 × interval)`). The usual offset is learned **per
+  primary/secondary pair**, with its sign (B minus A), so a constant offset
+  is normal and one sensor's offset cannot hide another's fault. It fires
+  when a pair's difference departs from its usual offset by `zWarn` spreads
+  and by at least 3 noise floors, after 30 comparisons: B moving from a volt
+  above A to a volt below it is a two-volt departure, though the gap is a
+  volt either way. Pairs in a baseline saved before the offset was signed
+  (which held the mean of the gap's size) learn it again. Pairs learned under an earlier primary are kept but not judged.
   Up to 16 pairs per path; when full, the least recently compared pair of a
   former primary makes room, so the current primary's pairs are always
   learned.
@@ -359,7 +362,7 @@ notifications.aiBridge.watch.rules.<rule id>
 
 **Mutes** (`POST /watch/mute`, or **Mute 1 h** in the panel) suppress a path or
 pattern for 1 minute to 7 days. Muting `navigation.position` mutes the GNSS
-checks.
+checks, and muting `feed` mutes the data-feed finding.
 
 ## Your own watches (rules)
 
@@ -543,7 +546,7 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 | `GET /watch/series?path=…` | | `minutes` and `recent`, `[timeMs, SI value]` pairs. `404` for an unknown path |
 | `POST /watch/mute` | write | Body `{ path, minutes }`. Returns `{ mutes }` |
 | `POST /watch/unmute` | write | Body `{ path }`. Returns `{ mutes }` |
-| `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `pathsReplayed`, `rows`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `note`. `409` while another replay runs |
+| `POST /watch/replay` | write | Body `{ duration?: "PT24H", paths?: [] }`. Returns `ok`, `from`, `to`, `resolutionSeconds`, `pathsReplayed`, `pathsSkipped?`, `rows`, `truncated?` and `rowsDropped?`, `findingsOpened`, `incidentsOpened`, `byDetector`, `incidents`, `failures?`, `note`. `409` while another replay runs |
 | `POST /watch/rules/compile` | write | Body `{ text, path? }` (`path` pins the subject after a "which one?"). Returns `ok`, `source`, `model?`, `rule`, `description`, `current`, `wouldFireNow`, `recent`; or `ok: false`, `reason`, `alternatives[]`, `assistNote?` |
 | `POST /watch/rules/add` | write | Body `{ rule }`. Adds it, or replaces the rule with its id. Returns `{ rules }`; `409` when 50 watches already exist |
 | `POST /watch/rules/remove` | write | Body `{ id }`. Returns `{ rules }`; `404` with `{ rules }` when no watch with that id is stored |
@@ -554,7 +557,19 @@ they answer `503`. Routes marked *write* need a login with `readwrite` or
 The replay reads the History API with the same credential rules as the rest of
 the plugin: the operator's session goes only to this machine, and a remote
 history server needs `historyApiKey`. It replays up to 7 days, at least 10 s
-per row and at most 10,000 rows, for up to 80 paths in requests of 10.
+per row and at most 10,000 rows, for up to 80 paths in requests of 10. The
+row limit is enforced on what comes back, not only asked for: from each
+response, rows closer together than the requested resolution, outside the
+window (by more than one row) or past the limit are left out, and the result
+says so (`truncated: true`, `rowsDropped`, and a sentence in `note`), so a
+provider that ignores the resolution cannot make a replay hold a week of
+one-second rows.
+
+The replay ticks the detectors at each row and, through a gap in the
+returned history, at the row interval up to the next row's time before that
+row is read, so a dropout or a silent feed that spans the gap is reported as
+it would have been live. Nothing is ticked past the last row: the history
+provider may not have written the latest minutes yet.
 
 ## Settings
 
