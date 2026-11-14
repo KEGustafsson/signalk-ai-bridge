@@ -608,12 +608,31 @@ describe('review of 2187087..7ecbc1a: replay rows, flaky sensors and the feed', 
     const sample = () => [[path, 12.8 + 0.02 * rand()]];
     let t = run(engine, T0, T0 + 40 * MINUTE, 30 * SECOND, sample);
     let reported = 0;
-    for (let cycle = 0; cycle < 20; cycle += 1) {
-      t = run(engine, t, t + 10 * MINUTE, SECOND, () => []);
+    // Outages of 5 to 20 minutes, in no steady rhythm.
+    const lengths = [10, 5, 18, 7, 20, 6, 12, 5, 16, 8, 19, 5, 11, 6, 20, 9, 14, 5, 17, 7];
+    for (const minutes of lengths) {
+      t = run(engine, t, t + minutes * MINUTE, SECOND, () => []);
       if (detectors(engine).includes(`dropout:${path}`)) reported += 1;
       t = run(engine, t, t + 60 * SECOND, 30 * SECOND, sample);
     }
     assert.ok(reported >= 18, `${reported} of 20 outages reported`);
+  });
+
+  it('learns the rhythm of a sender that reports a pair of readings every five minutes', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(23);
+    let t = T0;
+    for (let cycle = 0; cycle < 12 * 12; cycle += 1) {
+      engine.ingest(path, 12.8 + 0.02 * rand(), t);
+      engine.tick(t);
+      engine.ingest(path, 12.8 + 0.02 * rand(), t + 3 * SECOND);
+      engine.tick(t + 3 * SECOND);
+      t = run(engine, t + 3 * SECOND, t + 5 * MINUTE, 5 * SECOND, () => []);
+    }
+    const opened = engine.stats().byDetector.dropout || 0;
+    // A few before its rhythm is known, not one every five minutes for 12 h.
+    assert.ok(opened <= 10, `${opened} dropouts`);
   });
 
   it('reports a whole feed going silent when some of its paths are muted', () => {
@@ -623,6 +642,66 @@ describe('review of 2187087..7ecbc1a: replay rows, flaky sensors and the feed', 
     for (const name of names.slice(0, 3)) engine.mute(name, t + HOUR, t);
     t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
     assert.deepEqual(detectors(engine), ['feed:feed']);
+  });
+});
+
+describe('review of 0004c3f: muted dead sensors, merged requests, no data', () => {
+  it('does not take sensors muted because they are dead for a feed that died now', () => {
+    const engine = newEngine();
+    const dead = Array.from({ length: 4 }, (_, index) => `environment.dead${index}.temperature`);
+    const live = Array.from({ length: 4 }, (_, index) => `environment.live${index}.temperature`);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [...dead, ...live].map((name) => [name, 290.15]));
+    // The dead sensors went quiet an hour ago and were muted.
+    for (const name of dead) engine.mute(name, t + 4 * HOUR, t);
+    t = run(engine, t, t + HOUR, SECOND, () => live.map((name) => [name, 290.15]));
+    // Two live sensors drop out: two dropouts, not a silent feed.
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => live.slice(2).map((name) => [name, 290.15]));
+    assert.deepEqual(detectors(engine).sort(), live.slice(0, 2).map((name) => `dropout:${name}`).sort());
+  });
+
+  it('merges requests whose rows are stamped a few seconds apart into one row each', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const paths = Array.from({ length: 40 }, (_, index) => `environment.sensor${index}.temperature`);
+    let request = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = new URL(url).searchParams.get('paths').split(',').map((item) => item.split(':')[0]);
+      const offset = (request++ % 4) * 3 * SECOND;
+      const data = [];
+      for (let at = start + offset; at <= end; at += 10 * SECOND) {
+        data.push([new Date(at).toISOString(), ...asked.map((_, index) => 290.15 + index + ((at / 10000) % 3) * 0.05)]);
+      }
+      return new Response(JSON.stringify({ values: asked.map((path) => ({ path })), data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT6H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      assert.ok(result.rows <= 6 * 360 + 3, `${result.rows} rows for four requests`);
+      assert.equal(result.truncated, undefined);
+      assert.deepEqual(result.byDetector, {});
+    } finally {
+      service.stop();
+    }
+  });
+
+  it('reports a reply with no rows as no data, not as columns missing', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(['environment.sensor0.temperature']), { status: 200 });
+      return new Response(JSON.stringify({ values: [], data: [] }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, false);
+      assert.match(result.message, /returned no data for that window/);
+    } finally {
+      service.stop();
+    }
   });
 });
 

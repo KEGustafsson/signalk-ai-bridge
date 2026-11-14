@@ -448,3 +448,65 @@ describe('review of 0934d63..7ecbc1a: the qualifier, apostrophes and quotes', ()
   });
 });
 
+describe('review of 0004c3f: choosing among paths with a qualifier', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : item));
+
+  it('takes the qualifier as the subject when the request names nothing before the comparison', () => {
+    const boat = at(['environment.inside.engineRoom.temperature', 'environment.inside.temperature', 'electrical.switches.engineRoomFan.state', 'electrical.switches.engineRoomBilge.state', 'electrical.batteries.house.voltage', 'electrical.batteries.starter.voltage']);
+    for (const [text, path] of [
+      ['tell me if it gets above 40 °C in the engine room', 'environment.inside.engineRoom.temperature'],
+      ['alert when above 40 °C in the engine room', 'environment.inside.engineRoom.temperature'],
+      ['warn me if it drops below 12 V on the starter bank', 'electrical.batteries.starter.voltage']
+    ]) {
+      const result = parseRule(text, boat);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.path, path, text);
+    }
+  });
+
+  it('lets the qualifier choose by the subject\'s words alone, not by role, depth or display name', () => {
+    const freezer = parseRule('temperature below -10 °C in the freezer', at(['environment.inside.temperature', 'environment.outside.temperature', 'environment.inside.refrigerator.freezer.temperature']));
+    assert.equal(freezer.rule && freezer.rule.path, 'environment.inside.refrigerator.freezer.temperature', freezer.reason);
+    const relearning = parseRule('temperature above 40 °C in the engine room', [
+      { path: 'environment.inside.engineRoom.temperature', role: 'relearning' },
+      { path: 'environment.inside.temperature', role: 'watching' },
+      { path: 'environment.outside.temperature', role: 'watching' }
+    ]);
+    assert.equal(relearning.rule && relearning.rule.path, 'environment.inside.engineRoom.temperature', relearning.reason);
+    const named = parseRule('battery below 12 V on the house bank', [
+      { path: 'electrical.batteries.279.voltage', role: 'watching', displayName: 'House bank' },
+      { path: 'electrical.batteries.0.voltage', role: 'watching', displayName: 'Start Battery' }
+    ]);
+    assert.equal(named.rule && named.rule.path, 'electrical.batteries.279.voltage', named.reason);
+    const twin = at(['propulsion.port.coolantTemperature', 'propulsion.starboard.temperature', 'propulsion.port.oilPressure', 'propulsion.starboard.engineOilPressure']);
+    assert.equal(parseRule('coolant above 95 °C on the starboard engine', twin).rule.path, 'propulsion.starboard.temperature');
+    assert.equal(parseRule('oil pressure below 2 bar on the starboard engine', twin).rule.path, 'propulsion.starboard.engineOilPressure');
+  });
+
+  it('does not take an engine room, or an engineRoomTemperature, for an engine', () => {
+    const boat = at(['propulsion.main.temperature', 'environment.inside.engineRoomTemperature', 'environment.inside.engineRoom.temperature']);
+    assert.equal(parseRule('engine temperature above 95 °C', boat).rule.path, 'propulsion.main.temperature');
+    assert.equal(parseRule('motor above 95 °C', boat).rule.path, 'propulsion.main.temperature');
+  });
+
+  it('accepts a qualifier that names the same thing again, and one on a path the operator picked', () => {
+    const boat = at(['electrical.batteries.house.voltage', 'electrical.batteries.starter.voltage']);
+    const repeated = parseRule('the house battery below 12 V on the house bank', boat);
+    assert.equal(repeated.ok, true, repeated.reason);
+    const forced = parseRule('the battery below 12 V at the dock', boat, { forcePath: 'electrical.batteries.house.voltage' });
+    assert.equal(forced.ok, true, forced.reason);
+    // A qualifier that names nothing among the subject's paths is named in the refusal.
+    const night = parseRule('battery below 12 V at night', boat);
+    assert.equal(night.ok, false);
+    assert.match(night.reason, /Could not read "at night": it names none of the paths/);
+  });
+
+  it('refuses empty and blank quotes with a reason', () => {
+    for (const text of ["the inverter mode is ''", "the inverter mode is ' '", 'the inverter mode is " "']) {
+      const result = parseRule(text, at([{ path: 'electrical.inverters.main.mode', valueType: 'string' }]));
+      assert.equal(result.ok, false, text);
+      assert.match(result.reason, /empty quoted value/, text);
+    }
+  });
+});
+

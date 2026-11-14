@@ -1616,6 +1616,19 @@ describe('reading a History API response', () => {
       })
     };
     assert.deepEqual(await readJsonBounded(arrayBuffers, 100), { c: 3 });
+    const shared = new SharedArrayBuffer(5);
+    new Uint8Array(shared).set(new TextEncoder().encode('{"d":'));
+    const views = {
+      headers: new Headers(),
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(shared);
+          controller.enqueue(new DataView(new TextEncoder().encode('4}').buffer));
+          controller.close();
+        }
+      })
+    };
+    assert.deepEqual(await readJsonBounded(views, 100), { d: 4 });
     await assert.rejects(readJsonBounded(new Response('x'.repeat(200)), 100), /larger than 100 bytes/);
   });
 
