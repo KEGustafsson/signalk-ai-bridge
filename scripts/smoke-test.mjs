@@ -31,6 +31,7 @@ const requiredFiles = [
   'src/WatchPanel.tsx',
   'index.cjs',
   'README.md',
+  'docs/watchkeeper.md',
   'CHANGELOG.md',
   'LICENSE',
   'docker-compose.gemma.yml',

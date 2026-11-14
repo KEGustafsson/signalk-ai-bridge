@@ -1183,7 +1183,7 @@ export default function AppPanel(props: AppPanelProps) {
                 </pre>
               </div>
               <p style={{ margin: 0 }}>
-                This compose setup already pulls <code>gemma4:e2b</code> during startup, so you do not need to run a separate <code>ollama pull</code> command.
+                This compose setup already pulls <code>gemma4:e2b-it-qat</code> during startup, so you do not need to run a separate <code>ollama pull</code> command.
               </p>
               <p style={{ margin: 0 }}>
                 If Signal K runs on the host, the plugin default <code>http://localhost:11434</code> is correct.

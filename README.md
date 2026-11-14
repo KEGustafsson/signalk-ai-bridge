@@ -5,7 +5,15 @@
 
 `signalk-ai-bridge` is a Signal K plugin that adds an `Ask AI` panel to the Signal K web UI.
 
-It lets you send selected Signal K vessel data to a local Ollama model such as Gemma, then read the response directly in the browser.
+It does two things:
+
+- **Ask AI**: send selected Signal K vessel data to a local Ollama model such as
+  Gemma, then read the response directly in the browser.
+- **Watchkeeper** (optional, off by default): watch *every* Signal K path in the
+  background, learn what is normal for this vessel, and raise a Signal K
+  notification when something departs from it. Watchkeeper is statistics, not
+  AI. It needs no model and no GPU, and keeps working with the inference
+  server down. See [Watchkeeper](#watchkeeper-background-watch-of-every-path).
 
 > **⚠️ Read first — this project needs two separate parts, and you need both.**
 >
@@ -22,6 +30,11 @@ It lets you send selected Signal K vessel data to a local Ollama model such as G
 > plugin there is nothing to answer; with only the container nothing reaches Signal K.
 > See [Quick Start](#quick-start) and
 > [Ollama With Docker Compose](#ollama-with-docker-compose) for the setup of each part.
+>
+> **Watchkeeper is the exception.** It runs inside the plugin on the Signal K
+> server's CPU, so the plugin alone is enough for it. The AI container only adds
+> **Ask AI about this** on an incident, and help reading plain-language watch
+> rules that the built-in parser cannot read.
 
 ## Experimental Plugin
 
@@ -53,9 +66,17 @@ With this plugin you can:
 - check whether Ollama and the configured model are available
 - watch the answer stream in as the model generates it
 - see whether the model is actually running on the GPU, and how fast it generates
-- have **Watchkeeper** watch every Signal K path in the background and tell you
-  when something departs from normal — with no language model involved (see
-  [Watchkeeper](#watchkeeper-background-watch-of-every-path))
+- have **Watchkeeper** watch every Signal K path in the background, with no
+  language model involved (see
+  [Watchkeeper](#watchkeeper-background-watch-of-every-path)):
+  - values far from their learned normal, sensors that stop or freeze, states
+    never seen before, pumps cycling more than usual
+  - tanks and batteries trending toward empty, values heading for their zones
+  - GNSS positions that dead reckoning, a second receiver or the fix's own
+    quality do not corroborate (jamming and spoofing)
+  - redundant sensors that disagree, or a source that fails over to another
+  - your own limits, typed in plain words: *"tell me if the coolant goes
+    above 95 for 2 minutes"*
 
 ## What You Need
 
@@ -72,6 +93,9 @@ With this plugin you can:
 4. Set the Ollama URL and model name.
 5. Choose which Signal K paths should be sent to AI.
 6. Open the plugin web UI and press `Ask AI`.
+7. Optional: turn on **Watch all Signal K paths (Watchkeeper)** in the plugin
+   settings. It learns for 30 minutes and then watches on its own, with no AI
+   container needed.
 
 ## Ollama With Docker Compose
 
@@ -484,6 +508,9 @@ of minutes; the result is reused on every start.
 
 In the web UI you will see:
 
+- `Watchkeeper`: active incidents with trend lines and a one-hour mute, your own
+  plain-language watches, **Most unusual now**, **What is watched?** and a
+  24-hour replay. See [Watchkeeper](#watchkeeper-background-watch-of-every-path)
 - `Signal K`: login state and vessel self ID
 - `Ollama / Gemma`: backend URL, model, AI status, and timeout
 - `AI Path Selection`: which Signal K paths are sent to AI. **Browse available
@@ -585,6 +612,10 @@ These are the settings most users will care about:
 
 - `apiKey`
   Optional bearer token for a TensorRT-LLM or NIM backend
+
+- `watchEnabled`
+  Turn on Watchkeeper, the background watch of every path. Its own settings are
+  listed under [Watchkeeper settings](#settings-1)
 
 ## Vessel History
 
@@ -702,6 +733,10 @@ leave it blank if it needs none.
 Watchkeeper learns how each of this vessel's Signal K paths normally behaves and
 raises a Signal K notification when one departs from it. It is off by default;
 turn on **Watch all Signal K paths (Watchkeeper)** in the plugin settings.
+
+For the full reference, covering every check and its thresholds, the HTTP
+API, the rule format and how to tune it, see
+[docs/watchkeeper.md](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/watchkeeper.md).
 
 **It uses no language model.** A small model is the wrong tool for watching
 thousands of values: the whole data tree does not fit in its context window, a
@@ -846,6 +881,39 @@ live data, so read the replay result as a lower bound.
 | `watchDefaultExclusions` | `true` | Skip the fast-changing paths listed above. |
 | `watchExcludePaths` | `[]` | More paths or patterns to skip: a path covers everything beneath it, `*` matches within one segment, `**` across segments. |
 | `watchMaxPaths` | `1500` | Upper bound on watched paths, for memory and CPU. |
+| `watchRuleAssist` | `main` | Who reads a plain-language rule the parser cannot: `main` (the configured model, already loaded), `helper` (a separate small model) or `off` (never a model). |
+| `watchHelperModel` | empty | The small Ollama model for `helper`, for example `qwen3:0.6b` or `gemma3:1b`. Unloaded two minutes after use. |
+
+Your own watches are not set here: they are written in the panel and stored
+with the plugin's options.
+
+### How little AI it uses
+
+| Part | Model | Runs |
+| --- | --- | --- |
+| Detection: every check above | none, statistics on the CPU | on every update, ~3 µs each (measured on an x86 dev machine; a Jetson's CPU is a few times slower) |
+| Finding and incident text | none, templates filled with measured values | when a finding opens or changes |
+| Your watches, at watch time | none, a stored rule compared on each tick | every 5 s |
+| Reading a new watch you typed | none: a parser reads thresholds, units, durations and "while" conditions | when you press **Read it back** |
+| Reading a watch the parser could not read | the main model, or a helper of under a billion parameters, choosing from at most 25 real paths, with the answer held to a JSON schema | only then, and only if `watchRuleAssist` allows it |
+| Explaining an incident | the main model | only when you press **Ask AI about this** and send the question |
+
+### HTTP routes
+
+All under `/plugins/signalk-ai-bridge`. Routes that change something, or cost
+real work, need a login with write access when Signal K security is on.
+
+| Route | |
+| --- | --- |
+| `GET /watch/status` | Running state, path counts, active findings, incidents, rules, GNSS summary, mutes |
+| `GET /watch/inventory` | Every path found, what is done with it and why, and which checks this vessel supports |
+| `GET /watch/unusual` | Paths ranked by distance from their own normal, right now |
+| `GET /watch/series?path=…` | The learned minute and ten-second series for one path |
+| `POST /watch/mute` `{ path, minutes }` | Mute a path or pattern (write access) |
+| `POST /watch/unmute` `{ path }` | Remove a mute (write access) |
+| `POST /watch/replay` `{ duration }` | Run a fresh watch over recorded history (write access) |
+| `POST /watch/rules/compile` `{ text, path? }` | Read a plain-language watch back as a rule, without storing it (write access) |
+| `POST /watch/rules/save` `{ rules }` | Store the full list of watch rules (write access) |
 
 Like the rest of this plugin, Watchkeeper is experimental. It adds detection
 for things nobody set a threshold for; it does not replace the alarms you
@@ -961,6 +1029,19 @@ still fails with `Unexpected token 'v', "vite v6.4."...`.)
 
 `POST /plugins/signalk-ai-bridge/ai/retune` re-measures the fit if you free
 memory later without restarting the plugin.
+
+If you enable Watchkeeper on the board as well:
+
+6. Watch the Signal K process's CPU with `top` for a few minutes after the
+   learning period. The watch should add well under a few percent of one core.
+   Each update costs a few microseconds and each five-second check a few
+   milliseconds per thousand paths, measured on an x86 dev machine, so expect
+   the Jetson's Cortex cores to be a few times slower.
+7. Open **What is watched?** and check that the capabilities match the boat:
+   dead reckoning needs a heading and a speed log, and the receiver comparison
+   needs two GNSS sources.
+8. Press **Replay last 24 h** once a history provider has a day of data, to see
+   how many incidents the current sensitivity would have raised.
 
 ## Licence
 

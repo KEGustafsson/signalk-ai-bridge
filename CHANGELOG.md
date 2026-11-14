@@ -36,6 +36,13 @@ this project uses [semantic versioning](https://semver.org/).
   `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
   with write access when security is enabled.
 - `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+- **Watchkeeper documentation.** `docs/watchkeeper.md` is the reference: the
+  pipeline, every check with its thresholds, GNSS integrity, redundant
+  sources, operating states, the rule format and parser, where the model is
+  and is not used, the HTTP API, settings, persistence, tuning, measured
+  performance and known limitations. The README introduces Watchkeeper at the
+  top, notes that it needs no AI container, and gains its settings, routes and
+  a table of how little AI it uses.
 - **Watchkeeper discovers what each vessel publishes, and reports what it
   found.** `GET /watch/inventory` and the panel's "What is watched?" list every
   path discovered and what the watch does with each: watched, learning, or
