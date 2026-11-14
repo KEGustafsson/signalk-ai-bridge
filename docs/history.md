@@ -113,44 +113,40 @@ minted here is replayable against another Signal K instance, so the operator's
 session is forwarded only to **this server**: a loopback address that
 reaches it, on the port it listens on.
 
-The plugin asks the server: Signal K hands plugins its HTTP(S) server, and
-that server reports the address and port it is listening on, whatever they
-came from - `PORT`, the settings, or a socket systemd handed it. That port is
-this server's port, and a blank `historyServerUrl` calls it there (HTTPS with
-TLS on). With TLS on, the HTTP port beside it carries only a redirect to the
-port Signal K advertises (`EXTERNALPORT`, which may be a reverse proxy), so it
-is not sent the session.
-
-`signalk-server-setup` runs every systemd install with socket activation:
-systemd opens the listening socket (`ListenStream=`, two of them with TLS on,
-`LISTEN_FDS=2`) and hands it to Signal K, which then listens on none of its
-configured ports. `EXTERNALPORT` is set there too, but it is the port Signal K
-advertises - nginx on 80 in front of `ListenStream=3000`, say - not the port
-it holds, so it never counts. The server's own report is what names the
-socket's port.
-
-Only when the server does not report an address (before it has started
-listening, or under a host that does not hand plugins its server) are the
-ports worked out the way Signal K picks them:
+The plugin works out that port the way Signal K picks it. (The listening
+socket itself is a server internal that plugins may not use, so its address
+is not read.)
 
 - the HTTP port is `PORT` if set, else `port` in its settings, else 3000;
 - with TLS on, the HTTPS port is `SSLPORT` if set, else `sslport`, else 3443.
-  The server's API is on that port, and the HTTP port carries only its redirect
-  to it; both count;
+  The server's API is on that port, and a blank `historyServerUrl` calls it
+  there; the HTTP port carries only its redirect to the advertised port, and
+  is not where the plugin calls;
 - only the value Signal K uses counts: with `PORT` set, a different `port` in
   the settings is not one of its ports, and the same for `SSLPORT` and
   `sslport`;
-- under socket activation (`LISTEN_FDS` set) none of these is its port, and
-  the socket's cannot be known, so no port counts.
+- under systemd socket activation (`LISTEN_FDS` set), which
+  `signalk-server-setup` uses for every systemd install, systemd opens the
+  listening socket (`ListenStream=`, two of them with TLS on) and Signal K
+  listens on none of its configured ports. Its port is then the one Signal K
+  advertises: `EXTERNALPORT`, which the setup script writes as the socket's
+  own port (80, or 443 with TLS), and otherwise `proxy_port` or the
+  configured port (3000 for a socket on the default port). The default 3000
+  does not count on an install whose socket is 80.
 
-`EXTERNALPORT` and `proxy_port` are the ports a reverse proxy publishes, not
-ones this server listens on, and never count. When no port of this server is
-known - socket activation with no address reported, a configured port that is
-not a valid port, a listener on a LAN address or a local socket only - a blank
-`historyServerUrl` calls nothing, rather than send the paths and time window to
-whatever holds a guessed port: the history context says why. A
-`historyServerUrl` set then is not sent the session either; give it a
-`historyApiKey`.
+Outside socket activation, `EXTERNALPORT` and `proxy_port` are the ports a
+reverse proxy publishes, not ones this server listens on, and never count.
+Under socket activation, a hand-written unit whose `EXTERNALPORT` names a
+reverse proxy (nginx on 80 in front of `ListenStream=3000`) has the session
+sent to that proxy, which hands it to this server; if something else answers
+on that port, give the History API a `historyServerUrl` on the socket's own
+port instead.
+
+When no port of this server is known - a configured or advertised port that
+is not a valid port - a blank `historyServerUrl` calls nothing, rather than
+send the paths and time window to whatever holds a guessed port: the history
+context says why. A `historyServerUrl` set then is not sent the session
+either; give it a `historyApiKey`.
 
 Loopback alone is not enough, because any other service on this machine is on
 loopback too, so a `historyServerUrl` of `localhost` at a different port is
@@ -160,31 +156,17 @@ that blank if it needs none. When a key is configured and the server still
 answers 401 or 403, the error shows the server's own reason and says the key
 was rejected.
 
-Which loopback addresses count depends on what the listener is bound to, as
-the server reports it:
-
-- the dual-stack wildcard (`::`): `localhost`, `127.0.0.1` and `[::1]` all
-  count. Signal K listens without naming a host, and Node then binds `::` as
-  dual-stack (or `0.0.0.0` on a host without IPv6, where nobody can bind
-  `[::1]` either); a systemd `ListenStream=3000` socket binds the dual-stack
-  wildcard too by default. While Signal K holds the port that way, no other
-  process can hold `127.0.0.1` or `[::1]` on it;
-- an IPv4 address (`0.0.0.0`, `127.0.0.1`): only `127.0.0.1` counts, since
-  another process could hold `[::1]` on the same port. `localhost` resolves
-  to both, and Node tries both, so it counts only when this machine has no
-  IPv6 loopback address for anyone to bind; otherwise a blank
-  `historyServerUrl` calls `127.0.0.1`;
-- `[::1]`: only `[::1]` counts, the same way round;
-- any other address (a LAN address only): no loopback address reaches it, and
-  nothing counts.
-
-The exposure that remains is an IPv6 wildcard that is IPv6-only, which the
-server's report cannot tell apart from a dual-stack one: a socket unit with
-`BindIPv6Only=ipv6-only`, or `net.ipv6.bindv6only=1` with the default
-`BindIPv6Only=`. Another service could then take `127.0.0.1` on the same port,
-and a `historyServerUrl` naming it would hand that service the session; the
-blank default calls `localhost`, which can resolve there too. Avoid that
-combination, or bind the socket to `[::1]` explicitly.
+On this server's port, `localhost`, `127.0.0.1` and `[::1]` all count. Signal
+K listens without naming a host, and Node then binds the dual-stack wildcard
+`::` (or `0.0.0.0` on a host without IPv6, where nobody can bind `[::1]`
+either); a systemd `ListenStream=<port>` socket binds the dual-stack wildcard
+too by default. While Signal K holds the port that way, no other process can
+hold `127.0.0.1` or `[::1]` on it. The exposure that remains is a listener on
+one address family only: a socket unit with `BindIPv6Only=ipv6-only`, or
+`net.ipv6.bindv6only=1` with the default `BindIPv6Only=`, or one bound to an
+IPv4 address. Another service could then take the other family's loopback on
+the same port, and `localhost` can resolve there. Avoid that combination, or
+set `historyServerUrl` to the loopback address Signal K holds.
 
 ## Servers with TLS
 

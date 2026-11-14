@@ -58,25 +58,6 @@ async function withSignalkEnv(vars, fn) {
   }
 }
 
-/** A Signal K server whose listener reports `address` (app.server.address()). */
-function listeningOn(address, family, port) {
-  return { server: { address: () => ({ address, family, port }) } };
-}
-
-/** Run `fn` with os.networkInterfaces() reporting only `addresses` on lo. */
-async function withInterfaces(addresses, fn) {
-  const os = require('node:os');
-  const original = os.networkInterfaces;
-  os.networkInterfaces = () => ({
-    lo: addresses.map((address) => ({ address, family: address.includes(':') ? 'IPv6' : 'IPv4', internal: true }))
-  });
-  try {
-    return await fn();
-  } finally {
-    os.networkInterfaces = original;
-  }
-}
-
 function historyConfig(overrides = {}) {
   return {
     ...normalizeHistoryConfig({ historyEnabled: true, ...overrides }, {}),
@@ -761,38 +742,47 @@ describe('which ports are this server', () => {
     return { url: calls[0].url, cookie: calls[0].init.headers.cookie };
   }
 
-  // A signalk-server-setup install: systemd hands the server its socket
-  // (LISTEN_FDS=1) and EXTERNALPORT is the port it advertises - here an nginx
-  // on 80 in front of ListenStream=3000. The socket's real port comes from
-  // the server's own address(); EXTERNALPORT is the proxy's and must not be
-  // sent the operator's session.
-  it('takes the socket-activated port from the server, not from EXTERNALPORT', async () => {
+  // A signalk-server-setup install on port 80: systemd hands the server its
+  // socket (LISTEN_FDS=1) and the unit sets EXTERNALPORT=80, the socket's own
+  // port. Nothing listens on 3000 (Grafana, typically), which is not sent the
+  // session.
+  it('takes the socket-activated port from the advertised port, not the default 3000', async () => {
     await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
-      const app = { config: { settings: {} }, ...listeningOn('::', 'IPv6', 3000) };
-      assert.deepEqual([...ownServerPorts(app)], ['3000']);
-      assert.equal(isOwnServer('http://localhost:80', ownServer(app)), false);
-      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
-
-      const proxy = await cookieSentTo(app, 'http://localhost:80');
-      assert.equal(proxy.cookie, undefined);
+      const app = { config: { settings: {}, getExternalPort: () => Number(process.env.EXTERNALPORT) || 3000 } };
+      assert.deepEqual([...ownServerPorts(app)], ['80']);
+      assert.equal(isOwnServer('http://localhost:3000', ownServer(app)), false);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:80');
+      assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
       const own = await cookieSentTo(app);
-      assert.match(own.url, /^http:\/\/localhost:3000\/signalk\//);
+      assert.match(own.url, /^http:\/\/localhost:80\/signalk\//);
       assert.equal(own.cookie, 'JAUTHENTICATION=token');
     });
   });
 
-  // Without the server's address nothing names the socket: neither the
-  // default 3000 (Grafana, typically, when Signal K is on an activated 80)
-  // nor EXTERNALPORT counts, and nothing is called on a guessed port.
-  it('counts no port, and calls nothing, under socket activation without an address', async () => {
-    for (const app of [
-      { config: { settings: {} } },
-      { config: { settings: {} }, server: { address: () => null } }
-    ]) {
-      await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
+  // The same install on the default port: no EXTERNALPORT, and the server
+  // advertises (and holds) 3000.
+  it('keeps the session for a socket-activated server on the default port', async () => {
+    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
+      const app = { config: { settings: {}, getExternalPort: () => 3000 } };
+      assert.deepEqual([...ownServerPorts(app)], ['3000']);
+      assert.equal((await cookieSentTo(app)).cookie, 'JAUTHENTICATION=token');
+    });
+  });
+
+  // The listener object is a server internal that plugins may not use (the
+  // Signal K plugin CI rejects it), so whatever it says is not read.
+  it('does not read the server\'s internal listener', async () => {
+    const app = { config: { settings: { port: 3000 } }, server: { address: () => assert.fail('app.server must not be read') } };
+    assert.deepEqual([...ownServerPorts(app)], ['3000']);
+  });
+
+  // With no valid advertised port nothing names the socket, and nothing is
+  // called on a guessed port.
+  it('counts no port, and calls nothing, under socket activation without a valid advertised port', async () => {
+    for (const app of [{ config: { settings: {} } }, { config: { settings: {}, getExternalPort: () => 'none' } }]) {
+      await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
         assert.equal(ownServerPorts(app).size, 0);
         assert.equal(isOwnServer('http://localhost:3000', ownServer(app)), false);
-        assert.equal(isOwnServer('http://localhost:80', ownServer(app)), false);
 
         const history = await collectHistoryContext(
           app,
@@ -850,7 +840,7 @@ describe('which ports are this server', () => {
 
   it('does not replay against an unknown port', async () => {
     const { createWatchService } = require('../lib/watch-service.cjs');
-    await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
+    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
       const host = {
         selfId: 'vessels.self',
         config: { settings: {} },
@@ -871,94 +861,19 @@ describe('which ports are this server', () => {
     });
   });
 
-  // The server's address wins over the settings even without socket
-  // activation: it is the port actually held.
-  it('prefers the port the server reports over its settings', async () => {
-    const app = { config: { settings: { port: 3000 } }, ...listeningOn('::', 'IPv6', 8080) };
-    assert.deepEqual([...ownServerPorts(app)], ['8080']);
-    assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:8080');
-    assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
-  });
-
-  // With TLS on, app.server is the https server; the http redirect beside it
-  // only redirects to the advertised port and is not sent the session.
-  it('counts only the https listener the server reports under TLS', async () => {
-    const app = { config: { settings: { ssl: true, port: 3000 } }, ...listeningOn('::', 'IPv6', 3443) };
-    assert.deepEqual([...ownServerPorts(app)], ['3443']);
+  // With TLS on, the https port is the main listener; the http port carries
+  // only the server's redirect, and is not where the plugin calls.
+  it('calls the https port under TLS', async () => {
+    const app = { config: { settings: { ssl: true, port: 3000 } } };
     assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:3443');
-    assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
-  });
-
-  // An IPv4-only listener leaves [::1] on the same port to whoever binds it,
-  // and `localhost` may resolve there, so only 127.0.0.1 is this server -
-  // unless this machine has no IPv6 loopback for anyone to bind.
-  it('trusts only the IPv4 loopback for an IPv4-only listener', async () => {
-    const app = { config: { settings: {} }, ...listeningOn('0.0.0.0', 'IPv4', 3000) };
-    await withInterfaces(['127.0.0.1', '::1'], async () => {
-      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://127.0.0.1:3000');
-      assert.equal((await cookieSentTo(app, 'http://[::1]:3000')).cookie, undefined);
-      assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
-      assert.equal((await cookieSentTo(app)).cookie, 'JAUTHENTICATION=token');
-      const own = ownServer(app);
-      assert.equal(isOwnServer('http://[::1]:3000', own), false);
-      assert.equal(isOwnServer('http://localhost:3000', own), false);
-      assert.equal(isOwnServer('http://127.0.0.1:3000', own), true);
-    });
-    await withInterfaces(['127.0.0.1'], async () => {
-      assert.equal(isOwnServer('http://localhost:3000', ownServer(app)), true);
-      assert.equal(isOwnServer('http://[::1]:3000', ownServer(app)), false);
-      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
-    });
-    const listener127 = { config: { settings: {} }, ...listeningOn('127.0.0.1', 4, 3000) };
-    await withInterfaces(['127.0.0.1', '::1'], async () => {
-      assert.equal(isOwnServer('http://127.0.0.1:3000', ownServer(listener127)), true);
-      assert.equal(isOwnServer('http://[::1]:3000', ownServer(listener127)), false);
-    });
-  });
-
-  it('trusts only the IPv6 loopback for an IPv6-only listener', async () => {
-    const app = { config: { settings: {} }, ...listeningOn('::1', 'IPv6', 3000) };
-    await withInterfaces(['127.0.0.1', '::1'], async () => {
-      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://[::1]:3000');
-      assert.equal((await cookieSentTo(app, 'http://127.0.0.1:3000')).cookie, undefined);
-      const own = ownServer(app);
-      assert.equal(isOwnServer('http://127.0.0.1:3000', own), false);
-      assert.equal(isOwnServer('http://localhost:3000', own), false);
-      assert.equal(isOwnServer('http://[::1]:3000', own), true);
-
-      const history = await collectHistoryContext(
-        app,
-        historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://localhost:3000' }),
-        { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) },
-        session
-      );
-      assert.match(history.message, /its ports: 3000, reached at \[::1\] only/);
-    });
   });
 
   // Unchanged behaviour, kept as a guard: nobody else can hold either
   // loopback address on a port the dual-stack wildcard holds.
-  it('trusts every loopback name for a dual-stack listener', async () => {
-    const app = { config: { settings: {} }, ...listeningOn('::', 'IPv6', 3000) };
+  it('trusts every loopback name for this server\'s port', async () => {
+    const app = { config: { settings: {} } };
     for (const url of ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://[::1]:3000']) {
       assert.equal((await cookieSentTo(app, url)).cookie, 'JAUTHENTICATION=token', url);
-    }
-  });
-
-  it('calls nothing when the server is not on loopback or not on TCP', async () => {
-    for (const server of [
-      { address: () => ({ address: '192.168.1.5', family: 'IPv4', port: 3000 }) },
-      { address: () => '/run/signalk.sock' }
-    ]) {
-      const app = { config: { settings: {} }, server };
-      assert.equal(ownServerPorts(app).size, 0);
-      const history = await collectHistoryContext(
-        app,
-        historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
-        { fetchImpl: () => assert.fail('no request expected') },
-        session
-      );
-      assert.match(history.message, /port is not known \(it listens on /);
     }
   });
 

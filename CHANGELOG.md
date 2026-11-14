@@ -111,17 +111,16 @@ this project uses [semantic versioning](https://semver.org/).
     server that was sent the configured `historyApiKey` now shows the server's
     error and says the key was rejected, instead of saying the session was not
     sent.
-  - **Security:** this server's port is now the one its listener reports
-    (`app.server.address()`), so a socket-activated install no longer trusts
-    `EXTERNALPORT`, the advertised port that is often a reverse proxy's (nginx
-    on 80 in front of `ListenStream=3000`), with the session. An IPv4-only
-    listener no longer counts `[::1]`, or `localhost` while IPv6 loopback
-    exists, and an IPv6-only one no longer counts `127.0.0.1`. With no port
+  - **Security:** under systemd socket activation, the default 3000 no longer
+    counts as this server (on an install whose socket is 80, Grafana often
+    holds 3000); the port is the one Signal K advertises, which
+    `signalk-server-setup` writes as the socket's own. With no valid port
     known, the default History API URL is not called at all instead of
-    falling back to `localhost:3000`, and the reason (socket activation, an
-    invalid port) is what the message gives. A failed call names its cause
-    (`fetch failed: ECONNREFUSED`), and a rejected TLS certificate says how
-    to make it verify (`NODE_EXTRA_CA_CERTS`; see docs/history.md).
+    falling back to `localhost:3000`, and the reason is what the message
+    gives. A failed call names its cause (`fetch failed: ECONNREFUSED`), and
+    a rejected TLS certificate says how to make it verify
+    (`NODE_EXTRA_CA_CERTS`; see docs/history.md). The listener object is a
+    server internal plugins may not use, so it is not read.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
     dead reckoning or a second receiver was checking it; signed angles (roll,
