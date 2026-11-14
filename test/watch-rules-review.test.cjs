@@ -318,3 +318,37 @@ describe('review of c5649a1: phrasings the leftover check refused', () => {
     assert.match(result.message, /model not loaded/);
   });
 });
+
+describe('review of d17e43d: more phrasings the leftover check refused', () => {
+  const read = (text) => parseRule(text, VESSEL);
+
+  it('reads "changes state" and "switches on/off" as a change', () => {
+    for (const text of [
+      'notify me if the engine state changes state',
+      'the engine state changes its state',
+      'the engine state switches state',
+      'the engine state changes mode',
+      'tell me if the bilge pump switches on/off',
+      'the bilge pump starts, then stops',
+      'the bilge pump changes at all'
+    ]) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.op, 'changes', text);
+    }
+  });
+
+  it('accepts thanks and the like after a state', () => {
+    for (const text of ['the bilge pump switches on, thanks', 'the bilge pump is on, thank you', 'the bilge pump switches on again', 'the bilge pump is on now']) {
+      const result = read(text);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.deepEqual([result.rule.op, result.rule.value], ['equals', true], text);
+    }
+  });
+
+  it('keeps punctuation inside a quoted state', () => {
+    assert.equal(read('the engine state equals "a.b"').rule.value, 'a.b');
+    assert.equal(read('the engine state changes to "float."').rule.value, 'float.');
+    assert.equal(read("the engine state is 'wow!'").rule.value, 'wow!');
+  });
+});

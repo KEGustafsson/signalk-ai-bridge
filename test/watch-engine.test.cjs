@@ -1002,6 +1002,32 @@ describe('watch engine: review follow-ups', () => {
     assert.ok(detectors(freed).includes('newState:plugins.ex.valve'), detectors(freed).join(', '));
   });
 
+  it('keeps the kind a path had before when it is decided again twice, and settles a flag', () => {
+    const options = { minIntervalMs: 1000, learningMs: 20 * MINUTE, dropoutMinMs: 30000, dropoutFactor: 10 };
+    const pump = monitor.createPathState('plugins.ex.pump', T0);
+    let t = T0;
+    for (let index = 0; index < 400; index += 1, t += 30 * SECOND) monitor.observe(pump, index % 8 < 4 ? 0 : 1, t, options);
+    assert.equal(pump.kind, 'discrete');
+    const before = pump.transitionTotal;
+    monitor.redecideKind(pump, t, options.learningMs);
+    for (let index = 0; index < 5; index += 1, t += 30 * SECOND) monitor.observe(pump, index % 2, t, options);
+    // A second restart with the listing changed again, before the kind is known.
+    monitor.redecideKind(pump, t, options.learningMs);
+    for (let index = 0; index < 25; index += 1, t += 30 * SECOND) monitor.observe(pump, index % 2, t, options);
+    assert.equal(pump.kind, 'discrete');
+    assert.ok(pump.transitionTotal > before, `its switching history is kept (${before} -> ${pump.transitionTotal})`);
+    assert.equal(pump.transitionsSince, undefined);
+
+    const flag = monitor.createPathState('electrical.switches.bilgePump.state', T0);
+    t = T0;
+    for (let index = 0; index < 30; index += 1, t += 30 * SECOND) monitor.observe(flag, index % 6 < 3, t, options);
+    monitor.redecideKind(flag, t, options.learningMs);
+    monitor.observe(flag, true, t + 30 * SECOND, options);
+    const saved = monitor.exportPathState(flag);
+    assert.equal(saved.redecideFrom, undefined, 'a flag settles the re-decision');
+    assert.equal(saved.redecideQuietMs, undefined);
+  });
+
   it('keeps the new-state check of an alarm or fault flag under a pattern', () => {
     const path = 'plugins.ex.engineInAlarm';
     const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
@@ -1022,7 +1048,14 @@ describe('watch engine: review follow-ups', () => {
     for (const path of ['plugins.ex.engineInAlarm', 'plugins.ex.batteryInFault', 'plugins.ex.systemInError', 'plugins.ex.isInAlarm']) {
       assert.equal(listed(path), false, `${path} is a flag`);
     }
-    for (const path of ['plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault', 'plugins.ex.secondsSinceLastError', 'plugins.ex.timeInCurrentState', 'plugins.ex.pulsesInState']) {
+    for (const path of ['plugins.ex.systemsInAlarm', 'plugins.ex.itemsInState']) {
+      assert.equal(listed(path), false, `${path}: "ms" inside a word is not milliseconds`);
+    }
+    for (const path of [
+      'plugins.ex.timeInAlarm', 'plugins.ex.secondsSinceError', 'plugins.ex.hoursInFault', 'plugins.ex.secondsSinceLastError',
+      'plugins.ex.timeInCurrentState', 'plugins.ex.pulsesInState', 'plugins.ex.elapsedInState', 'plugins.ex.msSinceError',
+      'plugins.ex.ageSinceError', 'plugins.ex.periodInState', 'plugins.ex.dwellInState', 'plugins.ex.relay1SecondsInState'
+    ]) {
       assert.equal(listed(path), true, `${path} is a count`);
     }
   });

@@ -102,8 +102,10 @@ standard Signal K path or a plugin's own.
     `Label`, after a letter or digit (`relay1State`, `inverterACMode`,
     `engineInAlarm`) - which keeps its new-state check. A time or count of a
     state is not a state code: `timeInState`, `secondsSinceLastError`,
-    `pulsesInCurrentMode` (a word such as time, seconds, hours, duration,
-    pulses or count, then `In` or `Since`) are counters.
+    `pulsesInCurrentMode`, `relay1SecondsInState` (a word such as time,
+    seconds, ms, hours, duration, elapsed, age, period, dwell, pulses or
+    count, starting the name or one of its words, then `In` or `Since`) are
+    counters.
   - Any other number is a counter if, over at least 30 samples, it has never
     fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
     `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
@@ -426,7 +428,8 @@ A rule is stored data, checked deterministically on every tick:
 - A word is a value only on a path that has states: "becomes warm" on a
   temperature, or "changes to empty" on a tank level, is refused with a request
   for a number, rather than stored as a watch that can never fire. "Switches on
-  and off", "starts and stops" mean any change.
+  and off", "switches on/off", "starts and stops", "changes state" mean any
+  change. A quoted state keeps its punctuation (`equals "a.b"`).
 - One `while` condition per rule, and one comparison in each. A request with
   two `while` conditions, three comparisons, or two joined by *or* or *but*,
   is refused rather than stored with one of them silently dropped, and it is

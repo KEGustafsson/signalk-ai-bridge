@@ -1588,6 +1588,26 @@ describe('reading a History API response', () => {
     await assert.rejects(readJsonBounded(declared, 100), (error) => error.code === 'too-large');
   });
 
+  it('reads JSON as response.json() does: a leading byte-order mark is ignored', async () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('{"a":1}')]);
+    assert.deepEqual(await readJsonBounded(new Response(bom), 100), { a: 1 });
+  });
+
+  it('counts string chunks, and reads a double that offers only json()', async () => {
+    const handMade = {
+      headers: new Headers(),
+      body: new ReadableStream({
+        start(controller) {
+          for (let index = 0; index < 20; index += 1) controller.enqueue('"' + 'y'.repeat(100) + '",');
+          controller.close();
+        }
+      })
+    };
+    await assert.rejects(readJsonBounded(handMade, 1000), (error) => error.code === 'too-large');
+    assert.deepEqual(await readJsonBounded({ headers: new Headers(), json: async () => ({ b: 2 }) }, 100), { b: 2 });
+    await assert.rejects(readJsonBounded(new Response('x'.repeat(200)), 100), /larger than 100 bytes/);
+  });
+
   it('turns a too-large history response into a message, not a crash', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },

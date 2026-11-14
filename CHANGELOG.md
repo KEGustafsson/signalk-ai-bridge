@@ -261,7 +261,15 @@ this project uses [semantic versioning](https://semver.org/).
     good); words such as "on the house bank" narrow the subject, kept only if
     the path answers to them; `mb`, `º` and "°celsius" are read; a change
     made while a path is muted is not reported when the mute ends; and an
-    error reply that offers only `text()` keeps its detail.
+    error reply that offers only `text()` keeps its detail. And from the
+    review of the leftover check on states: "changes state", "switches
+    on/off", "starts, then stops" are changes; "thanks", "thank you",
+    "starts up", "at all" are fine after a state; a quoted state keeps its
+    punctuation. History API responses with a byte-order mark are read, as
+    `response.json()` reads them. A path decided again twice before its kind
+    is known keeps the kind it had (and its switching history); more time
+    words count a state (`elapsedInState`, `msSinceError`,
+    `relay1SecondsInState`), but not "ms" inside a word (`systemsInAlarm`).
   - CodeRabbit full review (detection and replay): replay enforces its row
     limit on what the History API returns (rows closer than the requested
     resolution, outside the window or past the limit are left out, and the
