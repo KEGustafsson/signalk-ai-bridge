@@ -415,6 +415,41 @@ describe('watch detection: replay', () => {
     assert.match(result.note, /Nothing was recorded for any replayed path in 1 gap \(the longest 48\d min\)/);
   });
 
+  it('keeps only the columns asked for, each once', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - HOUR;
+    const path = 'propulsion.main.temperature';
+    const requests = [];
+    const fetchImpl = async (url) => {
+      requests.push(url);
+      if (url.includes('/history/paths')) return new Response(JSON.stringify([path]), { status: 200 });
+      // The path asked for, twice, and a thousand others.
+      const values = [{ path }, { path }, ...Array.from({ length: 1000 }, (_, index) => ({ path: `environment.other${index}.temperature` }))];
+      const data = [];
+      for (let at = start; at <= end; at += 10 * SECOND) {
+        // The columns not asked for jump for the last ten minutes: read, they would be shifts.
+        const wobble = ((at / 10000) % 3) * 0.05;
+        const other = at > end - 10 * MINUTE ? 999 : 290.15 + wobble;
+        data.push([new Date(at).toISOString(), 353.15 + wobble, 353.15 + wobble, ...Array.from({ length: 1000 }, () => other)]);
+      }
+      return new Response(JSON.stringify({ values, data }), { status: 200 });
+    };
+    let ingested = [];
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H', paths: [path] }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      assert.equal(result.pathsReplayed, 1);
+      // The columns not asked for were not read: no shift to 999.
+      assert.equal(result.byDetector.shift, undefined, JSON.stringify(result.byDetector));
+      ingested = result.rows;
+    } finally {
+      service.stop();
+    }
+    assert.ok(ingested > 300);
+  });
+
   it('evaluates a feed silence that spans a gap in the history', async () => {
     const end = Date.parse('2026-06-02T08:00:00Z');
     const start = end - 6 * HOUR;

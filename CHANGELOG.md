@@ -270,6 +270,8 @@ this project uses [semantic versioning](https://semver.org/).
     is known keeps the kind it had (and its switching history); more time
     words count a state (`elapsedInState`, `msSinceError`,
     `relay1SecondsInState`), but not "ms" inside a word (`systemsInAlarm`).
+    A quoted state is read whole ("fault, low", "low, while charging"), and
+    replay keeps only the columns it asked for, each once.
   - CodeRabbit full review (detection and replay): replay enforces its row
     limit on what the History API returns (rows closer than the requested
     resolution, outside the window or past the limit are left out, and the

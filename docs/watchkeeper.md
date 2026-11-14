@@ -429,7 +429,9 @@ A rule is stored data, checked deterministically on every tick:
   temperature, or "changes to empty" on a tank level, is refused with a request
   for a number, rather than stored as a watch that can never fire. "Switches on
   and off", "switches on/off", "starts and stops", "changes state" mean any
-  change. A quoted state keeps its punctuation (`equals "a.b"`).
+  change. A quoted state is one value, as written: its punctuation and any
+  *while*, *and* or urgency word inside it are part of the state
+  (`changes to "fault, low"`).
 - One `while` condition per rule, and one comparison in each. A request with
   two `while` conditions, three comparisons, or two joined by *or* or *but*,
   is refused rather than stored with one of them silently dropped, and it is
@@ -587,7 +589,8 @@ per row, asking for at most 10,000 rows, for up to 80 paths in requests of
 response is read oldest row first, and rows closer together than three
 quarters of the requested resolution (apart from the first and last, which a
 provider may clip to the window), outside the window (by more than one row)
-or past a third more than the window holds are left out. The result says so
+or past a third more than the window holds are left out, and so are columns
+for paths that were not asked for (or a path declared twice). The result says so
 (`truncated: true`, `rowsDropped`, and a sentence in `note`), so a provider
 that ignores the resolution cannot make a replay hold a week of one-second
 rows, while rows with a little jitter are all kept.

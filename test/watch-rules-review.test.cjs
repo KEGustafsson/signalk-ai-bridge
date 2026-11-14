@@ -351,4 +351,20 @@ describe('review of d17e43d: more phrasings the leftover check refused', () => {
     assert.equal(read('the engine state changes to "float."').rule.value, 'float.');
     assert.equal(read("the engine state is 'wow!'").rule.value, 'wow!');
   });
+
+  it('keeps a quoted state whole: punctuation, "while" and "and" inside it (4575989371)', () => {
+    const modes = [...VESSEL, { path: 'electrical.inverters.main.mode', role: 'watching', valueType: 'string' }];
+    const parse = (text) => parseRule(text, modes);
+    assert.equal(parse('inverter mode changes to "fault, low"').rule.value, 'fault, low');
+    const whileInside = parse('inverter mode changes to "low, while charging"');
+    assert.equal(whileInside.ok, true, whileInside.reason);
+    assert.equal(whileInside.rule.value, 'low, while charging');
+    assert.equal(whileInside.rule.when, undefined);
+    assert.equal(parse('inverter mode is "fault and low"').rule.value, 'fault and low');
+    // An urgency word inside the quotes is the state, not the urgency.
+    assert.equal(parse("inverter mode becomes 'bulk alarm'").rule.severity, 'warn');
+    // A guard after a quoted state is still read, and a quoted "on" is on.
+    const guarded = parse('inverter mode becomes "float" while the engine state is "running"');
+    assert.deepEqual(guarded.rule.when, { path: 'propulsion.main.state', op: 'equals', value: true });
+  });
 });
