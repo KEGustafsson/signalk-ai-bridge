@@ -82,8 +82,10 @@ rising?" at a fraction of the tokens.
   is not a series, and the live snapshot already carries the newest value
 
 - `historyApiKey`
-  Bearer token for a history server that is not this machine. Leave blank for
-  local history, or for an unauthenticated remote one
+  Bearer token for a history server that is not this Signal K server: another
+  host, or another service on this machine at a different port (InfluxDB on
+  `localhost:8086`, say). Leave blank for this server's own history, or for an
+  unauthenticated one
 
 - `historyProvider`
   A specific provider plugin id. Blank uses the server's default provider
@@ -109,7 +111,9 @@ read themselves.
 That reasoning only holds when the History API is this Signal K server. A cookie
 minted here is replayable against another Signal K instance, so the operator's
 session is forwarded only to **this server**: a loopback address (`localhost`,
-`127.0.0.1`, `::1`) on the port this server listens on. Loopback alone is not
+`127.0.0.1`, `::1`) on a port this server listens on: `PORT` or `port` in its
+settings (default 3000), and with TLS on, `SSLPORT` or `sslport` (default
+3443). Loopback alone is not
 enough, because any other service on this machine is on loopback too, so a
 `historyServerUrl` of `localhost` at a different port is treated like another
 host. Another host, or another port, is never sent the session. Give it a

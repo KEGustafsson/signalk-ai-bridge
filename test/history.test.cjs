@@ -532,6 +532,45 @@ describe('collectHistoryContext', () => {
     assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
   });
 
+  it('knows every port this server listens on: PORT, settings, and the TLS port', () => {
+    const { ownServerPorts } = require('../lib/history-service.cjs');
+    const saved = { PORT: process.env.PORT, SSLPORT: process.env.SSLPORT };
+    try {
+      delete process.env.PORT;
+      delete process.env.SSLPORT;
+      assert.deepEqual([...ownServerPorts({ config: { settings: { port: 3000, ssl: true } } })].sort(), ['3000', '3443']);
+      process.env.PORT = '8080';
+      assert.ok(ownServerPorts({ config: { settings: { port: 3000 } } }).has('8080'));
+      // EXTERNALPORT (a proxy's port) is not on its own one of this server's.
+      delete process.env.PORT;
+      const ports = ownServerPorts({ config: { settings: { port: 3000 }, getExternalPort: () => 443 } });
+      assert.ok(ports.has('3000'));
+      assert.ok(!ports.has('443'));
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('sends the session to this server on its TLS port, named explicitly', async () => {
+    const calls = [];
+    await collectHistoryContext(
+      { config: { settings: { port: 3000, ssl: true } } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'https://localhost:3443' }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      { authHeaders: { cookie: 'JAUTHENTICATION=token' } }
+    );
+    assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
+  });
+
+  it('says why a local service at another port was not sent the session', () => {
+    const { credentialHint } = require('../lib/history-service.cjs');
+    assert.match(credentialHint('http://localhost:8086', new Set(['3000']), 401), /localhost port 8086 is not recognised as this Signal K server \(its ports: 3000\)/);
+    assert.match(credentialHint('https://other-boat.example', new Set(['3000']), 403), /other than this one needs its own credential/);
+  });
+
   it('decides "this server" by loopback host and port', () => {
     const { isOwnServer } = require('../lib/history-service.cjs');
     assert.equal(isOwnServer('http://localhost:3000', 'http://localhost:3000'), true);

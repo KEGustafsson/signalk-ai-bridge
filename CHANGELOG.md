@@ -68,7 +68,11 @@ this project uses [semantic versioning](https://semver.org/).
     when it is this Signal K server: a loopback host on this server's own port.
     A `historyServerUrl` of `localhost` at another port used to receive the
     operator's cookie or bearer token, because only the hostname was checked.
-    It is now treated like another host and given `historyApiKey`, if set.
+    It is now treated like another host and given `historyApiKey`, if set. "This
+    server" covers every port it listens on (`PORT` or `port`, and with TLS
+    `SSLPORT` or `sslport`), so naming it explicitly, on its TLS port say,
+    keeps working; a 401 from a local service at another port says it was not
+    recognised as this server instead of calling it remote.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
     dead reckoning or a second receiver was checking it; signed angles (roll,

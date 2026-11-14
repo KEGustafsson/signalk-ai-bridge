@@ -261,7 +261,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       },
       historyApiKey: {
         type: 'string',
-        title: 'History API key (remote servers only)',
+        title: 'History API key (servers other than this one)',
         description:
           'Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator\'s own session is forwarded only to this server (localhost on its own port) — a cookie minted here is replayable against another Signal K instance, so anything else is never sent it and needs a credential issued for itself. Leave blank for this server\'s own history, or for an unauthenticated one.',
         default: ''
