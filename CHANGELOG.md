@@ -102,7 +102,7 @@ this project uses [semantic versioning](https://semver.org/).
     terminal refusal; true wind angle keeps its sign; a "changes" rule no
     longer forgets a change made while its guard was stale; the report's GNSS
     line is judged on its own window; and replay puts rule inputs first so the
-    80-path cap cannot cut them.
+    80-path cap reaches them last.
   - Independent review of 9366cdb: a baseline saved before per-pair source
     statistics no longer crashes the watch on the next secondary sample (and
     one bad value can no longer take a whole delta down); an outage no longer
@@ -112,6 +112,18 @@ this project uses [semantic versioning](https://semver.org/).
     watch that cannot fire; adding a 51st watch returns 409 instead of
     reporting success for a dropped rule; and a stale speed log ends a
     frozen-fix candidate.
+  - Independent reviews of 3a14b76 and bddf473: the unnamed-counter rule
+    counts hours with a rise in them, not the path's age or downtime, and a
+    measurement (by name or unit) is never a counter; named counters survive
+    a reset to zero and the name list no longer catches `totalPower` or
+    `energyStored`; a "changes" rule reports a change once, though its guard
+    goes quiet and returns; on/off on a measurement is refused, also when a
+    model wrote the rule, while `…ReferenceType` and other state leaves keep
+    their words; a readable and an unreadable "while" condition are both
+    named; the report's GNSS cross-check survives a restart; a receiver that
+    really slows down is learned instead of being reported lost after every
+    fix; coarse pressure and tank senders keep their resolution, and a
+    glitch out and back is recognised as one step.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

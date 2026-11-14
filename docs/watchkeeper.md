@@ -83,12 +83,23 @@ standard Signal K path or a plugin's own.
   case they are discrete until a fifth value or a fraction appears. A number
   that has never fallen over at least 30 samples is a *counter* (engine hours,
   energy, fuel used), and the level and stuck-sensor checks skip it. Never
-  falling is not enough on its own: the path must also be named as a counter
-  (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`, `lifetime…`,
-  `…Consumed`, `used`, `odometer`, `log`, `trip`), or have kept climbing on at
-  least a fifth of its updates for six hours. A value that sat still and then
-  jumped, or a voltage climbing on a charger for twenty minutes, is not a
-  counter.
+  falling is not enough on its own:
+  - A path named as a measurement is never a counter, whatever else its name
+    says (`…Voltage`, `…Current`, `…Temperature`, `…Level`, `…Pressure`,
+    `…Power`, `…Rate`, `…Stored`, `…Remaining` and the like, and anything
+    about satellites). Neither is a path whose unit is not one a cumulative
+    quantity has (s, m³, J, C; m for a log).
+  - A path named as a counter is one (`runTime`, `…Hours`, `…Count`,
+    `…Total`, `energy…`, `lifetimeDischarge`/`Recharge`/`Charge`/`Energy`,
+    `…Consumed`, `…Today`, `yield…`, `used`, `odometer`, `log`, `trip`). A
+    drop to (nearly) zero is a reset - a daily yield at midnight, a trip log
+    cleared - and does not end it.
+  - Any other path is a counter only after rising in at least six different
+    clock hours, and on at least a fifth of its updates. Hours with a rise in
+    them count, not the path's age: four flat hours and two climbing ones are
+    two hours of evidence, and time the plugin was stopped is none.
+  A value that sat still and then jumped, or a voltage or tank level climbing
+  for hours, is not a counter.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -113,7 +124,7 @@ Each watched path keeps a small, serialisable state object
 | Update interval | Moving average of the time between accepted samples |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
-| Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 9 steps; the noise floor is at least twice it, but never more than ten times the floor for the unit (or 5 % of the value). A single step, or a glitch that goes out and comes straight back (two equal steps), is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
+| Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, a quarter for a tank or other ratio, ten times the unit's floor otherwise; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
 | Transitions | Counted per minute, so a switch cycling every second is counted exactly. "The last hour" is the minute buckets that start inside it — 59 to 60 minutes, never more |
 | Change rate | How often consecutive samples differ, for the frozen check |
 | Discrete states | Count per value (up to 32 values) |
@@ -353,11 +364,14 @@ A rule is stored data, checked deterministically on every tick:
   `changes`.
 - `value` is in SI, like the data. `equals` treats `true`, `1`, `"on"` and
   `"true"` alike.
-- `changes` fires for 10 minutes after the value changes. While the `when`
-  condition is known to be false, the rule keeps up with the value silently;
-  while the `when` data is missing or stale, nothing is judged and nothing is
-  forgotten, so a change made meanwhile is reported once the guard is heard
-  from again.
+- `changes` fires for 10 minutes after the change is seen, once per change.
+  While the `when` condition is known to be false, the rule keeps up with the
+  value silently. While the `when` data is stale, nothing is judged: a change
+  made meanwhile is reported once the guard is heard from again (its 10
+  minutes count from then), and a change already reported is not reported a
+  second time when the guard returns. Until the guard has been heard at all
+  since start, the rule has no starting value, so it begins from the value
+  present when the guard is first heard.
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
@@ -574,7 +588,8 @@ of one core. No GPU is used.
   inverter modes and `navigation.state` are recognised; other regime changes
   (a watermaker starting, say) are not, and may show as short-lived findings.
 - **Replay uses aggregated history,** which is smoother than live data, and
-  replays at most 80 paths.
+  replays at most 80 paths. Paths that rules read go first; only rules
+  reading more than 80 paths in all could lose one.
 - **The rule parser knows English phrasing** and a fixed list of synonyms.
   Other languages fall through to the model, if allowed.
 

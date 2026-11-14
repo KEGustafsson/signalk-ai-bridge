@@ -732,6 +732,75 @@ describe('watch engine: review follow-ups', () => {
     assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
   });
 
+  it('does not count a path as a counter for four flat hours and two climbing ones', () => {
+    const engine = newEngine();
+    const path = 'plugins.example.reading';
+    // Older than six hours by the end, but climbing for only two of them.
+    let t = run(engine, T0, T0 + 4 * 60 * MINUTE, 10 * SECOND, () => [[path, 50]]);
+    let value = 50;
+    t = run(engine, t, t + 2 * 60 * MINUTE + 10 * MINUTE, 10 * SECOND, () => {
+      value += 0.05;
+      return [[path, value]];
+    });
+    const state = engine.exportState(t).paths.find((item) => item.path === path);
+    assert.equal(monitor.isCounterState(state), false, 'two hours of climbing are not six');
+    assert.equal(engine.inventory(t).paths.find((item) => item.path === path).kind, 'continuous');
+  });
+
+  it('never makes a measurement a counter by its climb alone, however long', () => {
+    const state = monitor.createPathState('electrical.batteries.house.voltage', T0);
+    Object.assign(state, { n: 5000, rose: true, monotonic: true, rises: 5000, units: 'V', riseHours: [1, 2, 3, 4, 5, 6, 7, 8] });
+    assert.equal(monitor.isCounterState(state), false);
+    const tank = monitor.createPathState('tanks.blackWater.0.currentLevel', T0);
+    Object.assign(tank, { n: 5000, rose: true, monotonic: true, rises: 5000, riseHours: [1, 2, 3, 4, 5, 6, 7, 8] });
+    assert.equal(monitor.isCounterState(tank), false, 'a level rising for hours is news, with or without units');
+    const pulses = monitor.createPathState('plugins.example.pulses', T0);
+    Object.assign(pulses, { n: 5000, rose: true, monotonic: true, rises: 5000, riseHours: [1, 2, 3, 4, 5, 6] });
+    assert.equal(monitor.isCounterState(pulses), true);
+  });
+
+  it('tells counters from measurements that carry a counter-like word', () => {
+    const counter = (path, units) => {
+      const state = monitor.createPathState(path, T0);
+      Object.assign(state, { n: 100, rose: true, monotonic: true, rises: 100, units });
+      return monitor.isCounterState(state);
+    };
+    assert.equal(counter('electrical.batteries.house.lifetimeDischarge', 'C'), true);
+    assert.equal(counter('navigation.log', 'm'), true);
+    assert.equal(counter('electrical.solar.mppt.yieldToday', 'J'), true);
+    assert.equal(counter('electrical.batteries.house.lifetimeMaxTemperature', 'K'), false);
+    assert.equal(counter('electrical.ac.totalPower', 'W'), false);
+    assert.equal(counter('electrical.batteries.house.energyStored', 'J'), false);
+    assert.equal(counter('navigation.gnss.satellitesInView.count'), false);
+  });
+
+  it('keeps a named counter a counter after it is reset to zero', () => {
+    const state = monitor.createPathState('electrical.solar.mppt.yieldToday', T0);
+    let value = 0;
+    for (let i = 0; i < 100; i += 1) {
+      value = i === 60 ? 0 : value + 1000;
+      monitor.observe(state, value, T0 + i * MINUTE, {});
+    }
+    assert.equal(monitor.isCounterState(state), true, 'the midnight reset is not a fall');
+    const voltage = monitor.createPathState('electrical.batteries.house.voltage', T0);
+    for (let i = 0; i < 100; i += 1) monitor.observe(voltage, i === 60 ? 0 : 12 + i * 0.001, T0 + i * MINUTE, {});
+    assert.equal(monitor.isCounterState(voltage), false);
+  });
+
+  it('does not count the time the plugin was stopped as hours of climbing', () => {
+    const state = monitor.createPathState('plugins.example.reading', T0);
+    // Forty flat minutes, then twenty climbing: one or two hours with a rise.
+    let value = 13.2;
+    for (let i = 0; i < 3600; i += 1) {
+      if (i >= 2400) value += 0.001;
+      monitor.observe(state, value, T0 + i * SECOND, {});
+    }
+    assert.equal(monitor.isCounterState(state), false);
+    // Restored seven hours later: still not a counter.
+    const restored = monitor.importPathState(JSON.parse(JSON.stringify(monitor.exportPathState(state))), T0 + 8 * 60 * MINUTE);
+    assert.equal(monitor.isCounterState(restored), false);
+  });
+
   it('still treats real counters as counters: fuel used, and an unnamed one that climbed for hours', () => {
     const engine = newEngine();
     let used = 0;
@@ -791,6 +860,103 @@ describe('watch engine: review follow-ups', () => {
   });
 });
 
+describe('GNSS: a receiver that really slows down', () => {
+  const knots = 0.514444;
+
+  it('learns the slower rate instead of reporting it lost after every fix', () => {
+    const engine = newEngine();
+    let lat = 60;
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => {
+      lat += 0.00001;
+      return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+    });
+    // Now one fix every 40 s, for 40 minutes.
+    t = run(engine, t, t + 40 * MINUTE, SECOND, (now) => {
+      if ((now - T0) % (40 * SECOND) !== 0) return [];
+      lat += 0.0004;
+      return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+    });
+    // Thirty-five seconds after the last fix: normal for this receiver now.
+    t = run(engine, t, t + 35 * SECOND, SECOND, () => []);
+    assert.notEqual(engine.status(t).gnss.status, 'lost');
+    assert.ok(!detectors(engine).includes('gnss.lost:navigation.position'));
+  });
+
+  it('keeps the frozen-fix check after a 1 Hz receiver settles at one fix every 10 s', () => {
+    const engine = newEngine();
+    let lat = 60;
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => {
+      lat += (6 * knots) / 111195;
+      return [
+        ['navigation.position', { latitude: lat, longitude: 24 }, 'gps'],
+        ['navigation.speedThroughWater', 6 * knots]
+      ];
+    });
+    const phase = t;
+    t = run(engine, t, t + 5 * MINUTE, SECOND, (now) => {
+      const out = [['navigation.speedThroughWater', 6 * knots]];
+      if ((now - phase) % (10 * SECOND) === 0) {
+        lat += (60 * knots) / 111195;
+        out.push(['navigation.position', { latitude: lat, longitude: 24 }, 'gps']);
+      }
+      return out;
+    });
+    // The fix freezes while the log still reads 6 kn.
+    const frozen = { latitude: lat, longitude: 24 };
+    t = run(engine, t, t + 5 * MINUTE, SECOND, (now) => {
+      const out = [['navigation.speedThroughWater', 6 * knots]];
+      if ((now - phase) % (10 * SECOND) === 0) out.push(['navigation.position', frozen, 'gps']);
+      return out;
+    });
+    assert.ok(detectors(engine).includes('gnss.frozen:navigation.position'));
+  });
+});
+
+describe('GNSS frozen fix: each safeguard on its own', () => {
+  const gnssModule = require('../lib/watch/gnss.cjs');
+  const options = {
+    gnssMaxSpeedKn: 40,
+    gnssJumpMinMetres: 100,
+    gnssCurrentAllowanceKn: 2,
+    gnssSourceDisagreeMetres: 100,
+    gnssFrozenMs: MINUTE,
+    gnssClockJumpMs: 30000,
+    gnssLostMs: 30000
+  };
+  const speed = 6 * 0.514444;
+  const fix = { latitude: 60, longitude: 24 };
+  const at = (seconds) => T0 + seconds * SECOND;
+
+  it('starts the candidate over when the log was quiet, though the fixes stayed consecutive', () => {
+    const state = gnssModule.createGnssState();
+    for (let s = 0; s <= 50; s += 1) {
+      gnssModule.observeGnss(state, 'navigation.speedThroughWater', speed, at(s), 'log', options);
+      gnssModule.observeGnss(state, 'navigation.position', fix, at(s), 'gps', options);
+    }
+    // The log stops; four more fixes, then a 4 s pause in the fixes.
+    for (let s = 51; s <= 54; s += 1) gnssModule.observeGnss(state, 'navigation.position', fix, at(s), 'gps', options);
+    // The log comes back after 7 s, then fixes resume, still "consecutive".
+    for (let s = 57; s <= 62; s += 1) {
+      gnssModule.observeGnss(state, 'navigation.speedThroughWater', speed, at(s), 'log', options);
+      if (s >= 58) gnssModule.observeGnss(state, 'navigation.position', fix, at(s), 'gps', options);
+    }
+    const out = gnssModule.evaluateGnss(state, at(62), options);
+    assert.ok(!out.frozen || !out.frozen.active, 'the time before the log went quiet is not evidence');
+  });
+
+  it('needs a fix inside the receiver\'s own window when judging', () => {
+    const state = gnssModule.createGnssState();
+    for (let s = 0; s <= 70; s += 1) {
+      gnssModule.observeGnss(state, 'navigation.speedThroughWater', speed, at(s), 'log', options);
+      gnssModule.observeGnss(state, 'navigation.position', fix, at(s), 'gps', options);
+    }
+    assert.equal(gnssModule.evaluateGnss(state, at(70), options).frozen.active, true);
+    // Fixes stop; the log goes on. Eight seconds is eight missed 1 Hz fixes.
+    for (let s = 71; s <= 78; s += 1) gnssModule.observeGnss(state, 'navigation.speedThroughWater', speed, at(s), 'log', options);
+    assert.equal(gnssModule.evaluateGnss(state, at(78), options).frozen.active, false);
+  });
+});
+
 describe('watch report: GNSS cross-check within the window', () => {
   it('says cross-checked only when dead reckoning compared the fix inside the report window', () => {
     const engine = newEngine();
@@ -811,6 +977,25 @@ describe('watch report: GNSS cross-check within the window', () => {
       return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
     });
     assert.match(engine.report(t, 1).lines.join('\n'), /nothing independent cross-checked the fix in this period/);
+  });
+
+  it('keeps the last cross-check across a restart', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    let lat = 60;
+    const t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => {
+      lat += (6 * knots) / 111195;
+      return [
+        ['navigation.position', { latitude: lat, longitude: 24 }, 'gps'],
+        ['navigation.headingTrue', 0],
+        ['navigation.speedThroughWater', 6 * knots]
+      ];
+    });
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const restarted = newEngine();
+    assert.equal(restarted.importState(saved, t + MINUTE), true);
+    // No fix yet since the restart: the day's cross-checking still counts.
+    assert.match(restarted.report(t + MINUTE, 24).lines.join('\n'), /cross-checked the fix \(last at/);
   });
 });
 
@@ -856,6 +1041,38 @@ describe('review of 9366cdb, and the stale-log case', () => {
     t = run(engine, t, t + 5 * MINUTE, SECOND, () => [[path, 0.8]]);
     t = run(engine, t, t + MINUTE, SECOND, () => [[path, 0.2]]);
     assert.ok(detectors(engine).includes(`shift:${path}`));
+  });
+
+  it('learns a coarse pressure sender\'s resolution, so one step is not an alarm', () => {
+    const engine = newEngine();
+    const path = 'propulsion.main.oilPressure';
+    const step = 4000;
+    const rand = noise(3);
+    // Half an hour of varied pressure in 4 kPa steps, as a J1939 gateway sends it.
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [[path, 300000 + step * Math.round(3 * rand())]]);
+    // Steady at cruise for six hours, flickering one step every five minutes.
+    t = run(engine, t, t + 6 * 60 * MINUTE, 10 * SECOND, (now) => [[path, (now - T0) % (5 * MINUTE) < 10 * SECOND ? 300000 + step : 300000]]);
+    // Then it settles one step up.
+    t = run(engine, t, t + 10 * MINUTE, SECOND, () => [[path, 300000 + step]]);
+    assert.ok(!detectors(engine).some((key) => key.includes(path)), detectors(engine).join(', '));
+  });
+
+  it('treats one count on a small whole-number path as one count', () => {
+    const monitor = require('../lib/watch/path-monitor.cjs');
+    const state = monitor.createPathState('plugins.example.pumpsRunning', T0);
+    Object.assign(state, { mean: 1, quantum: 1, allInteger: true });
+    assert.ok(monitor.noiseFloor(state) >= 1, 'a one-count change must not score as a large departure');
+  });
+
+  it('needs three steps of a size, not a glitch and its return, to learn a resolution', () => {
+    const monitor = require('../lib/watch/path-monitor.cjs');
+    const state = monitor.createPathState('tanks.freshWater.0.currentLevel', T0);
+    const values = [0.8, 0.8, 0.2, 0.8, 0.2];
+    values.forEach((value, index) => monitor.observe(state, value, T0 + index * SECOND, {}));
+    assert.equal(state.quantum, undefined, 'out-and-back, then one real drop, is not a resolution');
+    const flicker = monitor.createPathState('tanks.fuel.0.currentLevel', T0);
+    [0.5, 0.625, 0.5, 0.625, 0.5, 0.625, 0.5].forEach((value, index) => monitor.observe(flicker, value, T0 + index * SECOND, {}));
+    assert.ok(Math.abs(flicker.quantum - 0.125) < 1e-9, 'a sensor flickering between eighths does have that resolution');
   });
 
   it('does not open a frozen fix from an old candidate when the log comes back before the fixes', () => {

@@ -78,6 +78,37 @@ describe('watch service', () => {
     assert.equal(status.usesLanguageModel, false);
   });
 
+  it('keeps the rest of a delta when one value cannot be watched', () => {
+    const host = createHost();
+    const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
+    const service = createWatchService(host, { now: () => clock.t });
+    assert.equal(service.start({ watchEnabled: true }), true);
+    const broken = {
+      get latitude() {
+        throw new Error('unreadable fix');
+      },
+      longitude: 24
+    };
+    assert.doesNotThrow(() =>
+      host.deltaCallback({
+        context: 'vessels.self',
+        updates: [
+          {
+            $source: 'gps.1',
+            values: [
+              { path: 'navigation.position', value: broken },
+              { path: 'propulsion.main.temperature', value: 353 }
+            ]
+          }
+        ]
+      })
+    );
+    const status = service.status();
+    assert.match(status.lastError, /Could not watch navigation\.position: unreadable fix/);
+    assert.equal(status.samples, 2);
+    assert.ok(service.inventory().paths.some((item) => item.path === 'propulsion.main.temperature'), 'the value after the bad one is still watched');
+  });
+
   it('subscribes to the self vessel and publishes findings as Signal K notifications', () => {
     const host = createHost();
     const clock = { t: Date.parse('2026-06-01T08:00:00Z') };
@@ -286,6 +317,12 @@ describe('watch routes', () => {
       await routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-new', 400) } }, overflow);
       assert.equal(overflow.statusCode, 409);
       assert.ok(!host.saved.watchRules.some((item) => item.id === 'r-new'));
+      // Replacing one of the fifty is not adding: it is kept, at the cap.
+      const replaced = recorder();
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-fill-7', 399) } }, replaced);
+      assert.equal(replaced.statusCode, 200);
+      assert.equal(host.saved.watchRules.length, 50);
+      assert.equal(host.saved.watchRules.find((item) => item.id === 'r-fill-7').value, 399);
       const restore = recorder();
       await routes['POST /watch/rules/save']({ ...writer, body: { rules: [rule('r-one', 360), rule('r-two', 370)] } }, restore);
 

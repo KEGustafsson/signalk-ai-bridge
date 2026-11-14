@@ -379,6 +379,56 @@ describe('review of ac5804f', () => {
     assert.equal(verdict.active, true);
     assert.equal(verdict.evidence.from, 'idle');
   });
+
+  it('reports a change once, though its guard goes quiet and comes back within the hold', () => {
+    const rule = normalizeRule({ path: 'a.mode', op: 'changes', when: { path: 'a.power', op: 'equals', value: true } }, T0);
+    const data = new Map([['a.mode', { value: 'idle', at: T0 }], ['a.power', { value: true, at: T0 }]]);
+    const memory = {};
+    const at = (t) => evaluateRule(rule, (path) => data.get(path), t, memory);
+    at(T0);
+    data.set('a.mode', { value: 'fault', at: T0 + SECOND });
+    assert.equal(at(T0 + SECOND).active, true);
+    // The guard is published only every six minutes: stale in between.
+    data.set('a.mode', { value: 'fault', at: T0 + 5 * MINUTE + 30 * SECOND });
+    assert.equal(at(T0 + 5 * MINUTE + 30 * SECOND), null);
+    data.set('a.power', { value: true, at: T0 + 6 * MINUTE });
+    assert.equal(at(T0 + 6 * MINUTE).active, false, 'the same change must not be reported again');
+    // A new change is still reported.
+    data.set('a.mode', { value: 'idle', at: T0 + 6 * MINUTE + SECOND });
+    assert.equal(at(T0 + 6 * MINUTE + SECOND).active, true);
+  });
+});
+
+describe('values a measurement can never have', () => {
+  it('refuses on/off on a measured path, and does not pass it to the model', () => {
+    const result = parseRule('tell me if the fridge temperature switches on', VESSEL);
+    assert.equal(result.ok, false);
+    assert.equal(result.terminal, true);
+    assert.match(result.reason, /is a measurement, so "on"/);
+  });
+
+  it('keeps words for a state leaf whose name only sounds like a speed', () => {
+    const result = parseRule('tell me if the speed through water reference type changes to correlation', [
+      { path: 'navigation.speedThroughWaterReferenceType' },
+      { path: 'navigation.speedThroughWater', units: 'm/s' }
+    ]);
+    assert.equal(result.ok, true, result.reason);
+    assert.equal(result.rule.path, 'navigation.speedThroughWaterReferenceType');
+  });
+
+  it('refuses a model-written word on a measurement before it can be added', () => {
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true }), { now: T0 });
+    engine.ingest('propulsion.main.temperature', 353, T0);
+    assert.throws(() => engine.proveRule({ path: 'propulsion.main.temperature', op: 'equals', value: 'warm' }, T0), /is a measurement/);
+    engine.ingest('electrical.switches.bank.0.state', 'on', T0);
+    assert.doesNotThrow(() => engine.proveRule({ path: 'electrical.switches.bank.0.state', op: 'equals', value: 'on' }, T0));
+  });
+
+  it('names the other condition when one of two cannot be read', () => {
+    const result = parseRule('alert when battery below 12 v when it is dark while rpm above 600', VESSEL);
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /Could not read the condition "it is dark"\. A watch has one "while" condition, and this also has "rpm above 600"/);
+  });
 });
 
 describe('replay keeps rule inputs within the path cap', () => {
