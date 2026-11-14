@@ -537,6 +537,9 @@ export default function AppPanel(props: AppPanelProps) {
   // The stored selections each picker was ticked from, so a move reply can
   // apply only what changed since then to the ticks.
   const [pickerBaseRef] = React.useState<{ live: readonly string[]; history: readonly string[] }>({ live: [], history: [] });
+  // The newest status on screen, for callbacks that finish later than the
+  // render they were created in (a slow path browse).
+  const [latestStatusRef] = React.useState<{ current: BackendStatus | null }>({ current: null });
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -675,6 +678,7 @@ export default function AppPanel(props: AppPanelProps) {
   // had recorded when the panel loaded.
   const historyFetch = lastHistoryFetch ?? backendStatus?.history?.lastFetch;
   const historyPaths = backendStatus?.history?.paths ?? [];
+  latestStatusRef.current = backendStatus;
 
   const onBrowseHistoryPaths = React.useCallback(async () => {
     const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
@@ -703,11 +707,12 @@ export default function AppPanel(props: AppPanelProps) {
         message: payload.message ?? payload.error?.message
       });
       // Pre-tick what the plugin already uses, so the selection starts from
-      // the current configuration instead of from nothing.
-      pickerBaseRef.history = backendStatus?.history?.paths ?? [];
-      const configured = new Set(
-        (backendStatus?.history?.paths ?? []).map((path) => path.split(':')[0])
-      );
+      // the current configuration instead of from nothing - as it is when the
+      // browse finishes, not when it started: a move meanwhile may have
+      // changed it.
+      const stored = latestStatusRef.current?.history?.paths ?? [];
+      pickerBaseRef.history = stored;
+      const configured = new Set(stored.map((path) => path.split(':')[0]));
       setPickedPaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
     } catch (error) {
       setHistoryPathsState({

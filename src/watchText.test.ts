@@ -108,6 +108,11 @@ describe('buildUnusualQuestion', () => {
     assert.match(question, /House battery voltage somewhat low: 13\.03 V/);
     assert.match(question, /ordinary variation, say so\.$/);
   });
+
+  it('does not claim that nothing raised an alarm (incidents may be open)', () => {
+    const question = buildUnusualQuestion([{ path: 'a', score: 3, title: 'x', message: 'y' }]);
+    assert.ok(!/Nothing has raised an alarm/.test(question));
+  });
 });
 
 describe('watch rules in the panel', () => {

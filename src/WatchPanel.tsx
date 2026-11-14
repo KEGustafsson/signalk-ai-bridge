@@ -275,14 +275,22 @@ export default function WatchPanel(props: WatchPanelProps) {
   // an edit made elsewhere in the ten seconds since, or bring back a rule a
   // quick second click had just removed.
   const changeRule = React.useCallback(
-    async (route: '/watch/rules/add' | '/watch/rules/remove', body: unknown, done: string) => {
+    async (
+      route: '/watch/rules/add' | '/watch/rules/remove',
+      body: unknown,
+      done: string,
+      submitted?: { readonly text: string; readonly compiled: WatchRuleCompileResult }
+    ) => {
       setNotice(null);
       try {
         const result = await post(route, body);
         setNotice(result.ok ? done : errorText(result.status, result.body, 'Could not save the watch rules.'));
-        if (result.ok) {
-          setCompiled(null);
-          setRuleText('');
+        // Only the draft that was added is cleared - not one typed while the
+        // request was pending, and not a draft at all when a stored watch
+        // was removed.
+        if (result.ok && submitted) {
+          setCompiled((current) => (current === submitted.compiled ? null : current));
+          setRuleText((current) => (current === submitted.text ? '' : current));
         }
         setRefresh((value) => value + 1);
       } catch (error) {
@@ -294,8 +302,8 @@ export default function WatchPanel(props: WatchPanelProps) {
 
   const onAddRule = React.useCallback(async () => {
     if (!compiled || compiled === 'working' || !compiled.ok || !compiled.rule) return;
-    await changeRule('/watch/rules/add', { rule: storedRule(compiled.rule) }, 'Watch added.');
-  }, [changeRule, compiled]);
+    await changeRule('/watch/rules/add', { rule: storedRule(compiled.rule) }, 'Watch added.', { text: ruleText, compiled });
+  }, [changeRule, compiled, ruleText]);
 
   const onDeleteRule = React.useCallback(
     async (id: string) => {

@@ -217,8 +217,8 @@ export interface WatchUnusualRow {
 export function buildUnusualQuestion(rows: readonly WatchUnusualRow[]): string {
   const lines = rows.slice(0, 8).map((row) => `- ${row.title}: ${row.message}`);
   return [
-    'Nothing has raised an alarm, but the onboard watch (statistical, not AI) ranks these as the furthest from ' +
-      'their own normal right now, most unusual first. The values were measured.',
+    'The onboard watch (statistical, not AI) ranks these as the furthest from their own normal right now, ' +
+      'most unusual first; they need not have raised an alarm. The values were measured.',
     ...lines,
     'Do these fit together into anything worth checking? If they look like ordinary variation, say so.'
   ].join('\n');
