@@ -258,6 +258,38 @@ describe('watch detection: replay', () => {
     }
   });
 
+  it('does not read a response body past its byte limit', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    let bodyRead = false;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(['propulsion.main.temperature']), { status: 200 });
+      // A stream that would go on far past the limit; reading stops early.
+      let sent = 0;
+      const chunk = new TextEncoder().encode('x'.repeat(1024 * 1024));
+      const body = new ReadableStream({
+        pull(controller) {
+          sent += 1;
+          if (sent > 64) {
+            bodyRead = true;
+            controller.close();
+            return;
+          }
+          controller.enqueue(chunk);
+        }
+      });
+      return new Response(body, { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H' }, { historyTimeoutMs: 5000 });
+      assert.equal(bodyRead, false, 'the read was cancelled before the whole body arrived');
+      assert.match(JSON.stringify(result), /larger than 16 MB/);
+    } finally {
+      service.stop();
+    }
+  });
+
   it('reports nothing dropped from a provider that keeps to the resolution', async () => {
     const end = Date.parse('2026-06-02T08:00:00Z');
     const start = end - 6 * HOUR;

@@ -1574,3 +1574,26 @@ describe('history series order', () => {
     assert.deepEqual(Object.keys(series), ['electrical.batteries.house.voltage', 'navigation.speedOverGround']);
   });
 });
+
+describe('reading a History API response', () => {
+  const { readJsonBounded } = require('../lib/history-service.cjs');
+
+  it('parses a body within the limit', async () => {
+    assert.deepEqual(await readJsonBounded(new Response('{"a":1}'), 100), { a: 1 });
+  });
+
+  it('refuses a body past the limit, and a declared length past it without reading', async () => {
+    await assert.rejects(readJsonBounded(new Response('x'.repeat(200)), 100), (error) => error.code === 'too-large');
+    const declared = new Response('{}', { headers: { 'content-length': '500' } });
+    await assert.rejects(readJsonBounded(declared, 100), (error) => error.code === 'too-large');
+  });
+
+  it('turns a too-large history response into a message, not a crash', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: {} } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://boat.example:3000' }),
+      { fetchImpl: async () => new Response('{}', { status: 200, headers: { 'content-length': String(64 * 1024 * 1024) } }) }
+    );
+    assert.match(history.message, /could not be read \(the response is larger than 16 MB\)/);
+  });
+});

@@ -256,7 +256,9 @@ this project uses [semantic versioning](https://semver.org/).
     as for GNSS); two sources are judged by their difference's departure
     from their signed usual offset, so one moving from a volt above the
     other to a volt below it disagrees (pairs saved before this learn their
-    offset again); and the persistence test waits for the saves to finish
+    offset again); History API responses (replay, Ask AI history, the path
+    list) are read at most 16 MB far, so a huge body is refused before it is
+    held in the server's memory; and the persistence test waits for the saves to finish
     (`whenSaved()`) instead of a fixed delay.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user

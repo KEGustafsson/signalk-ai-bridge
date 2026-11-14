@@ -200,3 +200,11 @@ certificate. What works:
 When a call fails, the history context names the cause (`fetch failed:
 ECONNREFUSED`, `fetch failed: DEPTH_ZERO_SELF_SIGNED_CERT`, ...), and a
 rejected certificate comes with this advice.
+
+## Response size
+
+A History API response is read at most 16 MB far (a declared larger
+`Content-Length` is refused without reading). The plugin runs in the Signal
+K server's own process, so a provider that ignores the requested resolution
+cannot exhaust its memory; the history context, path listing or replay says
+the response was too large instead.
