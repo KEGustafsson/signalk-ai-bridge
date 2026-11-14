@@ -591,18 +591,45 @@ describe('collectHistoryContext', () => {
     });
   });
 
-  it('does not repeat credentials from the server URL in an error', async () => {
+  it('never calls, or repeats, a server URL with credentials in it', async () => {
+    for (const url of [
+      'http://admin:hunter2@boat.example:3000',
+      'http://admin:p@ss@boat.example:3000',
+      'http://admin:pa/ss@boat.example:3000',
+      'http://user:sec retpw@boat.example:3000',
+      'http:admin:hunter2@boat.example'
+    ]) {
+      const history = await collectHistoryContext(
+        { config: { settings: {} } },
+        historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: url }),
+        { fetchImpl: () => assert.fail('no request expected') }
+      );
+      assert.doesNotMatch(history.message, /hunter2|p@ss|pa\/ss|retpw|admin/, url);
+      assert.match(history.message, /not called: the configured "Signal K server URL" (has a user name or password|is not a valid URL)/, url);
+      const listing = await listHistoryPaths({ config: { settings: {} } }, historyConfig({ historyServerUrl: url }), {
+        fetchImpl: () => assert.fail('no request expected')
+      });
+      assert.doesNotMatch(listing.message, /hunter2|p@ss|pa\/ss|retpw|admin/, url);
+      assert.match(
+        resolveHistoryBaseUrl({ config: { settings: {} } }, historyConfig({ historyServerUrl: url })),
+        /^not called: the configured Signal K server URL /,
+        url
+      );
+    }
+  });
+
+  it('does not repeat credentials that reach a fetch error some other way', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },
-      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://admin:hunter2@boat.example:3000' }),
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://boat.example:3000' }),
       {
-        fetchImpl: async (url) => {
-          throw new TypeError(`Request cannot be constructed from a URL that includes credentials: ${url}`);
+        fetchImpl: async () => {
+          throw new TypeError('Request failed for http://admin:p@ss@boat.example:3000/x?email=a@b.c');
         }
       }
     );
-    assert.doesNotMatch(history.message, /hunter2|admin:/);
-    assert.match(history.message, /http:\/\/boat\.example:3000/);
+    assert.doesNotMatch(history.message, /admin|p@ss|ss@/);
+    assert.match(history.message, /http:\/\/boat\.example:3000\/x\?email=a@b\.c/, 'text after the host is left alone');
   });
 
   it('sends the session to this server on its TLS port, named explicitly', async () => {

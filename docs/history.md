@@ -129,18 +129,25 @@ is not read.)
   `signalk-server-setup` uses for every systemd install, systemd opens the
   listening socket (`ListenStream=`, two of them with TLS on) and Signal K
   listens on none of its configured ports. Its port is then the one Signal K
-  advertises: `EXTERNALPORT`, which the setup script writes as the socket's
-  own port (80, or 443 with TLS), and otherwise `proxy_port` or the
-  configured port (3000 for a socket on the default port). The default 3000
-  does not count on an install whose socket is 80.
+  advertises: `EXTERNALPORT`, which the setup script writes as the API
+  socket's own port in every variant (3000, 80, 3443 or 443), and for a
+  hand-written unit without it, `proxy_port` or the configured port. The
+  default 3000 does not count on an install whose socket is 80.
 
 Outside socket activation, `EXTERNALPORT` and `proxy_port` are the ports a
 reverse proxy publishes, not ones this server listens on, and never count.
 Under socket activation, a hand-written unit whose `EXTERNALPORT` names a
 reverse proxy (nginx on 80 in front of `ListenStream=3000`) has the session
-sent to that proxy, which hands it to this server; if something else answers
-on that port, give the History API a `historyServerUrl` on the socket's own
-port instead.
+sent to that proxy, which hands it to this server. If something else answers
+on that port, set `historyServerUrl` to the socket's own port and give it a
+`historyApiKey` (a token issued by this server): only the advertised port is
+sent the operator's session.
+
+A `historyServerUrl` with a user name or password in it
+(`http://user:password@host`), or one that is not a valid http or https URL,
+is never called: the history context says so without repeating the URL, so
+the password does not reach the panel or the model's prompt. Put a token in
+`historyApiKey` instead.
 
 When no port of this server is known - a configured or advertised port that
 is not a valid port - a blank `historyServerUrl` calls nothing, rather than

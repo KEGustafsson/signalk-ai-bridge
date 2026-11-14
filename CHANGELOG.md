@@ -129,7 +129,9 @@ this project uses [semantic versioning](https://semver.org/).
     server internal plugins may not use, so it is not read. With TLS on,
     only the HTTPS port counts (the HTTP port only redirects), a failed call
     no longer quotes credentials from `historyServerUrl` back into the
-    panel or the prompt, and the settings text no longer suggests a
+    panel or the prompt (a URL with a user name or password, or one that is
+    not a valid URL, is refused when the settings are read and never
+    called), and the settings text no longer suggests a
     `historyServerUrl` for a certificate localhost cannot verify.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
