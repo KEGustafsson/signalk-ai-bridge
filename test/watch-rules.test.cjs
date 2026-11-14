@@ -487,6 +487,18 @@ describe('values a measurement can never have', () => {
     assert.throws(() => restarted.proveRule({ path: 'propulsion.main.revolutions', op: 'equals', value: true }, T0 + MINUTE), /is a measurement/);
   });
 
+  it('keeps two rules that were given the same id apart, whatever their order', () => {
+    const a = { id: 'r-mine', text: 'warm', path: 'propulsion.main.temperature', op: 'above', value: 360 };
+    const b = { id: 'r-mine', text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 370, severity: 'alert' };
+    assert.deepEqual(normalizeRules([a, b]).map((rule) => rule.id), ['r-mine', 'r-mine-2']);
+    const derived = { text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 380 };
+    const [first] = normalizeRules([derived]);
+    for (const list of [[derived, { ...a, id: first.id }], [{ ...a, id: first.id }, derived]]) {
+      const ids = normalizeRules(list).map((rule) => rule.id);
+      assert.equal(new Set(ids).size, 2, JSON.stringify(ids));
+    }
+  });
+
   it('gives a rule without an id the same id every time it is read', () => {
     const stored = [{ text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360 }];
     const first = normalizeRules(stored);

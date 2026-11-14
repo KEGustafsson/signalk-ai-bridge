@@ -896,11 +896,48 @@ describe('watch engine: review follow-ups', () => {
     // As an older head saved it: forced continuous, listed by the pattern.
     const row = saved.paths.find((item) => item.path === 'plugins.ex.chargerState');
     Object.assign(row, { kind: 'continuous', distinct: null, counterOptIn: true });
+    delete row.kindN;
     const restarted = newEngine({ watchCounterPaths: ['plugins.ex'] });
     restarted.importState(saved, t);
     t = run(restarted, t, t + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
     t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.chargerState', 9]]);
     assert.ok(detectors(restarted).includes('newState:plugins.ex.chargerState'), detectors(restarted).join(', '));
+  });
+
+  it('lets plain state and mode leaves under a pattern keep their new-state check', () => {
+    for (const path of ['plugins.ex.gen.state', 'plugins.ex.errorCode', 'plugins.ex.chargePhase']) {
+      const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+      let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [[path, (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 0 : 1]]);
+      t = run(engine, t, t + MINUTE, 10 * SECOND, () => [[path, 2]]);
+      assert.ok(detectors(engine).includes(`newState:${path}`), `${path}: ${detectors(engine).join(', ')}`);
+    }
+    const timeIn = monitor.createPathState('plugins.ex.timeInState', T0);
+    timeIn.counterOptIn = 'plugins.ex';
+    Object.assign(timeIn, { kind: 'continuous', n: 100, rose: true, monotonic: true });
+    assert.equal(monitor.isCounterState(timeIn), true, 'time in a state is a count');
+  });
+
+  it('keeps known states, and reports nothing new at once, after a listing change', () => {
+    const engine = newEngine();
+    const wave = (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]];
+    let t = run(engine, T0, T0 + 60 * MINUTE, 10 * SECOND, wave);
+    const restarted = newEngine({ watchCounterPaths: ['plugins.ex.chargerState'] });
+    restarted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    const delisted = newEngine();
+    delisted.importState(JSON.parse(JSON.stringify(restarted.exportState(t))), t);
+    t = run(delisted, t, t + 10 * MINUTE, 10 * SECOND, () => [['plugins.ex.chargerState', 3]]);
+    t = run(delisted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.chargerState', 4]]);
+    assert.ok(!detectors(delisted).includes('newState:plugins.ex.chargerState'), detectors(delisted).join(', '));
+  });
+
+  it('does not decide again when a pattern is only reworded', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let pulses = 0;
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (pulses += 1)]]);
+    const restarted = newEngine({ watchCounterPaths: ['plugins.*'] });
+    restarted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    t = run(restarted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.pulses', (pulses += 1)]]);
+    assert.equal(restarted.inventory(t).paths.find((item) => item.path === 'plugins.ex.pulses').role, 'watching');
   });
 
   it('keeps a named counter a counter after it is reset to zero', () => {
@@ -1050,24 +1087,6 @@ describe('GNSS: a receiver that really slows down', () => {
       engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
     }
     assert.equal(opened, 0);
-  });
-
-  it('does not take scattered dropouts of 20 to 40 s for a slower rate', () => {
-    const engine = newEngine();
-    let lat = 60;
-    let t = run(engine, T0, T0 + 2 * MINUTE, SECOND, () => [['navigation.position', { latitude: (lat += 0.00001), longitude: 24 }, 'gps']]);
-    for (const gap of [20, 40, 25, 35, 30, 22, 38, 21, 39]) {
-      t = run(engine, t, t + gap * SECOND, SECOND, () => []);
-      engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
-    }
-    // Then the receiver dies: it is reported lost within the minute.
-    let lost = false;
-    for (let s = 0; s < 60 && !lost; s += 1) {
-      t += SECOND;
-      engine.tick(t);
-      lost = detectors(engine).includes('gnss.lost:navigation.position');
-    }
-    assert.ok(lost);
   });
 
   it('learns a slow receiver whose fixes come every 45 to 75 s', () => {

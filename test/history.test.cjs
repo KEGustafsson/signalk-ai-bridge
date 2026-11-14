@@ -628,6 +628,30 @@ describe('collectHistoryContext', () => {
     }
   });
 
+  it('refuses a URL ending in an empty query or fragment, and reads a blank setting as blank', async () => {
+    for (const url of ['http://boat.local:3000?', 'http://boat.local:3000/#']) {
+      assert.match(resolveHistoryBaseUrl({ config: { settings: {} } }, historyConfig({ historyServerUrl: url })), /has a query or a fragment/, url);
+    }
+    const spaces = normalizeHistoryConfig({ historyEnabled: true, historyServerUrl: '   ' }, { SIGNALK_AI_BRIDGE_HISTORY_URL: 'ftp://x' });
+    assert.match(resolveHistoryBaseUrl({ config: { settings: {} } }, spaces), /SIGNALK_AI_BRIDGE_HISTORY_URL is not an http or https URL/);
+  });
+
+  it('words fetch\'s parse failure without a dangling word', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: {} } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://boat.example:3000' }),
+      {
+        fetchImpl: async () => {
+          const error = new TypeError('Failed to parse URL from http://admin:pa/ss@boat.example/x');
+          error.cause = { code: 'ERR_INVALID_URL' };
+          throw error;
+        }
+      }
+    );
+    assert.doesNotMatch(history.message, /from:|admin|pa\/ss/);
+    assert.match(history.message, /Failed to parse URL: ERR_INVALID_URL/);
+  });
+
   it('keeps only the reason from fetch\'s own refusal of a URL', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },

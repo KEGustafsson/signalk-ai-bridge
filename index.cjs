@@ -628,7 +628,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         if (!running) {
           const error = new Error(
             wrote
-              ? 'The change was saved, but the plugin stopped before it took effect; it applies when the plugin starts again.'
+              ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
               : 'The plugin is stopped; nothing was saved.'
           );
           error.code = 'disabled';
@@ -645,6 +645,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
             await new Promise((resolve, reject) => {
               app.savePluginOptions(pluginOptions, (error) => (error ? reject(error) : resolve()));
             });
+            // Restarted again while that was written: start over on the
+            // newest options, so disk ends with what the plugin runs.
+            if (generation !== lifecycleGeneration) continue;
           }
           return updated;
         }
@@ -1266,11 +1269,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
       const fresh = !hasValidId(body.rule);
       // What a rule says, without when it was made or what it is called.
       const content = ({ id, createdAt, ...rest }) => JSON.stringify(rest);
+      const base = rule.id;
       const rules = await changeWatchRules((current) => {
+        // Numbered afresh on each attempt (a save redone after a restart
+        // starts again from the derived id).
         if (fresh) {
-          const base = rule.id;
+          rule.id = base;
           for (let copy = 2; current.some((item) => item.id === rule.id && content(item) !== content(rule)); copy += 1) {
-            rule.id = `${base}-${copy}`;
+            rule.id = `${base.slice(0, 36)}-${copy}`;
           }
         }
         const others = current.filter((item) => item.id !== rule.id);
@@ -1306,7 +1312,17 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send the id of the rule to remove.' } });
         return;
       }
-      const rules = await changeWatchRules((current) => current.filter((item) => item.id !== id));
+      let found = false;
+      const rules = await changeWatchRules((current) => {
+        found = current.some((item) => item.id === id);
+        return current.filter((item) => item.id !== id);
+      });
+      // An id that is not stored (a panel open across an upgrade that changed
+      // derived ids, say) is not reported as removed.
+      if (!found) {
+        res.status(404).json({ error: { code: 'not-found', message: 'No watch with that id is stored; reload the list.' }, rules });
+        return;
+      }
       res.status(200).json({ rules });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the watch rules.');

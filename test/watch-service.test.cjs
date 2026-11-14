@@ -590,6 +590,39 @@ describe('path priority order', () => {
     }
   });
 
+  it('numbers a copy afresh when its save is redone after a restart', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const base = { text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360, severity: 'warn', forSeconds: 0 };
+    const { normalizeRules } = require('../lib/watch/rules.cjs');
+    const [derived] = normalizeRules([base]);
+    // A different rule already holds the derived id.
+    const holder = { ...base, id: derived.id, value: 999, text: 'other' };
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: [holder] });
+    try {
+      const adding = routes['POST /watch/rules/add']({ ...writer, body: { rule: base } }, recorder());
+      await new Promise((resolve) => setImmediate(resolve));
+      plugin.stop();
+      // The restart brings the same holder and a different -2 copy.
+      plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: [holder, { ...holder, id: `${derived.id}-2`, value: 998 }] });
+      finish();
+      await adding;
+      const ids = saves[saves.length - 1].watchRules.map((rule) => rule.id);
+      assert.ok(ids.includes(`${derived.id}-3`), JSON.stringify(ids));
+      assert.ok(!ids.some((id) => id.endsWith('-2-2')), JSON.stringify(ids));
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('says a change was saved when the plugin stops after storing it', async () => {
     const host = createHost();
     let finish;
@@ -621,7 +654,7 @@ describe('path priority order', () => {
       assert.equal(overflow.statusCode, 409);
       const unknown = recorder();
       await routes['POST /watch/rules/remove']({ ...writer, body: { id: 'r-nope' } }, unknown);
-      assert.equal(unknown.statusCode, 200, 'removing a rule that is not there changes nothing');
+      assert.equal(unknown.statusCode, 404, 'removing a rule that is not there is not reported as done');
       assert.equal(unknown.body.rules.length, 50);
     } finally {
       plugin.stop();
