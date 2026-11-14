@@ -124,7 +124,7 @@ export function describeInventoryRow(row: WatchInventoryRow): string {
 
 export interface WatchRuleCondition {
   readonly path: string;
-  readonly op: 'above' | 'below' | 'equals' | 'notEquals' | 'changes';
+  readonly op: 'above' | 'below' | 'atLeast' | 'atMost' | 'equals' | 'notEquals' | 'changes';
   readonly value?: number | string | boolean | null;
 }
 
