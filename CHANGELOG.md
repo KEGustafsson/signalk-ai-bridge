@@ -68,6 +68,12 @@ this project uses [semantic versioning](https://semver.org/).
   refused 51st watch, an unknown id) writes nothing, and the full-list answer
   uses code `conflict`, like a stale move; a save still in flight when the
   plugin restarts no longer puts the older options back in memory.
+  And from the review of those: a save in flight across a restart is made
+  again on the restart's options, so disk matches memory, and a save queued
+  while the plugin stops writes nothing instead of storing only its own
+  change; a rule without an id keeps one id, so it can be removed; and the
+  pickers take only what another browser changed (on every move reply, the
+  default live selection included), keeping unsaved ticks.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each
@@ -176,11 +182,17 @@ this project uses [semantic versioning](https://semver.org/).
     "changes" rule marks a change reported only once its finding exists, so
     a guard going stale just after a change no longer loses it; a few
     irregular GNSS dropouts no longer stretch the usual fix interval (a new
-    rate needs five steady long gaps, and lost is four missed fixes); the
+    rate needs five long gaps of about one size, and lost is five missed
+    fixes, the same as an outage); the
     report no longer says "no warnings" for a receiver not heard from since
     a restart; hand-written watches (`/watch/rules/add` and `/save`) get the
     same measurement check as compiled ones; and the parser takes on/off on
-    a path whose data is a flag, whatever its name.
+    a path whose data is a flag, whatever its name. From the review of that:
+    a stored rule (or one on a flag quiet after a restart) is not judged
+    again, so a list can still be saved; a "changes" rule's hold waits while
+    its guard is quiet; a state code under a counter pattern keeps its
+    new-state check, an exact counter entry wins over a pattern, and
+    changing an exact listing decides the path's kind again.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

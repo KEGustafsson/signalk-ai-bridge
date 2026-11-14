@@ -618,27 +618,41 @@ module.exports = function createPlugin(app, dependencies = {}) {
    */
   const updatePluginOptions = (change) => {
     const run = optionsWriteQueue.then(async () => {
-      // A restart while the save is in flight replaces pluginOptions with the
-      // options the server started with; the late save must not put the
-      // older copy back in memory.
-      const generation = lifecycleGeneration;
-      const updated = change(pluginOptions);
-      if (updated === pluginOptions) {
-        return updated;
+      // A restart while a save is in flight replaces pluginOptions with the
+      // options the server started with. The change is then made again on
+      // those and saved again, so neither memory nor disk keeps an older copy
+      // - and a save queued while the plugin was stopped (pluginOptions is {}
+      // then) writes nothing at all instead of storing just its own change.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (!running) {
+          const error = new Error('The plugin is stopped; nothing was saved.');
+          error.code = 'disabled';
+          error.statusCode = 503;
+          throw error;
+        }
+        const generation = lifecycleGeneration;
+        const updated = change(pluginOptions);
+        if (updated === pluginOptions) {
+          return updated;
+        }
+        if (typeof app.savePluginOptions !== 'function') {
+          const error = new Error('This Signal K server does not let plugins store their own settings.');
+          error.code = 'unknown';
+          error.statusCode = 501;
+          throw error;
+        }
+        await new Promise((resolve, reject) => {
+          app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+        });
+        if (generation === lifecycleGeneration) {
+          pluginOptions = updated;
+          return updated;
+        }
       }
-      if (typeof app.savePluginOptions !== 'function') {
-        const error = new Error('This Signal K server does not let plugins store their own settings.');
-        error.code = 'unknown';
-        error.statusCode = 501;
-        throw error;
-      }
-      await new Promise((resolve, reject) => {
-        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
-      });
-      if (generation === lifecycleGeneration) {
-        pluginOptions = updated;
-      }
-      return updated;
+      const error = new Error('The plugin restarted while saving; try again.');
+      error.code = 'conflict';
+      error.statusCode = 409;
+      throw error;
     });
     // A failed save must not wedge the queue for the next one.
     optionsWriteQueue = run.catch(() => {});
@@ -805,7 +819,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return result.outcome === 'moved' ? { ...current, [key]: result.list } : current;
       });
       const config = getConfig();
-      const lists = { aiDataPaths: config.aiDataPaths, history: describeHistory(config) };
+      // liveSelected is the live selection in use, the defaults included, as
+      // the live picker starts from it.
+      const lists = {
+        aiDataPaths: config.aiDataPaths,
+        liveSelected: normalizeAiDataPaths(config),
+        history: describeHistory(config)
+      };
       if (outcome === 'no-stored-list' || outcome === 'not-found') {
         res.status(statusForCode('conflict')).json({
           error: {
@@ -1215,7 +1235,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
         return;
       }
-      const problem = watchService.checkRule(rule);
+      // A rule already stored as it is (re-added unchanged) is not judged
+      // again: it was accepted once, and refusing it now would lock it in.
+      const unchanged = normalizeRules(pluginOptions.watchRules).some(
+        (stored) => stored.id === rule.id && JSON.stringify(stored) === JSON.stringify(rule)
+      );
+      const problem = unchanged ? undefined : watchService.checkRule(rule);
       if (problem) {
         res.status(400).json({ error: { code: 'validation-failed', message: problem } });
         return;
@@ -1273,7 +1298,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
         res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
         return;
       }
+      // Only rules that are new or changed are judged: one stored before the
+      // check existed, or whose path is quiet now, must not lock a tool out
+      // of saving the rest of the list.
+      const stored = new Map(normalizeRules(pluginOptions.watchRules).map((rule) => [rule.id, JSON.stringify(rule)]));
       const problem = normalizeRules(body.rules)
+        .filter((rule) => stored.get(rule.id) !== JSON.stringify(rule))
         .map((rule) => watchService.checkRule(rule))
         .find(Boolean);
       if (problem) {

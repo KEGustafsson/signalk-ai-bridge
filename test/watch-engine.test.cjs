@@ -840,6 +840,33 @@ describe('watch engine: review follow-ups', () => {
     assert.equal(exact.inventory(t).paths.find((item) => item.path === 'plugins.ex.batteryVoltage').kind, 'counter');
   });
 
+  it('lets an exact counter entry win over a pattern, wherever it is listed', () => {
+    const rand = noise(9);
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex', 'plugins.ex.batteryVoltage'] });
+    const t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [['plugins.ex.batteryVoltage', 13.1 + 0.02 * rand()]]);
+    const row = engine.inventory(t).paths.find((item) => item.path === 'plugins.ex.batteryVoltage');
+    assert.equal(row.kind, 'counter');
+    assert.equal(row.counterBy, 'plugins.ex.batteryVoltage');
+  });
+
+  it('keeps the new-state check for a state code beside counters under a pattern', () => {
+    const engine = newEngine({ watchCounterPaths: ['plugins.ex'] });
+    let t = run(engine, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.chargerState', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 3 : 4]]);
+    t = run(engine, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.chargerState', 9]]);
+    assert.ok(detectors(engine).includes('newState:plugins.ex.chargerState'), detectors(engine).join(', '));
+  });
+
+  it('decides a path\'s kind again when its exact counter listing is removed', () => {
+    const listed = newEngine({ watchCounterPaths: ['plugins.ex.mode'] });
+    let t = run(listed, T0, T0 + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.mode', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 1 : 2]]);
+    const saved = JSON.parse(JSON.stringify(listed.exportState(t)));
+    const delisted = newEngine();
+    delisted.importState(saved, t);
+    t = run(delisted, t, t + 40 * MINUTE, 10 * SECOND, (now) => [['plugins.ex.mode', (now - T0) % (4 * MINUTE) < 2 * MINUTE ? 1 : 2]]);
+    t = run(delisted, t, t + MINUTE, 10 * SECOND, () => [['plugins.ex.mode', 7]]);
+    assert.ok(detectors(delisted).includes('newState:plugins.ex.mode'), detectors(delisted).join(', '));
+  });
+
   it('keeps a named counter a counter after it is reset to zero', () => {
     const state = monitor.createPathState('electrical.solar.mppt.yieldToday', T0);
     let value = 0;
@@ -964,6 +991,50 @@ describe('GNSS: a receiver that really slows down', () => {
       t = run(engine, t, t + 60 * SECOND, SECOND, () => []);
       assert.ok(detectors(engine).includes('gnss.lost:navigation.position'), `a receiver gone for a minute after ${gap} s dropouts is lost`);
     }
+  });
+
+  it('does not report a 10 s receiver lost for one gap of under five fixes', () => {
+    const engine = newEngine();
+    const rand = noise(4);
+    let t = T0;
+    let lat = 60;
+    let opened = 0;
+    let open = false;
+    for (let fix = 0; fix < 300; fix += 1) {
+      // Every 30th gap is 49 s; the rest are 10 s give or take 2 s.
+      const gap = fix % 30 === 29 ? 49 * SECOND : Math.round((10 + 2 * rand()) * SECOND);
+      // Watched through the gap, not only when the next fix has arrived.
+      for (let step = 0; step < gap; step += SECOND) {
+        t += SECOND;
+        engine.tick(t);
+        const now = detectors(engine).includes('gnss.lost:navigation.position');
+        if (now && !open) opened += 1;
+        open = now;
+      }
+      engine.ingest('navigation.position', { latitude: (lat += 0.0001), longitude: 24 }, t, 'gps');
+    }
+    assert.equal(opened, 0);
+  });
+
+  it('learns a slow receiver whose fixes come every 45 to 75 s', () => {
+    const engine = newEngine();
+    const rand = noise(6);
+    let lat = 60;
+    let t = run(engine, T0, T0 + 2 * MINUTE, SECOND, () => [['navigation.position', { latitude: (lat += 0.00001), longitude: 24 }, 'gps']]);
+    let opened = 0;
+    let open = false;
+    for (let fix = 0; fix < 60; fix += 1) {
+      const gap = Math.round((60 + 15 * rand()) * SECOND);
+      for (let step = 0; step < gap; step += 5 * SECOND) {
+        t += Math.min(5 * SECOND, gap - step);
+        engine.tick(t);
+        const now = detectors(engine).includes('gnss.lost:navigation.position');
+        if (now && !open && fix > 10) opened += 1;
+        open = now;
+      }
+      engine.ingest('navigation.position', { latitude: (lat += 0.0005), longitude: 24 }, t, 'gps');
+    }
+    assert.equal(opened, 0, 'once learned, its usual rate is not a lost receiver');
   });
 
   it('keeps the frozen-fix check after a 1 Hz receiver settles at one fix every 10 s', () => {

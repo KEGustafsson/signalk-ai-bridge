@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { retickedFrom, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -522,6 +522,9 @@ export default function AppPanel(props: AppPanelProps) {
   // Status reads in the order they were sent, and the last one applied: a
   // read that lands after a later one has been applied has nothing newer.
   const [statusOrderRef] = React.useState<{ sent: number; applied: number }>({ sent: 0, applied: 0 });
+  // The stored selections each picker was ticked from, so a move reply can
+  // apply only what changed since then to the ticks.
+  const [pickerBaseRef] = React.useState<{ live: readonly string[]; history: readonly string[] }>({ live: [], history: [] });
   const [isHistoryOpen, setIsHistoryOpen] = React.useState<boolean>(false);
   const [isReadmeHelpOpen, setIsReadmeHelpOpen] = React.useState<boolean>(false);
   const [openHistoryRequestIds, setOpenHistoryRequestIds] = React.useState<Record<string, boolean>>({});
@@ -689,6 +692,7 @@ export default function AppPanel(props: AppPanelProps) {
       });
       // Pre-tick what the plugin already uses, so the selection starts from
       // the current configuration instead of from nothing.
+      pickerBaseRef.history = backendStatus?.history?.paths ?? [];
       const configured = new Set(
         (backendStatus?.history?.paths ?? []).map((path) => path.split(':')[0])
       );
@@ -733,6 +737,7 @@ export default function AppPanel(props: AppPanelProps) {
       const paths = [...branchPaths, ...leafPaths];
 
       setLivePathsState({ status: 'loaded', paths, message: payload.message ?? payload.error?.message });
+      pickerBaseRef.live = payload.selected ?? [];
       const configured = new Set(payload.selected ?? []);
       setPickedLivePaths(Object.fromEntries(paths.map((path) => [path, configured.has(path)])));
     } catch (error) {
@@ -779,6 +784,8 @@ export default function AppPanel(props: AppPanelProps) {
     try {
       const result = await saveSelection(props, { aiDataPaths: picked });
       setLiveCopyNotice(result.message);
+      // Stored now: what the ticks are compared with from here on.
+      if (result.status) pickerBaseRef.live = picked;
       applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
@@ -805,6 +812,7 @@ export default function AppPanel(props: AppPanelProps) {
     try {
       const result = await saveSelection(props, { historyPaths: picked });
       setCopyNotice(result.message);
+      if (result.status) pickerBaseRef.history = picked;
       applySavedStatus(result.status, requestedAt, order);
     } finally {
       listWriteRef.current = false;
@@ -855,6 +863,7 @@ export default function AppPanel(props: AppPanelProps) {
         });
         const payload = (await response.json().catch(() => ({}))) as {
           aiDataPaths?: readonly string[];
+          liveSelected?: readonly string[];
           history?: AiHistoryStatus;
           error?: { message?: string };
         };
@@ -864,18 +873,21 @@ export default function AppPanel(props: AppPanelProps) {
           const lists = { aiDataPaths: payload.aiDataPaths, history: payload.history };
           setBackendStatus((previous) => withSelectionLists(previous, lists));
           listVersionRef.current += 1;
-          // A stale move: the card's list was out of date, and so are the
-          // picker's ticks taken from it. Re-tick from what is stored, or the
-          // next Save would put back a path another browser removed.
-          if (response.status === 409) {
-            if (payload.aiDataPaths && payload.aiDataPaths.length > 0) {
-              const stored = payload.aiDataPaths;
-              setPickedLivePaths((previous) => retickedFrom(previous, stored));
-            }
-            if (payload.history && Array.isArray(payload.history.paths)) {
-              const stored = payload.history.paths;
-              setPickedPaths((previous) => retickedFrom(previous, stored));
-            }
+          // Another browser may have changed the selection since a picker was
+          // ticked from it (a 409, or a move that still succeeded on a list
+          // that had changed). Apply just those changes to the ticks, or the
+          // next Save would put back a path it removed.
+          if (payload.liveSelected) {
+            const base = pickerBaseRef.live;
+            const next = payload.liveSelected;
+            setPickedLivePaths((previous) => retickedFromChange(previous, base, next));
+            pickerBaseRef.live = next;
+          }
+          if (payload.history && Array.isArray(payload.history.paths)) {
+            const base = pickerBaseRef.history;
+            const next = payload.history.paths;
+            setPickedPaths((previous) => retickedFromChange(previous, base, next));
+            pickerBaseRef.history = next;
           }
         }
         if (!response.ok) {

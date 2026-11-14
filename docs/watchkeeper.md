@@ -91,9 +91,10 @@ standard Signal K path or a plugin's own.
     (`…Voltage`, `…Current`, `…Temperature`, `…Level`, `…Volume`,
     `…Pressure`, `…Power`, `…Rate`, `…Stored`, `…Remaining` and the like,
     and anything about satellites), or with a measurement's unit (V, A, W,
-    K, Pa, ratio, Hz, m/s, rad). This holds under a pattern in
+    K, Pa, ratio, Hz, m/s, rad, rad/s, m³/s). This holds under a pattern in
     `watchCounterPaths` too: under `plugins.example` its counters are
-    counters, and the `batteryVoltage` beside them is still judged.
+    counters, and the `batteryVoltage` beside them is still judged. A path
+    listed exactly wins over a pattern, wherever it is in the list.
   - A number covered by a pattern in `watchCounterPaths` is then a counter.
   - Any other number is a counter if, over at least 30 samples, it has never
     fallen and is named as one (`runTime`, `…Hours`, `…Count`, `…Total`,
@@ -247,7 +248,7 @@ indicator uses evidence the receiver does not control:
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
 | `frozen` | Consecutive fixes (no more than `max(5 s, 3 × the usual fix interval)` apart, so a receiver reporting every 10 s keeps the check) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
-| `lost` | After 30 fixes, none for `max(30 s, 4 × usual fix interval)`. Outages are left out of the usual interval, so a receiver that drops out twice is reported both times; only a steady run of five long gaps, each within a quarter of the first, is taken as the receiver's new, slower rate. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
+| `lost` | After 30 fixes, none for `max(30 s, 5 × usual fix interval)`. A gap that long is an outage and is left out of the usual interval, so a receiver that drops out twice is reported both times; only a run of five long gaps of about one size (each within half of the run's mean) is taken as the receiver's new, slower rate. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
 Two indicators at once escalate every GNSS finding to `alert`. All GNSS
@@ -373,15 +374,20 @@ A rule is stored data, checked deterministically on every tick:
   `"true"` alike.
 - `changes` fires for 10 minutes after the change is seen, once per change.
   While the `when` condition is known to be false, the rule keeps up with the
-  value silently. While the `when` data is stale, nothing is judged: a change
-  made meanwhile is reported once the guard is heard from again (its 10
-  minutes count from then), and a change already reported is not reported a
-  second time when the guard returns. Until the guard has been heard at all
+  value silently. While the `when` data is stale, nothing is judged and the
+  10 minutes of a change not yet reported stop running: it is reported once
+  the guard is heard from again, however long that takes, and a change
+  already reported is not reported a second time when the guard returns. Until the guard has been heard at all
   since start, the rule has no starting value, so it begins from the value
   present when the guard is first heard.
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
+  A rule added or saved through the routes is checked like a compiled one (a
+  word or on/off on a measurement is refused); a rule already stored as it
+  is is not judged again, so a list saved before the check, or a rule on a
+  flag that is quiet just now, can still be saved. A rule without a valid id
+  gets one derived from what it says, the same each time it is read.
 - A word is a value only on a path that has states: "becomes warm" on a
   temperature, or "changes to empty" on a tank level, is refused with a request
   for a number, rather than stored as a watch that can never fire. "Switches on

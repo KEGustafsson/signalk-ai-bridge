@@ -519,6 +519,27 @@ describe('path priority order', () => {
     }
   });
 
+  it('does not lock a stored watch, or the rest of the list, out of saving', async () => {
+    const writer = { skPrincipal: { permissions: 'admin' } };
+    const legacy = { id: 'r-legacy', text: 'hot', path: 'propulsion.main.coolantTemperature', op: 'equals', value: 'hot', forSeconds: 0, severity: 'warn', source: 'manual', createdAt: 1 };
+    const good = { id: 'r-good', text: 'warm', path: 'propulsion.main.coolantTemperature', op: 'above', value: 360, forSeconds: 0, severity: 'warn', source: 'manual', createdAt: 2 };
+    const host = createHost();
+    host.savePluginOptions = (options, done) => done();
+    const { plugin, routes } = routesFor(host);
+    // Stored before the measurement check existed.
+    plugin.start({ warmupOnStart: false, watchEnabled: true, watchRules: [legacy] });
+    try {
+      const saved = recorder();
+      await routes['POST /watch/rules/save']({ ...writer, body: { rules: [legacy, good] } }, saved);
+      assert.equal(saved.statusCode, 200, JSON.stringify(saved.body));
+      const readded = recorder();
+      await routes['POST /watch/rules/add']({ ...writer, body: { rule: legacy } }, readded);
+      assert.equal(readded.statusCode, 200);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('writes nothing for a watch change that changes nothing', async () => {
     const writer = { skPrincipal: { permissions: 'admin' } };
     const rule = (id, value) => ({ id, text: id, path: 'propulsion.main.temperature', op: 'above', value, forSeconds: 0, severity: 'warn' });
@@ -555,28 +576,58 @@ describe('path priority order', () => {
     }
   });
 
-  it('does not put older options back when a restart lands while a save is in flight', async () => {
+  it('redoes a change on the restart\'s options when a restart lands while its save is in flight', async () => {
     const host = createHost();
     let finish;
+    const saves = [];
     host.savePluginOptions = (options, done) => {
-      finish = done;
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
     };
     const { plugin, routes } = routesFor(host);
     plugin.start({ warmupOnStart: false, model: 'old-model', aiDataPaths: ['a.one', 'b.two'] });
     try {
-      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(typeof finish, 'function', 'the save is in flight');
       plugin.stop();
       plugin.start({ warmupOnStart: false, model: 'new-model', aiDataPaths: ['a.one', 'b.two', 'c.three'] });
       finish();
       await moving;
-      const selection = recorder();
-      await routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: 1 } }, selection);
-      assert.deepEqual(selection.body.aiDataPaths, ['a.one', 'b.two', 'c.three'], 'the restart\'s options stand');
+      // The move is made again on the restart's options, and that is what is
+      // stored and answered: no older copy on disk or in memory.
+      const last = saves[saves.length - 1];
+      assert.equal(last.model, 'new-model');
+      assert.deepEqual(last.aiDataPaths, ['b.two', 'a.one', 'c.three']);
+      assert.deepEqual(reply.body.aiDataPaths, ['b.two', 'a.one', 'c.three']);
     } finally {
       plugin.stop();
     }
+  });
+
+  it('writes nothing for a save that waits in the queue while the plugin stops', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, model: 'kept-model', aiDataPaths: ['a.one', 'b.two'] });
+    const first = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
+    await new Promise((resolve) => setImmediate(resolve));
+    const queuedReply = recorder();
+    const queued = routes['POST /paths/selection']({ body: { historyPaths: ['h.one'] } }, queuedReply);
+    plugin.stop();
+    finish();
+    await first;
+    await queued;
+    assert.equal(saves.length, 1, 'the queued save must not store just its own change over the stopped options');
+    assert.equal(saves[0].model, 'kept-model');
   });
 
   it('answers a stale move with 409 conflict and the lists as stored, so the panel can refresh', async () => {

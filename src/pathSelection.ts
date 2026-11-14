@@ -106,11 +106,27 @@ export function statusKeepingNewerLists<
 }
 
 /**
- * The picker's ticks set again from the selection the server says is stored.
- * Used when a move finds the card's list stale: ticks taken from that stale
- * list would put a path another browser removed back on the next Save.
+ * The picker's ticks after the stored selection changed from `base` (what the
+ * picker was ticked from) to `next` (what a move reply says is stored).
+ *
+ * Only paths whose membership changed are touched: one another browser
+ * removed is unticked, one it added is ticked, and every tick the operator
+ * made and has not saved yet is kept. History entries are compared without
+ * their `:method`, as the history picker shows them.
  */
-export function retickedFrom(picked: Readonly<Record<string, boolean>>, selected: readonly string[]): Record<string, boolean> {
-  const keep = new Set(selected.map((path) => path.split(':')[0]));
-  return Object.fromEntries(Object.keys(picked).map((path) => [path, keep.has(path)]));
+export function retickedFromChange(
+  picked: Readonly<Record<string, boolean>>,
+  base: readonly string[],
+  next: readonly string[]
+): Record<string, boolean> {
+  const strip = (list: readonly string[]) => new Set(list.map((path) => path.split(':')[0]));
+  const before = strip(base);
+  const after = strip(next);
+  return Object.fromEntries(
+    Object.entries(picked).map(([path, ticked]) => {
+      if (before.has(path) && !after.has(path)) return [path, false];
+      if (!before.has(path) && after.has(path)) return [path, true];
+      return [path, ticked];
+    })
+  );
 }

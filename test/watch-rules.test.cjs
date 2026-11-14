@@ -3,7 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { parseRule } = require('../lib/watch/rule-parser.cjs');
-const { describeRule, evaluateRule, normalizeRule } = require('../lib/watch/rules.cjs');
+const { describeRule, evaluateRule, normalizeRule, normalizeRules } = require('../lib/watch/rules.cjs');
 const { assistRule } = require('../lib/watch/rule-assist.cjs');
 const { createWatchEngine, normalizeWatchConfig } = require('../lib/watch/engine.cjs');
 const { createWatchService } = require('../lib/watch-service.cjs');
@@ -423,6 +423,15 @@ describe('review of ac5804f', () => {
     ];
     assert.equal(changesRun(slow, 900, 120), 1);
   });
+
+  it('still reports a change when the guard stays quiet for longer than the hold', () => {
+    // The guard is published every twenty minutes: stale from 300 s to 1200 s.
+    const script = (s) => [
+      ...(s % 1200 === 0 ? [['navigation.state', 'anchored']] : []),
+      ['electrical.switches.anchorLight.state', s < 297 ? 0 : 1]
+    ];
+    assert.equal(changesRun(script, 1500), 1);
+  });
 });
 
 describe('values a measurement can never have', () => {
@@ -456,6 +465,25 @@ describe('values a measurement can never have', () => {
     ]);
     assert.equal(result.ok, true, result.reason);
     assert.equal(result.rule.value, false);
+  });
+
+  it('takes on/off on a flag that is quiet after a restart, from its saved states', () => {
+    const config = normalizeWatchConfig({ watchEnabled: true });
+    const engine = createWatchEngine(config, { now: T0 });
+    for (let i = 0; i < 40; i += 1) engine.ingest('electrical.batteries.house.overTemperature', i % 2 === 0, T0 + i * SECOND);
+    engine.tick(T0 + 40 * SECOND);
+    const restarted = createWatchEngine(config, { now: T0 + MINUTE });
+    restarted.importState(JSON.parse(JSON.stringify(engine.exportState(T0 + 40 * SECOND))), T0 + MINUTE);
+    assert.doesNotThrow(() => restarted.proveRule({ path: 'electrical.batteries.house.overTemperature', op: 'equals', value: false }, T0 + MINUTE));
+  });
+
+  it('gives a rule without an id the same id every time it is read', () => {
+    const stored = [{ text: 'hot', path: 'propulsion.main.temperature', op: 'above', value: 360 }];
+    const first = normalizeRules(stored);
+    const second = normalizeRules(stored);
+    assert.equal(first[0].id, second[0].id);
+    const copies = normalizeRules([stored[0], stored[0]]);
+    assert.notEqual(copies[0].id, copies[1].id, 'two id-less copies stay apart');
   });
 
   it('names the other condition when one of two cannot be read', () => {

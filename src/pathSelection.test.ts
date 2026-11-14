@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { retickedFrom, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
+import { retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
 
 describe('withUnlistedSelection', () => {
   it('keeps a configured path the listing could not show', () => {
@@ -143,14 +143,23 @@ describe('applying list replies', () => {
     assert.equal(statusKeepingNewerLists<History, Status>(shown, late, 3, 4, true), shown);
   });
 
-  it('re-ticks the picker from the stored selection after a stale move', () => {
-    const picked = { 'a.one': true, 'b.two': true, 'c.three': true, 'd.four': false };
-    assert.deepEqual(retickedFrom(picked, ['b.two', 'c.three:max']), {
-      'a.one': false,
-      'b.two': true,
-      'c.three': true,
-      'd.four': false
+  it('applies only what another browser changed to the picker\'s ticks', () => {
+    // Ticked from [a.one, b.two, c.three]; the operator also ticked d.four and
+    // unticked b.two without saving. Another browser removed c.three and
+    // added e.five.
+    const picked = { 'a.one': true, 'b.two': false, 'c.three': true, 'd.four': true, 'e.five': false };
+    assert.deepEqual(retickedFromChange(picked, ['a.one', 'b.two', 'c.three'], ['a.one', 'b.two', 'e.five:max']), {
+      'a.one': true,
+      'b.two': false,
+      'c.three': false,
+      'd.four': true,
+      'e.five': true
     });
+  });
+
+  it('leaves the ticks alone when the stored selection did not change', () => {
+    const picked = { 'a.one': true, 'h.new': true };
+    assert.deepEqual(retickedFromChange(picked, ['a.one'], ['a.one']), picked);
   });
 
   it('takes a status reply as it is when there was nothing on screen to keep', () => {
