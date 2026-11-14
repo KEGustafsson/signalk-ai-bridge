@@ -75,10 +75,23 @@ this project uses [semantic versioning](https://semver.org/).
     A `historyServerUrl` of `localhost` at another port used to receive the
     operator's cookie or bearer token, because only the hostname was checked.
     It is now treated like another host and given `historyApiKey`, if set. "This
-    server" covers every port it listens on (`PORT` or `port`, and with TLS
-    `SSLPORT` or `sslport`), so naming it explicitly, on its TLS port say,
+    server" covers every port it listens on, picked the way Signal K picks
+    them (`PORT`, else `port`, else 3000; with TLS also `SSLPORT`, else
+    `sslport`, else 3443), so naming it explicitly, on its TLS port say,
     keeps working; a 401 from a local service at another port says it was not
     recognised as this server instead of calling it remote.
+  - **Security:** under systemd socket activation (`LISTEN_FDS`, the
+    `signalk-server-setup` port-80 install) the defaults 3000 and 3443 no
+    longer count as this server, since nothing of Signal K's listens there and
+    another service (Grafana on 3000, say) would have been sent the session;
+    the activated port is taken from `EXTERNALPORT`. A settings `port` or
+    `sslport` overridden by `PORT` or `SSLPORT` no longer counts either, and
+    `EXTERNALPORT` outside socket activation is no longer the port the default
+    History API URL is called on. With TLS on, that URL is now the HTTPS port
+    (`sslport`), not `port`, which carries only the redirect. A 401/403 from a
+    server that was sent the configured `historyApiKey` now shows the server's
+    error and says the key was rejected, instead of saying the session was not
+    sent.
   - Minor review points: feedback now also applies to disagreeing sources on
     skipped paths; the watch report says the fix was "cross-checked" only when
     dead reckoning or a second receiver was checking it; signed angles (roll,

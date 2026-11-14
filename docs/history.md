@@ -91,9 +91,10 @@ rising?" at a fraction of the tokens.
   A specific provider plugin id. Blank uses the server's default provider
 
 - `historyServerUrl`
-  Where the History API lives. Blank calls this server on `localhost`. Set it for
-  history served by another Signal K instance on the boat, or when this server
-  runs behind TLS with a certificate `localhost` cannot verify
+  Where the History API lives. Blank calls this server on `localhost`, on the
+  port it listens on (see below). Set it for history served by another Signal K
+  instance on the boat, or when this server runs behind TLS with a certificate
+  `localhost` cannot verify
 
 - `historyTimeoutMs`
   How long to wait before answering from live data alone. Default 5000, kept
@@ -111,11 +112,46 @@ read themselves.
 That reasoning only holds when the History API is this Signal K server. A cookie
 minted here is replayable against another Signal K instance, so the operator's
 session is forwarded only to **this server**: a loopback address (`localhost`,
-`127.0.0.1`, `::1`) on a port this server listens on: `PORT` or `port` in its
-settings (default 3000), and with TLS on, `SSLPORT` or `sslport` (default
-3443). Loopback alone is not
-enough, because any other service on this machine is on loopback too, so a
-`historyServerUrl` of `localhost` at a different port is treated like another
-host. Another host, or another port, is never sent the session. Give it a
-credential issued for itself in `historyApiKey`, or leave that blank if it needs
-none.
+`127.0.0.1`, `::1`) on a port this server listens on. The plugin works those
+ports out the way Signal K itself picks them:
+
+- the HTTP port is `PORT` if set, else `port` in its settings, else 3000;
+- with TLS on, the HTTPS port is `SSLPORT` if set, else `sslport`, else 3443.
+  The server's API is on that port, and the HTTP port carries only its redirect
+  to it; both count;
+- only the value Signal K uses counts: with `PORT` set, a different `port` in
+  the settings is not one of its ports, and the same for `SSLPORT` and
+  `sslport`;
+- under systemd socket activation (`LISTEN_FDS` set, as the
+  `signalk-server-setup` install that serves on port 80 does), Signal K listens
+  on the socket systemd hands it and on none of the ports above, so 3000 and
+  3443 do not count. The socket's port cannot be read from the plugin, so the
+  port named by `EXTERNALPORT` (which that install sets to the same port) is
+  taken as the socket's. Without `EXTERNALPORT`, no port counts and the session
+  is sent nowhere; set `EXTERNALPORT` to the socket's port to have it sent.
+
+`EXTERNALPORT` without socket activation, and `proxy_port`, are the ports a
+reverse proxy publishes, not ones this server listens on, and do not count. A
+blank `historyServerUrl` calls this server on its main port (HTTPS with TLS on),
+which is always one of the ports above — or, under socket activation without
+`EXTERNALPORT`, on 3000 with no session.
+
+Loopback alone is not enough, because any other service on this machine is on
+loopback too, so a `historyServerUrl` of `localhost` at a different port is
+treated like another host. Another host, or another port, is never sent the
+session. Give it a credential issued for itself in `historyApiKey`, or leave
+that blank if it needs none. When a key is configured and the server still
+answers 401 or 403, the error shows the server's own reason and says the key
+was rejected.
+
+Any loopback address on one of these ports counts, IPv4 or IPv6 alike. That is
+safe because of how the port is held, not because the address is checked:
+Signal K listens without naming a host, which binds the dual-stack wildcard
+(`::`), and a systemd `ListenStream=80` socket binds the dual-stack wildcard
+too. While Signal K holds the port that way, no other process can hold
+`127.0.0.1` or `[::1]` on it. The exposure that remains is a listener that
+covers one address family only: with `net.ipv6.bindv6only=1` (or a socket unit
+with `BindIPv6Only=ipv6-only`) the wildcard is IPv6-only, and another service
+could take `127.0.0.1` on the same port; a socket unit bound to an IPv4 address
+leaves `[::1]` free the same way. On such a host, a `historyServerUrl` naming
+the address family Signal K is not on would hand that service the session.

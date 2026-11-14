@@ -1,6 +1,6 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { afterEach, beforeEach, describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const createPlugin = require('../index.cjs');
 const {
@@ -16,6 +16,47 @@ const {
   summarizeHistoryPayload
 } = require('../lib/history-service.cjs');
 const { buildAiMessages } = require('../lib/ai-service.cjs');
+
+// Which ports count as this server depends on the process environment, the
+// way it does for Signal K itself. Every test runs with these cleared, so an
+// ambient PORT or LISTEN_FDS on the machine running the suite cannot change
+// a result, and gets them back afterwards.
+const SIGNALK_PORT_ENV = ['PORT', 'SSLPORT', 'LISTEN_FDS', 'EXTERNALPORT'];
+
+function clearSignalkPortEnv() {
+  const saved = {};
+  for (const key of SIGNALK_PORT_ENV) {
+    saved[key] = process.env[key];
+    delete process.env[key];
+  }
+  return saved;
+}
+
+function restoreSignalkPortEnv(saved) {
+  for (const key of SIGNALK_PORT_ENV) {
+    if (saved[key] === undefined) delete process.env[key];
+    else process.env[key] = saved[key];
+  }
+}
+
+let ambientPortEnv;
+beforeEach(() => {
+  ambientPortEnv = clearSignalkPortEnv();
+});
+afterEach(() => {
+  restoreSignalkPortEnv(ambientPortEnv);
+});
+
+/** Run `fn` with exactly `vars` of the port environment set, restoring it after. */
+async function withSignalkEnv(vars, fn) {
+  const saved = clearSignalkPortEnv();
+  try {
+    for (const [key, value] of Object.entries(vars)) process.env[key] = value;
+    return await fn();
+  } finally {
+    restoreSignalkPortEnv(saved);
+  }
+}
 
 function historyConfig(overrides = {}) {
   return {
@@ -137,10 +178,19 @@ describe('history endpoint resolution', () => {
       'http://localhost:3001'
     );
     assert.equal(
-      resolveHistoryBaseUrl({ config: { settings: { port: 443, ssl: true } } }, historyConfig()),
+      resolveHistoryBaseUrl({ config: { settings: { sslport: 443, ssl: true } } }, historyConfig()),
       'https://localhost:443'
     );
     assert.equal(resolveHistoryBaseUrl({}, historyConfig()), 'http://localhost:3000');
+  });
+
+  // With TLS on, Signal K serves https on its SSL port and only a redirect on
+  // `port`: speaking TLS to `port` would reach the redirect, not the API.
+  it('calls a TLS server on its SSL port, not on the port carrying the redirect', () => {
+    assert.equal(
+      resolveHistoryBaseUrl({ config: { settings: { port: 443, ssl: true } } }, historyConfig()),
+      'https://localhost:3443'
+    );
   });
 
   it('accepts a configured URL with the API path already on it', () => {
@@ -532,26 +582,12 @@ describe('collectHistoryContext', () => {
     assert.equal(calls[0].init.headers.cookie, 'JAUTHENTICATION=token');
   });
 
-  it('knows every port this server listens on: PORT, settings, and the TLS port', () => {
+  it('knows every port this server listens on: its HTTP port, and the TLS port', async () => {
     const { ownServerPorts } = require('../lib/history-service.cjs');
-    const saved = { PORT: process.env.PORT, SSLPORT: process.env.SSLPORT };
-    try {
-      delete process.env.PORT;
-      delete process.env.SSLPORT;
+    await withSignalkEnv({}, () => {
       assert.deepEqual([...ownServerPorts({ config: { settings: { port: 3000, ssl: true } } })].sort(), ['3000', '3443']);
-      process.env.PORT = '8080';
-      assert.ok(ownServerPorts({ config: { settings: { port: 3000 } } }).has('8080'));
-      // EXTERNALPORT (a proxy's port) is not on its own one of this server's.
-      delete process.env.PORT;
-      const ports = ownServerPorts({ config: { settings: { port: 3000 }, getExternalPort: () => 443 } });
-      assert.ok(ports.has('3000'));
-      assert.ok(!ports.has('443'));
-    } finally {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
-    }
+      assert.deepEqual([...ownServerPorts({ config: { settings: {} } })], ['3000']);
+    });
   });
 
   it('sends the session to this server on its TLS port, named explicitly', async () => {
@@ -691,6 +727,160 @@ describe('collectHistoryContext', () => {
 });
 
 // The panel's picker: what has the provider actually recorded?
+describe('which ports are this server', () => {
+  const { isOwnServer, ownServerPorts } = require('../lib/history-service.cjs');
+  const session = { authHeaders: { cookie: 'JAUTHENTICATION=token' } };
+
+  async function cookieSentTo(app, historyServerUrl) {
+    const calls = [];
+    await collectHistoryContext(
+      app,
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], ...(historyServerUrl ? { historyServerUrl } : {}) }),
+      { fetchImpl: historyFetch(SAMPLE_PAYLOAD, { calls }) },
+      session
+    );
+    return { url: calls[0].url, cookie: calls[0].init.headers.cookie };
+  }
+
+  // The signalk-server-setup "port 80" install: systemd hands the server a
+  // socket on 80 (LISTEN_FDS=1, EXTERNALPORT=80) and settings.json has no
+  // port. Nothing of Signal K's is on 3000 then, and whatever is - Grafana,
+  // typically - must not be sent the operator's session.
+  it('does not count the default 3000 under socket activation', async () => {
+    await withSignalkEnv({ LISTEN_FDS: '1', EXTERNALPORT: '80' }, async () => {
+      const app = { config: { settings: {}, getExternalPort: () => 80 } };
+      assert.deepEqual([...ownServerPorts(app)], ['80']);
+      assert.equal(isOwnServer('http://localhost:3000', ownServerPorts(app)), false);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:80');
+
+      const grafana = await cookieSentTo(app, 'http://localhost:3000');
+      assert.equal(grafana.cookie, undefined);
+      const own = await cookieSentTo(app);
+      assert.match(own.url, /^http:\/\/localhost(:80)?\/signalk\//);
+      assert.equal(own.cookie, 'JAUTHENTICATION=token');
+    });
+  });
+
+  it('counts no port under socket activation when EXTERNALPORT does not name it', async () => {
+    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
+      const app = { config: { settings: {}, getExternalPort: () => 3000 } };
+      assert.equal(ownServerPorts(app).size, 0);
+      assert.equal((await cookieSentTo(app)).cookie, undefined);
+
+      const history = await collectHistoryContext(
+        app,
+        historyConfig({ historyPaths: ['navigation.speedOverGround'] }),
+        { fetchImpl: async () => new Response('Unauthorized', { status: 401 }) },
+        session
+      );
+      assert.match(history.message, /socket activation without EXTERNALPORT/);
+    });
+  });
+
+  // Signal K listens on Number(SSLPORT) || settings.sslport || 3443: with
+  // SSLPORT set, the settings value is not a port it holds.
+  it('counts SSLPORT instead of settings.sslport when both are set', async () => {
+    await withSignalkEnv({ SSLPORT: '4443' }, async () => {
+      const app = { config: { settings: { port: 3000, ssl: true, sslport: 3443 } } };
+      assert.deepEqual([...ownServerPorts(app)].sort(), ['3000', '4443']);
+      assert.equal(isOwnServer('https://localhost:3443', ownServerPorts(app)), false);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:4443');
+      assert.equal((await cookieSentTo(app, 'https://localhost:3443')).cookie, undefined);
+    });
+  });
+
+  // Number(PORT) || settings.port || 3000: PORT wins, and the derived URL
+  // uses the same port the own-port set does.
+  it('counts PORT instead of settings.port, and calls the server there', async () => {
+    await withSignalkEnv({ PORT: '8080' }, async () => {
+      const app = { config: { settings: { port: 3000 } } };
+      assert.deepEqual([...ownServerPorts(app)], ['8080']);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:8080');
+      const own = await cookieSentTo(app);
+      assert.match(own.url, /^http:\/\/localhost:8080\//);
+      assert.equal(own.cookie, 'JAUTHENTICATION=token');
+      assert.equal((await cookieSentTo(app, 'http://localhost:3000')).cookie, undefined);
+    });
+  });
+
+  // Without socket activation EXTERNALPORT is a reverse proxy's port: the
+  // server is on its own port, and the proxy's is not sent the session.
+  it('does not count EXTERNALPORT, or call it, outside socket activation', async () => {
+    await withSignalkEnv({ EXTERNALPORT: '80' }, async () => {
+      const app = { config: { settings: {}, getExternalPort: () => 80 } };
+      assert.deepEqual([...ownServerPorts(app)], ['3000']);
+      assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'http://localhost:3000');
+      assert.equal((await cookieSentTo(app, 'http://localhost:80')).cookie, undefined);
+    });
+  });
+});
+
+describe('a configured History API key that is rejected', () => {
+  const rejecting = (status, body) => async () => new Response(body, { status });
+
+  // The key was sent, so "the session was not sent, configure a key" would
+  // be wrong advice: the server's own reason is what the operator needs.
+  it("keeps the remote server's error and says the key was rejected", async () => {
+    const history = await collectHistoryContext(
+      {},
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'https://other-boat.example',
+        historyApiKey: 'expired-token'
+      }),
+      { fetchImpl: rejecting(401, 'token expired') }
+    );
+    assert.match(history.message, /HTTP 401: token expired/);
+    assert.match(history.message, /configured "History API key" was sent and rejected/);
+    assert.doesNotMatch(history.message, /needs its own credential/);
+  });
+
+  it('does the same for a local service at another port', async () => {
+    const history = await collectHistoryContext(
+      { config: { settings: { port: 3000 } } },
+      historyConfig({
+        historyPaths: ['navigation.speedOverGround'],
+        historyServerUrl: 'http://localhost:8086',
+        historyApiKey: 'wrong-token'
+      }),
+      { fetchImpl: rejecting(403, 'insufficient scope') }
+    );
+    assert.match(history.message, /HTTP 403: insufficient scope/);
+    assert.match(history.message, /was sent and rejected/);
+    assert.doesNotMatch(history.message, /not recognised as this Signal K server/);
+  });
+
+  it('says so in the path listing', async () => {
+    const result = await listHistoryPaths(
+      {},
+      historyConfig({ historyServerUrl: 'https://other-boat.example', historyApiKey: 'expired-token' }),
+      { fetchImpl: rejecting(401, 'token expired') }
+    );
+    assert.match(result.message, /HTTP 401: token expired/);
+    assert.match(result.message, /was sent and rejected/);
+
+    // With no key configured nothing was sent, and the hint still says so.
+    const unkeyed = await listHistoryPaths(
+      {},
+      historyConfig({ historyServerUrl: 'https://other-boat.example' }),
+      { fetchImpl: rejecting(401, 'Unauthorized') }
+    );
+    assert.match(unkeyed.message, /needs its own credential in "History API key"/);
+  });
+
+  it('says so in a watch replay', async () => {
+    const { createWatchService } = require('../lib/watch-service.cjs');
+    const host = { selfId: 'vessels.self', setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
+    const service = createWatchService(host, { now: () => Date.parse('2026-06-02T08:00:00Z'), fetchImpl: rejecting(401, '') });
+    const result = await service.replay(
+      { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
+      { historyServerUrl: 'https://other-boat.example', historyApiKey: 'expired-token', historyTimeoutMs: 5000 }
+    );
+    assert.equal(result.ok, false);
+    assert.match(result.message, /HTTP 401 for 1 paths; the configured "History API key" was sent and rejected/);
+  });
+});
+
 describe('listHistoryPaths', () => {
   it('lists, trims, dedupes and sorts the recorded paths', async () => {
     const calls = [];
