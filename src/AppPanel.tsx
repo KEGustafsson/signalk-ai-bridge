@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { withUnlistedSelection } from './pathSelection.js';
+import { movePath, withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -767,6 +767,61 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, []);
 
+  // Reordering is a save: the stored order is the priority order the prompt
+  // budget follows, so moving a path up is what protects it when the context
+  // window is full.
+  const onMoveSelected = React.useCallback(
+    async (kind: 'live' | 'history', index: number, delta: number) => {
+      const current = kind === 'live' ? backendStatus?.aiDataPaths ?? [] : backendStatus?.history?.paths ?? [];
+      const reordered = movePath(current, index, delta);
+      if (reordered.every((path, position) => path === current[position])) {
+        return;
+      }
+      setSavingSelection(kind);
+      const setNotice = kind === 'live' ? setLiveCopyNotice : setCopyNotice;
+      setNotice(null);
+      const result = await saveSelection(props, kind === 'live' ? { aiDataPaths: reordered } : { historyPaths: reordered });
+      setSavingSelection(null);
+      setNotice(result.message);
+      if (result.status) {
+        setBackendStatus(result.status);
+      }
+    },
+    [backendStatus, props]
+  );
+
+  const renderOrderedList = (kind: 'live' | 'history', paths: readonly string[], margin: string) => (
+    <ol style={{ margin, paddingLeft: '1.4rem' }}>
+      {paths.map((path, index) => (
+        <li key={path} style={{ overflowWrap: 'anywhere' }}>
+          {path}{' '}
+          <span style={{ whiteSpace: 'nowrap' }}>
+            <button
+              type="button"
+              aria-label={`Move ${path} up`}
+              title="Move up: earlier paths are kept first when the context window is full"
+              disabled={index === 0 || savingSelection !== null}
+              onClick={() => onMoveSelected(kind, index, -1)}
+              style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              aria-label={`Move ${path} down`}
+              title="Move down"
+              disabled={index === paths.length - 1 || savingSelection !== null}
+              onClick={() => onMoveSelected(kind, index, 1)}
+              style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
+            >
+              ↓
+            </button>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+
   const acceleratorPresentation = React.useMemo(
     () => describeAccelerator(backendStatus?.accelerator),
     [backendStatus]
@@ -889,11 +944,12 @@ export default function AppPanel(props: AppPanelProps) {
         >
           <h3 style={{ marginTop: 0 }}>AI Path Selection</h3>
           {backendStatus?.aiDataPaths && backendStatus.aiDataPaths.length > 0 ? (
-            <ul style={{ margin: 0, paddingLeft: '1.1rem' }}>
-              {backendStatus.aiDataPaths.map((path) => (
-                <li key={path}>{path}</li>
-              ))}
-            </ul>
+            <>
+              <p style={{ margin: '0 0 0.25rem 0', color: '#475569', fontSize: '0.9rem' }}>
+                In priority order: when the context window is full, earlier paths are kept first.
+              </p>
+              {renderOrderedList('live', backendStatus.aiDataPaths, '0')}
+            </>
           ) : (
             <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
           )}
@@ -935,11 +991,7 @@ export default function AppPanel(props: AppPanelProps) {
             selection unconditionally; this one now matches it.
           */}
           {historyPaths.length > 0 ? (
-            <ul style={{ margin: '0 0 0.5rem 0', paddingLeft: '1.1rem' }}>
-              {historyPaths.map((path) => (
-                <li key={path}>{path}</li>
-              ))}
-            </ul>
+            renderOrderedList('history', historyPaths, '0 0 0.5rem 0')
           ) : (
             <p style={{ margin: '0 0 0.5rem 0' }}>
               No history paths are configured, and no exact live paths were available to reuse.

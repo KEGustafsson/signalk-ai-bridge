@@ -107,9 +107,10 @@ OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d      # t
   when the server cannot be reached.
 - **AI Path Selection**: which paths are sent to the model. **Browse available
   paths** lists what this vessel publishes; tick and save. The selection is made
-  here, not in the plugin settings. When the context window is full, paths that
-  do not fit are left out (and the prompt says how many), so select what the
-  model needs rather than everything.
+  here, not in the plugin settings. The saved list is in priority order: use
+  **↑**/**↓** to put alarms and engine data first, because when the context
+  window is full, earlier paths are kept first and what does not fit is left out
+  (the prompt says how many).
 - **History Context**: the history window, the last read, and **Browse recorded
   paths**.
 - **GPU Acceleration**: whether the model is fully on the GPU, and the board's

@@ -59,14 +59,18 @@ window and leaves out whole paths rather than let the backend cut the prompt
 mid-JSON. When it leaves any out, it says how many in the prompt, so the model
 can tell you the answer may be incomplete.
 
-**Which paths are left out.** The budget walks the selected data in order and
-skips any entry that does not fit in what is left, then carries on — so a large
-entry early on can be skipped while smaller ones after it are kept. The order is
-the order the selection is stored in, which is the picker's list order (branch
-wildcards first, then paths alphabetically), not the order you ticked them; the
-panel has no control for reordering. The dependable way to protect what matters
-is to keep the selection small enough to fit: select alarms and engine data,
-and leave out signal strengths, camera URLs and other bulky paths.
+**Which paths are left out.** The budget walks the selected data in the order
+the selection is stored in and skips any entry that does not fit in what is
+left, then carries on — so a large entry early on can be skipped while smaller
+ones after it are kept, but an entry earlier in the list always gets the first
+claim on the window.
+
+**Put what matters first.** The `AI Path Selection` and `History Context`
+cards list the saved selection in that priority order, with **↑** and **↓** to
+move a path; each move is saved straight away. Paths newly ticked in a picker
+are added at the end, and saving from the picker keeps the order you set. Keep
+alarms and engine data near the top, and signal strengths, camera URLs and
+other bulky paths at the bottom or out of the selection.
 
 The operator's question is charged against the same window. A short question
 costs nothing worth counting, but a pasted checklist near the 4,000-character

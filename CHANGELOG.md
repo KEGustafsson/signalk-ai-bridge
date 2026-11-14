@@ -37,6 +37,12 @@ this project uses [semantic versioning](https://semver.org/).
   `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
   with write access when security is enabled.
 - `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
+- **Path selections can be put in priority order.** The `AI Path Selection`
+  and `History Context` cards list the saved paths with ↑/↓ controls, saved on
+  each move. The prompt budget gives earlier entries the first claim on the
+  context window, but the only order available was the picker's alphabetical
+  one, and every save from the picker re-sorted the list. Saving from the
+  picker now keeps the stored order and adds newly ticked paths at the end.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each
