@@ -317,6 +317,7 @@ describe('watch routes', () => {
       const overflow = recorder();
       await routes['POST /watch/rules/add']({ ...writer, body: { rule: rule('r-new', 400) } }, overflow);
       assert.equal(overflow.statusCode, 409);
+      assert.equal(overflow.body.error.code, 'conflict');
       assert.ok(!host.saved.watchRules.some((item) => item.id === 'r-new'));
       // Replacing one of the fifty is not adding: it is kept, at the cap.
       const replaced = recorder();

@@ -1201,7 +1201,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
       if (full) {
         res.status(409).json({
-          error: { code: 'validation-failed', message: `There are already ${MAX_RULES} watches; remove one first.` }
+          error: { code: 'conflict', message: `There are already ${MAX_RULES} watches; remove one first.` }
         });
         return;
       }
