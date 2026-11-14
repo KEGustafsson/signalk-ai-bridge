@@ -345,3 +345,68 @@ describe('rule compilation: review follow-ups', () => {
     }
   });
 });
+
+describe('rule parser: unreadable extra phrases', () => {
+  it('does not refuse outright over a phrase it cannot read, leaving it for the model', () => {
+    const result = parseRule('coolant above 95 while rpm above 600 if possible', VESSEL);
+    assert.equal(result.ok, false);
+    assert.notEqual(result.terminal, true);
+    assert.match(result.reason, /Could not read the condition "possible"/);
+  });
+});
+
+describe('review of ac5804f', () => {
+  const { formatValue } = require('../lib/watch/format.cjs');
+
+  it('keeps true wind angle signed, like apparent wind angle', () => {
+    assert.equal(formatValue('environment.wind.angleTrueWater', -Math.PI / 6, 'rad'), '-30.0 °');
+    assert.equal(formatValue('environment.wind.angleApparent', -Math.PI / 6, 'rad'), '-30.0 °');
+    assert.equal(formatValue('environment.wind.directionTrue', -Math.PI / 6, 'rad'), '330.0 °');
+  });
+
+  it('remembers a change made while the guard was merely unheard from', () => {
+    const rule = normalizeRule({ path: 'a.mode', op: 'changes', when: { path: 'a.power', op: 'equals', value: true } }, T0);
+    const data = new Map([['a.mode', { value: 'idle', at: T0 }], ['a.power', { value: true, at: T0 }]]);
+    const memory = {};
+    evaluateRule(rule, (path) => data.get(path), T0, memory);
+    // Power still on but not republished for ten minutes; the mode faults.
+    const later = T0 + 10 * MINUTE;
+    data.set('a.mode', { value: 'fault', at: later });
+    assert.equal(evaluateRule(rule, (path) => data.get(path), later, memory), null);
+    // Power is heard from again: the fault is reported.
+    data.set('a.power', { value: true, at: later + SECOND });
+    const verdict = evaluateRule(rule, (path) => data.get(path), later + SECOND, memory);
+    assert.equal(verdict.active, true);
+    assert.equal(verdict.evidence.from, 'idle');
+  });
+});
+
+describe('replay keeps rule inputs within the path cap', () => {
+  it('replays a rule path even when it is last of more than 80 listed paths', async () => {
+    const listed = Array.from({ length: 100 }, (_, index) => `environment.sensor${String(index).padStart(3, '0')}.temperature`);
+    const rulePath = 'environment.zzz.lastSensor.temperature';
+    const requested = [];
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) {
+        return new Response(JSON.stringify([...listed, rulePath]), { status: 200 });
+      }
+      const paths = new URL(url).searchParams.get('paths').split(',');
+      requested.push(...paths);
+      return new Response(JSON.stringify({ values: paths.map((path) => ({ path })), data: [[new Date(end - 60000).toISOString(), ...paths.map(() => 290)]] }), { status: 200 });
+    };
+    const service = createWatchService({ subscriptionmanager: { subscribe() {} } }, { now: () => end, fetchImpl });
+    service.start({
+      watchEnabled: true,
+      watchRules: [{ id: 'r-last', text: 'x', path: rulePath, op: 'above', value: 300, forSeconds: 0, severity: 'warn' }]
+    });
+    try {
+      const result = await service.replay({ duration: 'PT1H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      assert.ok(requested.includes(rulePath), 'the rule path must be among the 80 replayed');
+      assert.equal(result.pathsSkipped, 21);
+    } finally {
+      service.stop();
+    }
+  });
+});

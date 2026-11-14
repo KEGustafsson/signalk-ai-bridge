@@ -85,6 +85,14 @@ this project uses [semantic versioning](https://semver.org/).
     table makes room for the current primary; a request with two "while"
     conditions is not passed to the model; and the panel's stale-status
     warning shows even when the last status said the watch was off.
+  - Independent review of those commits: real counters under other names
+    (`fuel.used`, `lifetimeDischarge`, a plugin's own) are counters again; the
+    frozen-fix check adapts to a receiver's fix rate instead of needing a fix
+    every 5 s; an unreadable extra phrase ("if possible") is no longer a
+    terminal refusal; true wind angle keeps its sign; a "changes" rule no
+    longer forgets a change made while its guard was stale; the report's GNSS
+    line is judged on its own window; and replay puts rule inputs first so the
+    80-path cap cannot cut them.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

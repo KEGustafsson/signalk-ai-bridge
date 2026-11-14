@@ -82,10 +82,13 @@ standard Signal K path or a plugin's own.
   integers with at most 4 distinct values (a pump state, a mode code), in which
   case they are discrete until a fifth value or a fraction appears. A number
   that has never fallen over at least 30 samples is a *counter* (engine hours,
-  energy), and the level checks skip it, but only if its name says so
-  (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`, `log`, `trip`). A value
-  that sat still and then jumped, or a voltage climbing steadily on a charger,
-  has also never fallen, and neither is a counter.
+  energy, fuel used), and the level and stuck-sensor checks skip it. Never
+  falling is not enough on its own: the path must also be named as a counter
+  (`runTime`, `…Hours`, `…Count`, `…Total`, `energy…`, `lifetime…`,
+  `…Consumed`, `used`, `odometer`, `log`, `trip`), or have kept climbing on at
+  least a fifth of its updates for six hours. A value that sat still and then
+  jumped, or a voltage climbing on a charger for twenty minutes, is not a
+  counter.
 - **Units, display name and zones** come from the path's own `meta`. The
   watch reads it from update deltas when present and looks it up with
   `getSelfPath`: 50 paths per tick for new ones, and every path again every
@@ -225,7 +228,7 @@ indicator uses evidence the receiver does not control:
 | `deadReckoning` | The fix is further from dead reckoning (true heading + speed through water, integrated from an agreeing fix) than **150 m + 25 % of distance run + 2 kn × elapsed time**. Heading and log must be fresh (≤ 5 s). The reference is re-anchored every 10 minutes, and only on a fix that agrees, so a spoofed position never becomes the reference | 30 s / 60 s |
 | `sourcesDisagree` | Two position sources updated within 10 s of each other are more than 100 m apart | 30 s / 60 s |
 | `quality` | Fewer than 4 satellites, or horizontal dilution above 5, on a receiver that has reported at least 6 satellites or dilution below 2 at least 20 times | 30 s / 60 s |
-| `frozen` | Consecutive fixes (≤ 5 s apart) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
+| `frozen` | Consecutive fixes (no more than `max(5 s, 3 × the usual fix interval)` apart, so a receiver reporting every 10 s keeps the check) have not moved (< 0.5 m) for 60 s while speed through water is above 1 m/s. A fix that moved, a gap in the feed, or a log that is stale or reads under 1 m/s ends the candidate, and the check also needs a fix and a log reading from the last few seconds, so a boat that slowed and stopped, or a feed that paused, is not reported | immediate / 10 s |
 | `lost` | After 30 fixes, none for `max(30 s, 10 × usual fix interval)`. Position is excluded from the per-path dropout check, so this is what notices a receiver that stops. The GNSS status then reads `lost`, as it does for any fix older than a minute | immediate |
 | `clock` | `navigation.datetime` jumps more than 30 s against the server clock, after 10 samples. Held 10 min | immediate |
 
@@ -350,7 +353,11 @@ A rule is stored data, checked deterministically on every tick:
   `changes`.
 - `value` is in SI, like the data. `equals` treats `true`, `1`, `"on"` and
   `"true"` alike.
-- `changes` fires for 10 minutes after the value changes.
+- `changes` fires for 10 minutes after the value changes. While the `when`
+  condition is known to be false, the rule keeps up with the value silently;
+  while the `when` data is missing or stale, nothing is judged and nothing is
+  forgotten, so a change made meanwhile is reported once the guard is heard
+  from again.
 - The rule and its `when` guard need data no older than 5 minutes. Without
   it the rule cannot be judged and does not fire.
 - At most 50 rules. They are stored in the plugin's options as `watchRules`.
@@ -437,14 +444,15 @@ Still active: Engine room temperature stopped updating.
 Longest: House battery voltage unusually low, 42 min.
 Repeated: House battery voltage unusually low ×2.
 Sensors and data: Engine room temperature stopped updating.
-GNSS: the position was corroborated throughout.
+GNSS: no warnings; dead reckoning or a second receiver cross-checked the fix (last at 11:58 UTC).
 Your watches fired: Main engine temperature is above 90.0 °C for 30 s.
 Operating changes: Engine main running at 08:12 UTC, Engine main stopped at 11:40 UTC.
 Less sensitive after your dismissals: Water temperature.
 ```
 
 Times are in UTC, so the report means the same thing whatever the server's
-time zone. **Ask AI for a logbook entry** gives these lines to the model with
+time zone. The GNSS line says the fix was cross-checked only if dead reckoning
+or a second receiver compared against it inside the report's window. **Ask AI for a logbook entry** gives these lines to the model with
 the instruction to add no facts of its own. The operator reads and sends that
 question.
 

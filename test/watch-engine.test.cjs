@@ -683,11 +683,14 @@ describe('watch engine: review follow-ups', () => {
   it('does not take a voltage climbing on every update for a counter', () => {
     const engine = newEngine();
     const path = 'electrical.batteries.house.voltage';
-    const rand = noise(71);
-    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 13.2 + 0.01 * rand()]]);
+    // Perfectly steady through learning, so it has never gone down: the case
+    // the old "rose on a fifth of its updates" rule called a counter.
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 13.2]]);
     // Then it climbs a little on every single update: never down, always up.
+    // Twenty minutes of climbing: past the share of rising updates the old
+    // rule took for a counter, which then switched the shift check off.
     let value = 13.2;
-    t = run(engine, t, t + 10 * MINUTE, SECOND, () => {
+    t = run(engine, t, t + 20 * MINUTE, SECOND, () => {
       value += 0.002;
       return [[path, value]];
     });
@@ -695,12 +698,13 @@ describe('watch engine: review follow-ups', () => {
   });
 
   it('counts the last hour to the minute, never reaching past it', () => {
-    const t = T0 + 10 * 60 * MINUTE;
+    // Half a minute past the minute, so the oldest bucket straddles the hour.
+    const t = T0 + 10 * 60 * MINUTE + 30 * SECOND;
     const state = monitor.createPathState('electrical.switches.pump.state', T0);
     state.kind = 'discrete';
     state.firstAt = T0;
-    // 9 transitions in the minute that started 61 minutes ago; 2 inside the hour.
-    const outside = Math.floor((t - 61 * MINUTE) / MINUTE) * MINUTE;
+    // 9 transitions in the minute that started 60.5 minutes ago; 2 inside the hour.
+    const outside = Math.floor((t - 60 * MINUTE) / MINUTE) * MINUTE;
     const inside = Math.floor((t - 10 * MINUTE) / MINUTE) * MINUTE;
     state.transitionMinutes = [[outside, 9], [inside, 2]];
     state.transitionTotal = 11;
@@ -717,14 +721,60 @@ describe('watch engine: review follow-ups', () => {
       ['navigation.position', fix, 'gps'],
       ['navigation.speedThroughWater', 6 * knots]
     ]);
-    // ...then the position feed stops and the boat slows to a stop.
-    t = run(engine, t, t + 5 * MINUTE, SECOND, () => [['navigation.speedThroughWater', 0]]);
-    // Later both resume, at speed, with the old fix repeated.
+    // ...then the whole feed goes quiet for five minutes (no fixes, no log)...
+    t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+    // Later both resume, the log first, at speed, with the old fix repeated:
+    // only the gap itself says the old candidate is meaningless.
     t = run(engine, t, t + 10 * SECOND, SECOND, () => [
-      ['navigation.position', fix, 'gps'],
-      ['navigation.speedThroughWater', 6 * knots]
+      ['navigation.speedThroughWater', 6 * knots],
+      ['navigation.position', fix, 'gps']
     ]);
     assert.ok(!detectors(engine).includes('gnss.frozen:navigation.position'));
+  });
+
+  it('still treats real counters as counters: fuel used, and an unnamed one that climbed for hours', () => {
+    const engine = newEngine();
+    let used = 0;
+    let custom = 0;
+    // Two hours of climbing with the engine on, then a long stop.
+    let t = run(engine, T0, T0 + 7 * 60 * MINUTE, 10 * SECOND, (now) => {
+      if (now < T0 + 2 * 60 * MINUTE) used += 0.00001;
+      custom += 1;
+      return [
+        ['propulsion.main.fuel.used', used],
+        ['plugins.example.pulses', custom]
+      ];
+    });
+    t = run(engine, t, t + 30 * MINUTE, 10 * SECOND, () => [
+      ['propulsion.main.fuel.used', used],
+      ['plugins.example.pulses', custom]
+    ]);
+    assert.ok(!detectors(engine).some((key) => key.includes('propulsion.main.fuel.used')), 'fuel used holding still is not a stuck sensor');
+    assert.ok(!detectors(engine).some((key) => key.includes('plugins.example.pulses')), 'a counter under an unknown name is still a counter');
+  });
+
+  it('keeps the frozen-fix check for a receiver that reports every 10 s', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    const fix = { latitude: 60, longitude: 24 };
+    let lat = 60;
+    // Learn the receiver's rate while moving normally...
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, (now) => {
+      const values = [['navigation.speedThroughWater', 6 * knots], ['navigation.headingTrue', 0]];
+      if ((now - T0) % (10 * SECOND) === 0) {
+        lat += (60 * knots * 10) / 111195 / 6;
+        values.push(['navigation.position', { latitude: lat, longitude: 24 }, 'gps']);
+      }
+      return values;
+    });
+    // ...then it repeats one fix every 10 s while the log reads 6 kn.
+    fix.latitude = lat;
+    t = run(engine, t, t + 4 * MINUTE, SECOND, (now) => {
+      const values = [['navigation.speedThroughWater', 6 * knots], ['navigation.headingTrue', 0]];
+      if ((now - T0) % (10 * SECOND) === 0) values.push(['navigation.position', fix, 'gps']);
+      return values;
+    });
+    assert.ok(detectors(engine).includes('gnss.frozen:navigation.position'));
   });
 
   it('makes room for the current primary when the pair table is full of former primaries', () => {
@@ -738,5 +788,28 @@ describe('watch engine: review follow-ups', () => {
     assert.ok(state.pairs['a|b'], 'the current pair must be learned');
     assert.equal(Object.keys(state.pairs).length, 16);
     assert.equal(state.pairs['old0|x'], undefined, 'the least recently compared former pair goes first');
+  });
+});
+
+describe('watch report: GNSS cross-check within the window', () => {
+  it('says cross-checked only when dead reckoning compared the fix inside the report window', () => {
+    const engine = newEngine();
+    const knots = 0.514444;
+    let lat = 60;
+    let t = run(engine, T0, T0 + 5 * MINUTE, SECOND, () => {
+      lat += (6 * knots) / 111195;
+      return [
+        ['navigation.position', { latitude: lat, longitude: 24 }, 'gps'],
+        ['navigation.headingTrue', 0],
+        ['navigation.speedThroughWater', 6 * knots]
+      ];
+    });
+    assert.match(engine.report(t, 1).lines.join('\n'), /cross-checked the fix \(last at/);
+    // Two hours later, fixes only: no heading or log, so nothing checks them.
+    t = run(engine, t, t + 2 * 60 * MINUTE, 10 * SECOND, () => {
+      lat += (60 * knots) / 111195;
+      return [['navigation.position', { latitude: lat, longitude: 24 }, 'gps']];
+    });
+    assert.match(engine.report(t, 1).lines.join('\n'), /nothing independent cross-checked the fix in this period/);
   });
 });
