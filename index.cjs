@@ -69,8 +69,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
   const watchService = createWatchService(app, { ...dependencies, pluginId: 'signalk-ai-bridge' });
 
   function normalizeServerConfig(options = {}) {
+    // Deduplicated keeping first occurrences: the stored order is the priority
+    // order, and a legacy config with repeats would otherwise show (and move)
+    // the same path twice.
     const aiDataPaths = Array.isArray(options.aiDataPaths)
-      ? options.aiDataPaths.map((item) => String(item || '').trim()).filter(Boolean)
+      ? [...new Set(options.aiDataPaths.map((item) => String(item || '').trim()).filter(Boolean))]
       : [];
 
     return {
@@ -391,6 +394,10 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // The same fallback the bridge applies: an unset `aiDataPaths` means the
       // default live paths, and those are what an empty history list reuses.
       paths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) }),
+      // True when no history paths are stored and the list above is reused
+      // from the live selection: it follows that selection, so it is not
+      // reordered on its own (that would freeze it into a fixed list).
+      derived: !(Array.isArray(config.historyPaths) && config.historyPaths.length > 0),
       durationSeconds: window.durationSeconds,
       resolutionSeconds: window.resolutionSeconds,
       samples: config.historySamples,
@@ -675,6 +682,82 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the path selection.');
+    }
+  };
+
+  /**
+   * POST /paths/move { kind: 'live' | 'history', path, delta }: move one path
+   * in the stored selection, applied to the selection as stored when its turn
+   * in the options-write queue comes - not to a list the panel read earlier,
+   * which another save, another browser or a quick second click may have made
+   * stale. Returns both selections as they now are.
+   */
+  const movePathHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    if (!isSelectionWriteAllowed(req)) {
+      res.status(401).json({
+        error: { code: 'unauthorized', message: 'Changing the path selection requires a Signal K login with write access.' }
+      });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const kind = body && body.kind;
+      const path = body && typeof body.path === 'string' ? body.path : '';
+      const delta = Number(body && body.delta);
+      if ((kind !== 'live' && kind !== 'history') || !path || (delta !== -1 && delta !== 1)) {
+        res.status(400).json({
+          error: { code: 'validation-failed', message: 'Send kind ("live" or "history"), path, and delta (-1 or 1).' }
+        });
+        return;
+      }
+      let outcome = 'moved';
+      await updatePluginOptions((current) => {
+        const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
+        // The list as the panel shows it: the live list deduplicated, the
+        // history list as normalised specs (wildcards and extras dropped).
+        const list = kind === 'live' ? normalizeServerConfig(current).aiDataPaths : normalizeHistoryConfig(current).historyPaths;
+        if (list.length === 0) {
+          // History reusing the live paths, or the default live selection:
+          // there is no stored list to reorder.
+          outcome = 'no-stored-list';
+          return current;
+        }
+        const index = list.indexOf(path);
+        if (index < 0) {
+          outcome = 'not-found';
+          return current;
+        }
+        const target = index + delta;
+        if (target < 0 || target >= list.length) {
+          return current;
+        }
+        const next = [...list];
+        next.splice(index, 1);
+        next.splice(target, 0, path);
+        return { ...current, [key]: next };
+      });
+      if (outcome !== 'moved') {
+        res.status(409).json({
+          error: {
+            code: 'validation-failed',
+            message:
+              outcome === 'not-found'
+                ? `${path} is no longer in the saved selection; the list has been refreshed.`
+                : 'There is no saved list to reorder: save a selection from the picker first.'
+          }
+        });
+        return;
+      }
+      const config = getConfig();
+      res.status(200).json({
+        aiDataPaths: config.aiDataPaths,
+        history: describeHistory(config)
+      });
+    } catch (error) {
+      sendError(res, error, 500, 'Could not move the path.');
     }
   };
 
@@ -1205,6 +1288,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/history/paths', historyPathsHandler);
       router.get('/signalk/paths', selfPathsHandler);
       router.post('/paths/selection', saveSelectionHandler);
+      router.post('/paths/move', movePathHandler);
       router.get('/watch/status', watchStatusHandler);
       router.get('/watch/series', watchSeriesHandler);
       router.get('/watch/inventory', watchInventoryHandler);

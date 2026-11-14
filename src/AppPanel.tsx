@@ -3,7 +3,7 @@ import { streamBridgeRequest } from './bridgeRuntime.js';
 import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
-import { movePath, withUnlistedSelection } from './pathSelection.js';
+import { withUnlistedSelection } from './pathSelection.js';
 import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
@@ -767,27 +767,49 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, []);
 
-  // Reordering is a save: the stored order is the priority order the prompt
-  // budget follows, so moving a path up is what protects it when the context
-  // window is full.
+  // Reordering is a save on the server, one move at a time, applied to the
+  // selection as stored - never a whole list from this panel, which another
+  // save, another browser or a quick second click may have made stale. The
+  // reply carries both selections as they now are, so the cards follow the
+  // server and not a status re-read that might fail or arrive out of order.
+  const [movingKind, setMovingKind] = React.useState<'live' | 'history' | null>(null);
   const onMoveSelected = React.useCallback(
-    async (kind: 'live' | 'history', index: number, delta: number) => {
-      const current = kind === 'live' ? backendStatus?.aiDataPaths ?? [] : backendStatus?.history?.paths ?? [];
-      const reordered = movePath(current, index, delta);
-      if (reordered.every((path, position) => path === current[position])) {
+    async (kind: 'live' | 'history', path: string, delta: number) => {
+      const fetchImpl = props.bridgeFetch ?? globalThis.fetch;
+      if (typeof fetchImpl !== 'function') {
         return;
       }
-      setSavingSelection(kind);
       const setNotice = kind === 'live' ? setLiveCopyNotice : setCopyNotice;
       setNotice(null);
-      const result = await saveSelection(props, kind === 'live' ? { aiDataPaths: reordered } : { historyPaths: reordered });
-      setSavingSelection(null);
-      setNotice(result.message);
-      if (result.status) {
-        setBackendStatus(result.status);
+      setMovingKind(kind);
+      try {
+        const response = await fetchImpl(getPluginEndpoint(props, '/paths/move'), {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ kind, path, delta })
+        });
+        const payload = (await response.json().catch(() => ({}))) as {
+          aiDataPaths?: readonly string[];
+          history?: AiHistoryStatus;
+          error?: { message?: string };
+        };
+        if (!response.ok) {
+          setNotice(payload.error?.message ?? (response.status === 401 ? 'Saving needs a Signal K login with write access.' : 'Could not move the path.'));
+          return;
+        }
+        setBackendStatus((previous) =>
+          previous
+            ? { ...previous, aiDataPaths: payload.aiDataPaths ?? previous.aiDataPaths, history: payload.history ?? previous.history }
+            : previous
+        );
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : 'Could not move the path.');
+      } finally {
+        setMovingKind(null);
       }
     },
-    [backendStatus, props]
+    [props]
   );
 
   const renderOrderedList = (kind: 'live' | 'history', paths: readonly string[], margin: string) => (
@@ -800,8 +822,8 @@ export default function AppPanel(props: AppPanelProps) {
               type="button"
               aria-label={`Move ${path} up`}
               title="Move up: earlier paths are kept first when the context window is full"
-              disabled={index === 0 || savingSelection !== null}
-              onClick={() => onMoveSelected(kind, index, -1)}
+              disabled={index === 0 || movingKind !== null || savingSelection === kind}
+              onClick={() => onMoveSelected(kind, path, -1)}
               style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
             >
               ↑
@@ -810,8 +832,8 @@ export default function AppPanel(props: AppPanelProps) {
               type="button"
               aria-label={`Move ${path} down`}
               title="Move down"
-              disabled={index === paths.length - 1 || savingSelection !== null}
-              onClick={() => onMoveSelected(kind, index, 1)}
+              disabled={index === paths.length - 1 || movingKind !== null || savingSelection === kind}
+              onClick={() => onMoveSelected(kind, path, 1)}
               style={{ padding: '0 0.3rem', marginLeft: '0.2rem' }}
             >
               ↓
@@ -951,7 +973,10 @@ export default function AppPanel(props: AppPanelProps) {
               {renderOrderedList('live', backendStatus.aiDataPaths, '0')}
             </>
           ) : (
-            <p style={{ margin: 0 }}>Using default plugin AI data path selection.</p>
+            <p style={{ margin: 0 }}>
+              Using the default selection (position, speed and course over ground, notifications). Browse and save a
+              selection to choose the paths and put them in your own priority order.
+            </p>
           )}
           <PathPicker
             state={livePathsState}
@@ -990,7 +1015,19 @@ export default function AppPanel(props: AppPanelProps) {
             showing what was already saved. The live card has always listed its
             selection unconditionally; this one now matches it.
           */}
-          {historyPaths.length > 0 ? (
+          {historyPaths.length > 0 && backendStatus?.history?.derived ? (
+            <>
+              <p style={{ margin: '0 0 0.25rem 0', color: '#475569', fontSize: '0.9rem' }}>
+                Reusing the AI path selection, in its order. Save history paths from the picker to choose and order them
+                separately.
+              </p>
+              <ul style={{ margin: '0 0 0.5rem 0', paddingLeft: '1.1rem' }}>
+                {historyPaths.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </>
+          ) : historyPaths.length > 0 ? (
             renderOrderedList('history', historyPaths, '0 0 0.5rem 0')
           ) : (
             <p style={{ margin: '0 0 0.5rem 0' }}>

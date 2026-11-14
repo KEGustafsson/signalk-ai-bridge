@@ -1096,3 +1096,15 @@ describe('the plugin with history enabled', () => {
     plugin.stop();
   });
 });
+
+describe('history series order', () => {
+  it('keeps the requested order, whatever order the provider answers in', () => {
+    const { summarizeHistoryPayload } = require('../lib/history-service.cjs');
+    const payload = {
+      values: [{ path: 'navigation.speedOverGround' }, { path: 'electrical.batteries.house.voltage' }],
+      data: [['2026-06-01T08:00:00Z', 3, 13.2], ['2026-06-01T08:01:00Z', 3.1, 13.1]]
+    };
+    const { series } = summarizeHistoryPayload(payload, ['electrical.batteries.house.voltage', 'navigation.speedOverGround'], 4);
+    assert.deepEqual(Object.keys(series), ['electrical.batteries.house.voltage', 'navigation.speedOverGround']);
+  });
+});

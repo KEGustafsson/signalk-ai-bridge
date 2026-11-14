@@ -331,3 +331,67 @@ describe('watch service: restart and saves', () => {
     }
   });
 });
+
+describe('path priority order', () => {
+  function routesFor(host) {
+    const plugin = createPlugin(host, { fetchImpl: async () => new Response('{}', { status: 503 }) });
+    const routes = {};
+    plugin.registerWithRouter({
+      get(route, handler) {
+        routes[`GET ${route}`] = handler;
+      },
+      post(route, handler) {
+        routes[`POST ${route}`] = handler;
+      }
+    });
+    return { plugin, routes };
+  }
+  function recorder() {
+    return {
+      statusCode: 200,
+      body: undefined,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(payload) {
+        this.body = payload;
+        return this;
+      }
+    };
+  }
+
+  it('moves one path in the stored selection, on the server, and answers with the new order', async () => {
+    const host = createHost();
+    host.savePluginOptions = (options, done) => {
+      host.saved = options;
+      done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three', 'a.one'] });
+    try {
+      const status = recorder();
+      await routes['GET /ai/status']({}, status);
+      assert.deepEqual(status.body.aiDataPaths, ['a.one', 'b.two', 'c.three'], 'stored repeats are shown once');
+      assert.equal(status.body.history.derived, true);
+
+      const moved = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, moved);
+      assert.equal(moved.statusCode, 200);
+      assert.deepEqual(moved.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      assert.deepEqual(host.saved.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+
+      // History reusing the live list has nothing of its own to reorder.
+      const derived = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: 1 } }, derived);
+      assert.equal(derived.statusCode, 409);
+      assert.equal(host.saved.historyPaths, undefined, 'the derived history list was not frozen into a stored one');
+
+      const gone = recorder();
+      await routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, gone);
+      assert.equal(gone.statusCode, 409);
+    } finally {
+      plugin.stop();
+    }
+  });
+});

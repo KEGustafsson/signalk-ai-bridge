@@ -43,6 +43,12 @@ this project uses [semantic versioning](https://semver.org/).
   context window, but the only order available was the picker's alphabetical
   one, and every save from the picker re-sorted the list. Saving from the
   picker now keeps the stored order and adds newly ticked paths at the end.
+  Each move is made on the server (`POST /paths/move`) against the selection
+  as stored, so it cannot overwrite another browser's or an earlier save's
+  change with a stale copy. A history list that reuses the AI selection is
+  not reorderable on its own, so a click cannot freeze it into a fixed list.
+  History series reach the model in the stored order, not the provider's
+  column order. Repeats in an old stored selection are shown and kept once.
 - **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
   request):
   - Overlapping saves of path selections and watch rules no longer undo each

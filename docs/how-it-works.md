@@ -67,10 +67,18 @@ claim on the window.
 
 **Put what matters first.** The `AI Path Selection` and `History Context`
 cards list the saved selection in that priority order, with **↑** and **↓** to
-move a path; each move is saved straight away. Paths newly ticked in a picker
-are added at the end, and saving from the picker keeps the order you set. Keep
-alarms and engine data near the top, and signal strengths, camera URLs and
-other bulky paths at the bottom or out of the selection.
+move a path. Each move is made on the server against the selection as stored
+(`POST /plugins/signalk-ai-bridge/paths/move` with `{ kind, path, delta }`),
+so a list another browser or an earlier save changed cannot be overwritten
+with an old copy. Paths newly ticked in a picker are added at the end, and
+saving from the picker keeps the order you set. Keep alarms and engine data
+near the top, and signal strengths, camera URLs and other bulky paths at the
+bottom or out of the selection.
+
+Two lists cannot be reordered until you save one: the default AI selection
+(used until you save your own), and a history list that is reusing the AI
+selection, which follows that selection's order. History series reach the
+model in the order you set, whatever order the history provider answers in.
 
 The operator's question is charged against the same window. A short question
 costs nothing worth counting, but a pasted checklist near the 4,000-character

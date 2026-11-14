@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { movePath, withUnlistedSelection } from './pathSelection.js';
+import { withUnlistedSelection } from './pathSelection.js';
 
 describe('withUnlistedSelection', () => {
   it('keeps a configured path the listing could not show', () => {
@@ -79,10 +79,4 @@ describe('selection order', () => {
     assert.deepEqual(picked, ['notifications.*', 'navigation.position', 'electrical.batteries.house.voltage']);
   });
 
-  it('moves one entry up or down, and stays put at the ends', () => {
-    assert.deepEqual(movePath(['a', 'b', 'c'], 2, -1), ['a', 'c', 'b']);
-    assert.deepEqual(movePath(['a', 'b', 'c'], 0, 1), ['b', 'a', 'c']);
-    assert.deepEqual(movePath(['a', 'b', 'c'], 0, -1), ['a', 'b', 'c']);
-    assert.deepEqual(movePath(['a', 'b', 'c'], 2, 1), ['a', 'b', 'c']);
-  });
 });

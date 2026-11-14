@@ -46,18 +46,3 @@ export function withUnlistedSelection(
 
   return [...new Set([...kept, ...added])];
 }
-
-/**
- * The selection with one entry moved `delta` places (-1 up, +1 down), or the
- * same list when the move would leave the ends.
- */
-export function movePath(list: readonly string[], index: number, delta: number): string[] {
-  const target = index + delta;
-  if (index < 0 || index >= list.length || target < 0 || target >= list.length) {
-    return [...list];
-  }
-  const next = [...list];
-  const [item] = next.splice(index, 1);
-  next.splice(target, 0, item);
-  return next;
-}
