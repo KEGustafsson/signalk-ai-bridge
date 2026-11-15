@@ -85,6 +85,23 @@ describe('createTimedFetch', () => {
     assert.equal(await response.text(), 'nope');
   });
 
+  it('bounds an error reply\'s body, even with the timeout disabled', async () => {
+    const { ERROR_BODY_TIMEOUT_MS } = require('../lib/http-utils.cjs');
+    const timedFetch = createTimedFetch(
+      async (_input, init) => {
+        const response = stalledBodyResponse(init.signal);
+        return new Response(response.body, { status: 500 });
+      },
+      0
+    );
+    await withEventLoopAlive(async () => {
+      const response = await timedFetch('http://localhost:11434/api/chat');
+      const started = Date.now();
+      await assert.rejects(response.text(), (error) => error.code === 'timeout');
+      assert.ok(Date.now() - started < ERROR_BODY_TIMEOUT_MS + 1000);
+    });
+  });
+
   it('reports a timeout rather than a bare abort', async () => {
     const timedFetch = createTimedFetch(
       (_input, init) =>

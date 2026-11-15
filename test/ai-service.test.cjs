@@ -67,6 +67,41 @@ describe('buildAiMessages', () => {
   });
 });
 
+describe('an error reply whose body never arrives', () => {
+  const stalled = () =>
+    new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' }
+    });
+  const settles = async (promise) => {
+    let timer;
+    const outcome = await Promise.race([
+      promise.then(
+        () => 'answered',
+        (error) => error
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 6000);
+      })
+    ]);
+    clearTimeout(timer);
+    return outcome;
+  };
+
+  it('does not hold an Ollama question', async () => {
+    const outcome = await settles(
+      queryAiModel({ prompt: 'Status?' }, normalizeAiConfig({ model: 'gemma4', requestTimeoutMs: 60000 }), {
+        fetchImpl: async (url) =>
+          String(url).endsWith('/api/tags')
+            ? new Response(JSON.stringify({ models: [{ name: 'gemma4' }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+            : stalled()
+      })
+    );
+    assert.notEqual(outcome, 'hung');
+    assert.ok(outcome instanceof Error);
+  });
+});
+
 describe('queryAiModel', () => {
   it('calls the Ollama chat endpoint through the official client', async () => {
     let capturedUrl = '';

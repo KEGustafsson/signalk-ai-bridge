@@ -108,10 +108,12 @@ this project uses [semantic versioning](https://semver.org/).
     those are what is stored; it no longer answers "kept restarting" (409), and
     a move no longer sends a stopped plugin's empty lists for the panel to
     take as the selection.
-  - An error reply's body is waited for at most 2 s, for the History API and
-    for TensorRT-LLM: the request's own timer stops once a non-2xx status
-    arrives, so a 500 whose body never came held the history read, and the
-    question behind it, for good.
+  - An error reply's body is waited for at most 2 s, by every request the
+    plugin makes (Ollama's client, the model preload, the History API,
+    TensorRT-LLM): the request's own timer used to stop once a non-2xx status
+    arrived, so a 500 whose body never came held a question, a re-tune (and
+    every streamed question behind it) or the history read for good.
+    TensorRT-LLM error JSON after a byte-order mark is read, as before.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use
