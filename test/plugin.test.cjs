@@ -422,6 +422,26 @@ describe('signalk-ai-bridge plugin', () => {
       plugin.stop();
     });
 
+    // readOnlyAccess in the login status is the server's "Allow Readonly
+    // Access" setting, not the login's level; userLevel is.
+    it('judges a login status by its userLevel, not by the server allowing read-only visitors', async () => {
+      const cases = [
+        [{ status: 'loggedIn', readOnlyAccess: true, userLevel: 'admin' }, 200],
+        [{ status: 'loggedIn', readOnlyAccess: false, userLevel: 'readwrite' }, 200],
+        [{ status: 'loggedIn', readOnlyAccess: false, userLevel: 'readonly' }, 401],
+        [{ status: 'loggedIn' }, 401]
+      ];
+      for (const [loginStatus, expected] of cases) {
+        const { plugin, routes } = createSavingPlugin({
+          securityStrategy: { isDummy: () => false, getLoginStatus: () => loginStatus }
+        });
+        const response = createResponseRecorder();
+        await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['navigation.*'] } }, response);
+        assert.equal(response.statusCode, expected, JSON.stringify(loginStatus));
+        plugin.stop();
+      }
+    });
+
     it('says so when the server cannot store plugin settings', async () => {
       const host = createPluginHost();
       const plugin = createPlugin({ ...host, savePluginOptions: undefined }, {});

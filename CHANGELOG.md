@@ -172,6 +172,12 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Fixed
 
+- **An admin login may change the path selection on a server that allows
+  read-only visitors.** The write check's fallback for security strategies
+  without a request principal took the login status's `readOnlyAccess` for
+  the login's level; it is the server's "Allow Readonly Access" setting. It
+  now reads `userLevel`.
+
 - **A long question no longer pushes the vessel context out of the window.**
   The context budget reserved a fixed overhead for the system prompt and the
   instructions but nothing for the operator's question, which may be 4,000

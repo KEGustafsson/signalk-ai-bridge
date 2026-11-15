@@ -512,7 +512,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
     if (typeof strategy.getLoginStatus === 'function') {
       try {
         const status = strategy.getLoginStatus(req) || {};
-        return status.status === 'loggedIn' && status.readOnlyAccess !== true;
+        if (status.status !== 'loggedIn') return false;
+        // The login's level is userLevel. readOnlyAccess is the server's
+        // "Allow Readonly Access" setting (reads without a login), not this
+        // login's, so it says nothing about whether it may write.
+        const level = String(status.userLevel || '').toLowerCase();
+        return level === 'admin' || level === 'readwrite';
       } catch {
         return false;
       }
