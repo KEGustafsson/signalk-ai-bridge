@@ -349,9 +349,12 @@ describe('signalk-ai-bridge plugin', () => {
 
       assert.ok(!('aiDataPaths' in properties));
       assert.ok(!('historyPaths' in properties));
-      // The rest of the history settings stay in the form.
-      assert.ok('historyEnabled' in properties);
-      assert.ok('historyDuration' in properties);
+      // The rest of the history settings stay in the form, in their section.
+      assert.ok('historyEnabled' in properties.history.properties);
+      const [, on] = properties.history.dependencies.historyEnabled.oneOf;
+      assert.ok('historyDuration' in on.properties);
+      assert.ok(!JSON.stringify(plugin.schema()).includes('"aiDataPaths"'));
+      assert.ok(!JSON.stringify(plugin.schema()).includes('"historyPaths"'));
     });
 
     it('stores a selection and applies it to the running plugin', async () => {
@@ -1099,9 +1102,146 @@ describe('lifecycle gating', () => {
     assert.match(host.errors[0], /could not reach the model/i);
   });
 
-  it('exposes a password widget for the API key', () => {
+  it('exposes a password widget for both API keys', () => {
     const plugin = createPlugin(makeHost().app, {});
     assert.equal(typeof plugin.uiSchema, 'function');
-    assert.equal(plugin.uiSchema().apiKey['ui:widget'], 'password');
+    assert.equal(plugin.uiSchema().aiModel.apiKey['ui:widget'], 'password');
+    assert.equal(plugin.uiSchema().history.historyApiKey['ui:widget'], 'password');
+  });
+});
+
+describe('settings stored in sections', () => {
+  /** Options as the admin page stores them, every section filled in, with the panel's selections. */
+  const sectioned = () => ({
+    enabled: true,
+    aiModel: {
+      backend: 'ollama',
+      baseUrl: 'http://gpu.local:11434',
+      model: 'gemma4:e2b',
+      keepAlive: '1h',
+      warmupOnStart: false
+    },
+    answers: { systemPrompt: 'Be brief.', temperature: 0.3, topP: 0.9, maxTokens: 1024, requestTimeoutMs: 180000 },
+    history: {
+      historyEnabled: true,
+      historyDuration: 'PT2H',
+      historyResolution: '',
+      historySamples: 20,
+      historyServerUrl: '',
+      historyApiKey: '',
+      historyProvider: 'signalk-parquet',
+      historyTimeoutMs: 6000
+    },
+    advanced: { numCtx: 4096, numGpu: -1, gpuAutoTune: false, numBatch: 256, numThread: 0 },
+    aiDataPaths: ['a.one', 'b.two', 'c.three'],
+    historyPaths: ['h.one', 'h.two']
+  });
+
+  function startWith(options, appOverrides = {}) {
+    const saved = [];
+    const statuses = [];
+    const fetched = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: (text) => statuses.push(text),
+      savePluginOptions: (stored, done) => {
+        saved.push(JSON.parse(JSON.stringify(stored)));
+        done(null);
+      },
+      ...appOverrides
+    };
+    const plugin = createPlugin(app, {
+      fetchImpl: async (url) => {
+        fetched.push(String(url));
+        return new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    });
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    plugin.start(options);
+    return { plugin, routes, saved, statuses, fetched };
+  }
+
+  it('keeps every section as it was when a selection is saved or a path moved, and adds no flat keys', async () => {
+    const options = sectioned();
+    const { plugin, routes, saved } = startWith(options);
+    try {
+      const selection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['a.one', 'b.two', 'c.three', 'd.four'] } }, selection);
+      assert.equal(selection.statusCode, 200);
+      const historySelection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { historyPaths: ['h.one', 'h.two', 'h.three'] } }, historySelection);
+      assert.equal(historySelection.statusCode, 200);
+      const live = createResponseRecorder();
+      await routes['POST /paths/move']({ headers: {}, body: { kind: 'live', path: 'd.four', delta: -1 } }, live);
+      assert.equal(live.statusCode, 200);
+      const history = createResponseRecorder();
+      await routes['POST /paths/move']({ headers: {}, body: { kind: 'history', path: 'h.three', delta: -1 } }, history);
+      assert.equal(history.statusCode, 200);
+
+      assert.equal(saved.length, 4);
+      const sections = sectioned();
+      delete sections.aiDataPaths;
+      delete sections.historyPaths;
+      for (const stored of saved) {
+        const { aiDataPaths, historyPaths, ...rest } = stored;
+        assert.deepEqual(rest, sections);
+        assert.ok(Array.isArray(aiDataPaths));
+        assert.ok(Array.isArray(historyPaths));
+        assert.deepEqual(Object.keys(stored).sort(), ['advanced', 'aiDataPaths', 'aiModel', 'answers', 'enabled', 'history', 'historyPaths']);
+      }
+      assert.deepEqual(saved[0].aiDataPaths, ['a.one', 'b.two', 'c.three', 'd.four']);
+      assert.deepEqual(saved[1].historyPaths, ['h.one', 'h.two', 'h.three']);
+      assert.deepEqual(saved[2].aiDataPaths, ['a.one', 'b.two', 'd.four', 'c.three']);
+      assert.deepEqual(saved[3].historyPaths, ['h.one', 'h.three', 'h.two']);
+      // The options it was started with are not changed in place.
+      assert.deepEqual(options, sectioned());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the settings its sections hold', async () => {
+    const { plugin, routes, statuses, fetched } = startWith(sectioned());
+    try {
+      assert.match(statuses.at(-1), /gemma4:e2b via http:\/\/gpu\.local:11434/);
+      const status = createResponseRecorder();
+      await routes['GET /ai/status']({}, status);
+      assert.equal(status.statusCode, 200);
+      assert.equal(status.body.model, 'gemma4:e2b');
+      assert.equal(status.body.baseUrl, 'http://gpu.local:11434');
+      assert.equal(status.body.requestTimeoutMs, 180000);
+      assert.equal(status.body.maxTokens, 1024);
+      assert.equal(status.body.configuredNumCtx, 4096);
+      assert.equal(status.body.numBatch, 256);
+      assert.equal(status.body.keepAlive, '1h');
+      assert.equal(status.body.gpuAutoTune, false);
+      assert.deepEqual(status.body.aiDataPaths, ['a.one', 'b.two', 'c.three']);
+      assert.equal(status.body.history.enabled, true);
+      assert.equal(status.body.history.samples, 20);
+      assert.equal(status.body.history.durationSeconds, 7200);
+      assert.equal(status.body.history.provider, 'signalk-parquet');
+      assert.deepEqual(status.body.history.paths, ['h.one', 'h.two']);
+      assert.ok(fetched.every((url) => url.startsWith('http://gpu.local:11434/')), fetched.join(', '));
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('says which switch to turn on when it is off', () => {
+    const { plugin, statuses } = startWith({ ...sectioned(), enabled: false });
+    try {
+      assert.match(statuses.at(-1), /switch on "Turn on AI Bridge"/);
+    } finally {
+      plugin.stop();
+    }
   });
 });

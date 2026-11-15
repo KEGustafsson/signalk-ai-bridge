@@ -52,7 +52,7 @@ whether anyone has acknowledged it are all worth the tokens. Every notification
 also loses the UUID, the alert methods and the five `can…` booleans, which
 describe what a notification UI may do with it and answer no question.
 
-The budget follows `numCtx`. llama.cpp resolves a prompt that will not fit by
+The budget follows the context window (**Advanced – GPU and memory → Context window**, `numCtx`). llama.cpp resolves a prompt that will not fit by
 truncating the prompt itself, to whatever `num_predict` leaves it, and says so
 only in the inference server's log — so the plugin sizes its own context to the
 window and leaves out whole paths rather than let the backend cut the prompt
@@ -137,7 +137,7 @@ are explicitly excluded.
 
 Live values and history are converted by the same code, so the two can never
 disagree about which way the boat was pointing. Do not ask for conversions in
-`systemPrompt`: the values are already converted, and a prompt that asks for
+**Answers → Instructions to the model** (`systemPrompt`): the values are already converted, and a prompt that asks for
 them again gets them applied twice — an attitude yaw of 86.5° came back as 495°.
 
 ## Model names
@@ -146,6 +146,6 @@ The plugin defaults to the Gemma 4 family.
 
 If you configure `gemma4` but Ollama only has a tagged variant installed, such as `gemma4:e2b-it-qat`, the plugin will try to resolve and use the installed tagged model automatically. The default is deliberately untagged for this reason: it follows whichever Gemma 4 tag the board actually has.
 
-That resolution only works within a family. A board running `qwen3.5:2b-q4_K_M` shares no family name with `gemma4`, so its model field has to be set explicitly.
+That resolution only works within a family. A board running `qwen3.5:2b-q4_K_M` shares no family name with `gemma4`, so its **Model name** (`model`) has to be set explicitly.
 
 If you already know the exact installed model name, configuring that exact name is the clearest option — and on an 8 GB board it is also the only way to be sure which tag you got, since `gemma4:e2b` and `gemma4:e2b-it-qat` differ by 2.9 GB of weights. See [Choosing a model](jetson.md#choosing-a-model).

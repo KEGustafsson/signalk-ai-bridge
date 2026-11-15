@@ -126,6 +126,33 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Changed
 
+- **The plugin settings are grouped into sections**, written for a boat
+  owner rather than a developer. The form opens with a short note on what AI
+  Bridge does and that it needs a model server (Ollama by default, not
+  included and installed separately), then one switch, **Turn on AI Bridge**,
+  and four sections, each a nested object in the plugin's options:
+  **AI model** (`aiModel`: server type, address, model name, API key, keep
+  loaded, load on start), **Answers** (`answers`: instructions, temperature,
+  top-p, longest answer, wait), **History in answers – optional** (`history`)
+  and **Advanced – GPU and memory** (`advanced`: context window, GPU layers,
+  automatic fitting, batch size, CPU threads). Field titles and descriptions
+  are short and plain, blank-means-default fields show what blank means, and
+  the technical detail moved to `docs/settings.md`, linked once from the form,
+  which now also lists the environment variables. Every default and every
+  stored value is unchanged; the server type reads Ollama / TensorRT-LLM or
+  NIM (NVIDIA), stored as `ollama` and `tensorrt-llm` as before.
+  The API key is shown only for a TensorRT-LLM or NIM server, and the history
+  settings only once **Include recent history** is on.
+  `lib/settings.cjs` holds the form and `readSettings()`, which turns the
+  sectioned options into the flat settings the plugin already read. Options
+  stored flat are still read, a key set nowhere still falls back to its
+  default or `SIGNALK_AI_BRIDGE_*` variable, and saving a path selection or
+  moving a path keeps every section as it is. The stored options are not
+  rewritten: after upgrading, the form shows the sections with their defaults
+  rather than the flat values, so check them before the first save.
+  Messages that name a setting use its new name and section ("Advanced →
+  Context window (tokens)", "History server address", "Turn on AI Bridge").
+
 - **The licence is now the European Union Public Licence v. 1.2
   (EUPL-1.2)**, instead of Apache-2.0: `LICENSE` and the `license` field in
   `package.json`.

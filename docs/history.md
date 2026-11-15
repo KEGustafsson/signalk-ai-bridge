@@ -5,7 +5,9 @@ asks is about a trend — "has the wind been building?", "did the batteries
 recover overnight?", "were we making way an hour ago?" — and the live data model
 cannot answer any of it.
 
-Turning on `historyEnabled` makes the plugin also read the server's
+Switching on **Include recent history** (`historyEnabled`), in the **History
+in answers – optional** section of the plugin settings, makes the plugin also
+read the server's
 [History API](https://demo.signalk.org/documentation/Developing/REST_APIs/History_API.html)
 (`GET /signalk/v2/api/history/values`) before each question, and put the result
 in the same prompt as the live snapshot, under a `history` key.
@@ -53,10 +55,17 @@ rising?" at a fraction of the tokens.
 
 ## Settings
 
-- `historyEnabled`
-  Off by default. Turn it on once a history provider is recording
+The history settings are in the **History in answers – optional** section of
+the plugin settings, and appear once **Include recent history**
+(`historyEnabled`, off by default) is switched on. Each one is described in
+[Plugin settings](settings.md#history-in-answers--optional): **How far back**
+(`historyDuration`), **Time step** (`historyResolution`), **Points per path**
+(`historySamples`), **History server address** (`historyServerUrl`),
+**History API key** (`historyApiKey`), **History provider**
+(`historyProvider`) and **Wait for history (ms)** (`historyTimeoutMs`). The
+sections below name them by key.
 
-- **History paths** — chosen in the web app, not here
+- **History paths** — chosen in the web app, not in the settings
   Press **Browse recorded paths** in the panel's `History Context` card: it
   lists every path your provider has data for in the last day (or your window,
   if longer), and saves what you tick. The History API takes no wildcards, so
@@ -67,37 +76,6 @@ rising?" at a fraction of the tokens.
   such as `navigation.*` are not expanded, so if the live selection is all
   wildcards, select history paths explicitly or no history is requested. At
   most 12 paths are requested
-
-- `historyDuration`
-  How far back to look: `PT1H`, `P1D`, `30m`, or a plain number of seconds.
-  Capped at 31 days
-
-- `historyResolution`
-  Size of each aggregation window, for example `1m` or `300`. Leave blank to
-  derive it from the window and the sample budget, which keeps the request
-  proportional to what fits in the prompt
-
-- `historySamples`
-  Points per path that reach the model. Default 12, minimum 2 — a single point
-  is not a series, and the live snapshot already carries the newest value
-
-- `historyApiKey`
-  Bearer token for a history server that is not this Signal K server: another
-  host, or another service on this machine at a different port (InfluxDB on
-  `localhost:8086`, say). Leave blank for this server's own history, or for an
-  unauthenticated one
-
-- `historyProvider`
-  A specific provider plugin id. Blank uses the server's default provider
-
-- `historyServerUrl`
-  Where the History API lives. Blank calls this server over loopback, on the
-  port it listens on (see below). Set it for history served by another Signal K
-  instance on the boat. With TLS on, see [Servers with TLS](#servers-with-tls)
-
-- `historyTimeoutMs`
-  How long to wait before answering from live data alone. Default 5000, kept
-  short on purpose — this runs before the model sees the question
 
 ## Servers with security enabled
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { parse as parseYaml } from 'yaml';
 
 const requiredFiles = [
@@ -17,6 +18,7 @@ const requiredFiles = [
   'lib/jetson-telemetry.cjs',
   'lib/kv-cache.cjs',
   'lib/http-utils.cjs',
+  'lib/settings.cjs',
   'lib/tensorrt-service.cjs',
   'index.cjs',
   'README.md',
@@ -57,6 +59,18 @@ assert.match(pluginSource, /router\.post\('\/ai\/query'/);
 assert.match(pluginSource, /numCtx/);
 assert.match(pluginSource, /keepAlive/);
 assert.match(pluginSource, /gpuAutoTune/);
+
+// The admin page renders schema() as stored JSON: the switch first, then the
+// sections, and nothing JSON would drop.
+{
+  const plugin = createRequire(import.meta.url)('../index.cjs')({});
+  const schema = plugin.schema();
+  assert.deepEqual(JSON.parse(JSON.stringify(schema)), schema, 'schema() must be plain JSON');
+  assert.deepEqual(JSON.parse(JSON.stringify(plugin.uiSchema())), plugin.uiSchema(), 'uiSchema() must be plain JSON');
+  assert.deepEqual(Object.keys(schema.properties), ['enabled', 'aiModel', 'answers', 'history', 'advanced']);
+  assert.equal(plugin.uiSchema().aiModel.apiKey['ui:widget'], 'password');
+  assert.equal(plugin.uiSchema().history.historyApiKey['ui:widget'], 'password');
+}
 
 // The registry and app store both read package.json metadata directly, so a
 // missing field here is a silent score loss rather than a build failure.

@@ -605,14 +605,14 @@ describe('collectHistoryContext', () => {
         { fetchImpl: () => assert.fail('no request expected') }
       );
       assert.doesNotMatch(history.message, /hunter2|p@ss|pa\/ss|retpw|admin/, url);
-      assert.match(history.message, /not called: the configured "Signal K server URL" (has a user name or password|is not a valid URL)/, url);
+      assert.match(history.message, /not called: the configured "History server address" (has a user name or password|is not a valid URL)/, url);
       const listing = await listHistoryPaths({ config: { settings: {} } }, historyConfig({ historyServerUrl: url }), {
         fetchImpl: () => assert.fail('no request expected')
       });
       assert.doesNotMatch(listing.message, /hunter2|p@ss|pa\/ss|retpw|admin/, url);
       assert.match(
         resolveHistoryBaseUrl({ config: { settings: {} } }, historyConfig({ historyServerUrl: url })),
-        /^not called: the configured Signal K server URL /,
+        /^not called: the configured History server address /,
         url
       );
     }
@@ -904,7 +904,7 @@ describe('which ports are this server', () => {
       );
       assert.match(history.message, /its port is not known: it was started by systemd socket activation/);
       assert.match(history.message, /History API key/);
-      assert.doesNotMatch(history.message, /leave "Signal K server URL" blank/);
+      assert.doesNotMatch(history.message, /leave "History server address" blank/);
     });
 
     // Not socket activation: an invalid port is named as what it is.

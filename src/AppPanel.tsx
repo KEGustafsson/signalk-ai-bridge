@@ -1156,9 +1156,10 @@ export default function AppPanel(props: AppPanelProps) {
             </>
           ) : (
             <p style={{ margin: 0 }}>
-              Disabled{historyPaths.length > 0 ? ', so the paths above are stored but not sent' : ''}. Enable{' '}
-              <code>historyEnabled</code> in the plugin settings to also send recent history from the Signal K History
-              API, which needs a history provider plugin such as signalk-to-influxdb2 or signalk-parquet.
+              Off{historyPaths.length > 0 ? ', so the paths above are stored but not sent' : ''}. Switch on{' '}
+              <strong>Include recent history</strong> under <strong>History in answers</strong> in the plugin settings
+              to also send recent history from the Signal K History API, which needs a history provider plugin such as
+              signalk-to-influxdb2 or signalk-parquet.
             </p>
           )}
 

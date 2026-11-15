@@ -247,10 +247,11 @@ async function main() {
   }
 
   const plugin = createPlugin(createSignalKAppShim());
+  // Options as the admin page stores them: the switch, then the sections.
   plugin.start({
-    ...(baseUrl ? { baseUrl, model: STUB_MODEL } : {}),
-    numCtx: 8192,
-    keepAlive: '30m'
+    enabled: true,
+    aiModel: { ...(baseUrl ? { baseUrl, model: STUB_MODEL } : {}), keepAlive: '30m' },
+    advanced: { numCtx: 8192 }
   });
 
   const routes = collectRoutes(plugin);
