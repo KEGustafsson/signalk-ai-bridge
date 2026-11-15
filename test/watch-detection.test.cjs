@@ -936,3 +936,49 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: dete
   });
 });
 
+describe('review of 21f6d5f: healed saves and replay counts', () => {
+  it('heals a save that called a slow cycling path settled', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(59);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    // As an older version saved it: settled, and its cycle forgotten.
+    const row = saved.paths.find((item) => item.path === path);
+    Object.assign(row, { settled: true, regularRun: 60, cycleLimit: undefined, cycleOutages: 0 });
+    const restarted = newEngine();
+    restarted.importState(saved, t);
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(restarted, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(restarted, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    t = run(restarted, t, t + 3 * HOUR, 5 * SECOND, () => []);
+    assert.ok(detectors(restarted).includes(`dropout:${path}`), 'its death is reported');
+  });
+
+  it('replays a path asked for twice once', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - HOUR;
+    const path = 'environment.sensor0.temperature';
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify([path]), { status: 200 });
+      const data = [];
+      for (let at = start; at <= end; at += 10 * SECOND) data.push([new Date(at).toISOString(), 290.15]);
+      return new Response(JSON.stringify({ values: [{ path }], data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H', paths: [path, path, path] }, { historyTimeoutMs: 5000 });
+      assert.equal(result.pathsReplayed, 1);
+      assert.equal(result.pathsEvaluated, 1);
+    } finally {
+      service.stop();
+    }
+  });
+});
+

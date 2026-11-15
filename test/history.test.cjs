@@ -1662,6 +1662,38 @@ describe('reading a History API response', () => {
     assert.ok(pulled <= 3, `${pulled} MB read of an error reply`);
   });
 
+  it('does not wait on an error body whose cancel never settles', async () => {
+    const { readTextBounded } = require('../lib/history-service.cjs');
+    const stuck = {
+      body: {
+        getReader: () => ({
+          read: async () => ({ done: false, value: new Uint8Array(8192).fill(101) }),
+          cancel: () => new Promise(() => {})
+        })
+      }
+    };
+    const text = await Promise.race([readTextBounded(stuck, 4096), new Promise((resolve) => setTimeout(() => resolve('hung'), 500))]);
+    assert.equal(text.length, 4096);
+  });
+
+  it('keeps only the bytes within the error-body limit, however large the first chunk', async () => {
+    const { readTextBounded } = require('../lib/history-service.cjs');
+    const kept = [];
+    const realConcat = Buffer.concat;
+    Buffer.concat = (list, ...rest) => {
+      kept.push(list.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+      return realConcat(list, ...rest);
+    };
+    try {
+      const big = new Response(new Uint8Array(8 * 1024 * 1024).fill(101), { status: 500 });
+      const text = await readTextBounded(big, 4096);
+      assert.equal(text.length, 4096);
+    } finally {
+      Buffer.concat = realConcat;
+    }
+    assert.ok(kept.every((size) => size <= 4096), `concatenated ${Math.max(...kept)} bytes`);
+  });
+
   it('turns a too-large history response into a message, not a crash', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },

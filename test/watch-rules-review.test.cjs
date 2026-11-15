@@ -806,6 +806,63 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
     assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
   });
 
+  it('does not restore an earlier mute when a later one received no samples', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    const opened = [];
+    let open = false;
+    const tick = (t) => {
+      engine.tick(t);
+      const now = engine.status(t).activeFindings.some((item) => item.detector === 'rule');
+      if (now && !open) opened.push((t - T0) / SECOND);
+      open = now;
+    };
+    let t = T0;
+    engine.ingest(pump, false, t);
+    engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', source: 'manual' }]);
+    tick(t);
+    // Mute 1: the pump goes on, the change arrives muted.
+    engine.mute(pump, T0 + 60 * SECOND, t);
+    for (t += 5 * SECOND; t < T0 + 60 * SECOND; t += 5 * SECOND) {
+      if (t === T0 + 10 * SECOND) engine.ingest(pump, true, t);
+      tick(t);
+    }
+    for (; t < T0 + 100 * SECOND; t += 5 * SECOND) tick(t);
+    // Unmuted, the pump stops: reported.
+    engine.ingest(pump, false, t);
+    for (; t < T0 + 1200 * SECOND; t += 5 * SECOND) tick(t);
+    // Mute 2, with nothing published: the pump stays off throughout.
+    engine.ingest(pump, false, t);
+    t += 5 * SECOND;
+    tick(t);
+    engine.mute(pump, T0 + 1240 * SECOND, t);
+    for (; t < T0 + 1600 * SECOND; t += 5 * SECOND) tick(t);
+    assert.deepEqual(opened, [105], 'only the real change after the first mute');
+  });
+
+  it('makes an edited rule wait its full duration on its new path', () => {
+    const engine = newEngine();
+    let t = T0;
+    engine.setRules([{ id: 'r-volt', path: 'electrical.batteries.house.voltage', op: 'below', value: 12, forSeconds: 60, source: 'manual' }]);
+    for (; t < T0 + 50 * SECOND; t += 5 * SECOND) {
+      engine.ingest('electrical.batteries.house.voltage', 11.5, t);
+      engine.ingest('electrical.batteries.starter.voltage', 11.5, t);
+      engine.tick(t);
+    }
+    engine.setRules([{ id: 'r-volt', path: 'electrical.batteries.starter.voltage', op: 'below', value: 12, forSeconds: 60, source: 'manual' }]);
+    const editedAt = t;
+    for (; t < editedAt + 55 * SECOND; t += 5 * SECOND) {
+      engine.ingest('electrical.batteries.starter.voltage', 11.5, t);
+      engine.tick(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `${(t - editedAt) / SECOND} s after the edit`);
+    }
+    for (; t < editedAt + 2 * 60 * SECOND; t += 5 * SECOND) {
+      engine.ingest('electrical.batteries.starter.voltage', 11.5, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
+  });
+
   it('keeps a rule input however many other leaves arrived first', () => {
     const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchMaxPaths: 10000 }), { now: T0 });
     engine.setRules([{ id: 'r-volt', path: 'electrical.batteries.house.voltage', op: 'below', value: 12, source: 'manual' }]);
@@ -825,6 +882,53 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
     }
     engine.setRules([]);
     assert.ok(engine.latestSize() <= before + 1, `${engine.latestSize() - before} retired inputs kept`);
+  });
+});
+
+describe('review of 21f6d5f: parts, places and numbers of a thing', () => {
+  const flag = (path) => [{ path, role: 'watching', valueType: 'boolean' }];
+
+  it('takes a part, place or number of the thing for the thing', () => {
+    for (const [path, text] of [
+      ['electrical.switches.bilgePump.state', 'the bilge is on'],
+      ['electrical.switches.anchorLightMasthead.state', 'the anchor light is off'],
+      ['electrical.switches.deckLightAft.state', 'the deck light is on'],
+      ['electrical.switches.shorePowerInlet.state', 'the shore power is on'],
+      ['electrical.switches.fridgeCompressor.state', 'the fridge is on'],
+      ['electrical.switches.windlassMotor.state', 'the windlass is on'],
+      ['electrical.switches.bilgePump1.state', 'the bilge pump is on'],
+      ['electrical.switches.anchorLight2.state', 'the anchor light is on']
+    ]) {
+      const result = parseRule(text, flag(path));
+      assert.equal(result.ok, true, `${text} on ${path}: ${result.reason}`);
+      assert.equal(result.rule.path, path);
+    }
+    // A separate device is still not the thing.
+    for (const [path, text] of [
+      ['electrical.switches.engineBlower.state', 'the engine is running'],
+      ['electrical.switches.fridgeFan.state', 'the fridge is on'],
+      ['electrical.switches.generatorFuelPump.state', 'the generator is running']
+    ]) {
+      assert.equal(parseRule(text, flag(path)).ok, false, `${text} on ${path}`);
+    }
+  });
+
+  it('takes the thing itself over a device named after it', () => {
+    const sail = [
+      { path: 'propulsion.main.state', role: 'watching', valueType: 'string' },
+      { path: 'electrical.switches.mainEngineBlower.state', role: 'watching', valueType: 'boolean' },
+      { path: 'propulsion.main.temperature', role: 'watching' },
+      { path: 'electrical.batteries.engine.voltage', role: 'watching' }
+    ];
+    assert.equal(parseRule('the main engine is running', sail).rule.path, 'propulsion.main.state');
+  });
+
+  it('counts a numbered inside room named as a cabin or saloon as inside', () => {
+    const boat = [
+      { path: 'environment.inside.0.temperature', role: 'watching', units: 'K', displayName: 'Saloon' },
+      { path: 'environment.outside.temperature', role: 'watching', units: 'K' }
+    ];
+    assert.equal(parseRule('cabin temperature above 30 °C', boat).rule.path, 'environment.inside.0.temperature');
   });
 });
 

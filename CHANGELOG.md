@@ -352,7 +352,19 @@ this project uses [semantic versioning](https://semver.org/).
     API path is refused; History API error bodies are read at most 4 kB;
     replay says how many of the asked paths had data and names requests
     that could not be read; the panel keeps a newer status when an older
-    read fails.
+    read fails. And from CodeRabbit's review of 21f6d5f and the review of
+    that: a retired rule's input stored past the cap goes with its rule;
+    a "changes" rule honours a mute that began and ended between two
+    ticks, and never restores an earlier mute's value; an edited rule's
+    pending duration starts again on its new path; an error body keeps
+    only bytes within its limit and does not wait on its cancel; a part,
+    place or number of a thing is the thing (`bilgePump` for "the bilge",
+    `anchorLightMasthead`, `bilgePump1`), only a separate device (blower,
+    fan, fuel pump...) is not, and when the plain reading is such a device
+    the thing itself is taken or offered first; a numbered inside room
+    whose display name is a cabin or saloon is inside; saves that called a
+    slow cycling path settled are healed; replay counts a path asked twice
+    once and names up to three failed requests.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).
