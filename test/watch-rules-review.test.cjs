@@ -551,3 +551,66 @@ describe('review of 016d644: joined words, numbers, quoted qualifiers and repeat
   });
 });
 
+describe('review of 5f24be6: numbers, kind words, duplicate meanings and states', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : { role: 'watching', ...item }));
+
+  it('does not let an instance number settle a tie its display name contradicts', () => {
+    const boat = at([
+      { path: 'electrical.batteries.0.voltage', displayName: 'Battery 1' },
+      { path: 'electrical.batteries.1.voltage', displayName: 'Battery 2' },
+      { path: 'electrical.batteries.2.voltage', displayName: 'Battery 3' },
+      { path: 'propulsion.0.temperature', displayName: 'Engine 1' },
+      { path: 'propulsion.1.temperature', displayName: 'Engine 2' }
+    ]);
+    const two = parseRule('battery 2 below 12 V', boat);
+    assert.equal(two.ok, false, `battery 2 is ambiguous here, not ${two.rule && two.rule.path}`);
+    assert.equal(parseRule('engine 2 temperature above 95 °C', boat).rule.path, 'propulsion.1.temperature');
+    // Without display names the number is the index.
+    assert.equal(parseRule('battery 2 below 12 V', at(['electrical.batteries.1.voltage', 'electrical.batteries.2.voltage'])).rule.path, 'electrical.batteries.2.voltage');
+  });
+
+  it('reads kind words and the boat itself in a subject', () => {
+    const boat = at(['electrical.batteries.house.voltage', 'electrical.batteries.starter.voltage', 'tanks.fuel.port.currentLevel', 'tanks.fuel.starboard.currentLevel']);
+    for (const text of ['battery bank below 12 V on the house bank', 'boat battery below 12 V on the house bank', 'the vessel battery below 12 V on the house bank', 'battery sensor below 12 V on the house bank']) {
+      const result = parseRule(text, boat);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.path, 'electrical.batteries.house.voltage', text);
+    }
+    assert.equal(parseRule('the battery system below 12 V on the starter battery', boat).rule.path, 'electrical.batteries.starter.voltage');
+    assert.equal(parseRule('fuel tank sensor below 20 % in the port tank', boat).rule.path, 'tanks.fuel.port.currentLevel');
+    // A word that names nothing is named in the refusal.
+    const water = parseRule('water temperature above 30 °C in the engine room', at(['environment.inside.engineRoom.temperature', 'propulsion.main.temperature']));
+    assert.equal(water.ok, false);
+    assert.match(water.reason, /No path on this vessel matches "water"/);
+  });
+
+  it('chooses the starter bank beside a houseBank path, and does not count a meaning twice', () => {
+    const yacht = at(['electrical.batteries.house.voltage', 'electrical.batteries.starter.voltage', 'electrical.batteries.houseBank.voltage']);
+    assert.equal(parseRule('battery below 12 V on the starter bank', yacht).rule.path, 'electrical.batteries.starter.voltage');
+    const banks = at([
+      { path: 'electrical.switches.bank.0.1.state', displayName: 'Bilge pump' },
+      { path: 'electrical.switches.bank.0.3.state', displayName: 'Engine room blower' },
+      { path: 'environment.inside.engineRoom.temperature' }
+    ]);
+    const pump = parseRule('bilge pump in the engine room is on', banks);
+    assert.notEqual(pump.rule && pump.rule.path, 'electrical.switches.bank.0.3.state', 'not the blower');
+  });
+
+  it('prefers a path with states for a state, and still refuses on/off on a named measurement', () => {
+    const boat = at(['electrical.ac.shore.power', { path: 'electrical.switches.bank.0.2.state', displayName: 'Shore power' }]);
+    assert.equal(parseRule('the shore power is on', boat).rule.path, 'electrical.switches.bank.0.2.state');
+    const measured = parseRule('the coolant temperature is on', at(['propulsion.main.temperature']));
+    assert.equal(measured.ok, false);
+    assert.match(measured.reason, /is a measurement/);
+  });
+
+  it('offers only paths the words name when nothing else does, and reads empty quotes on their own', () => {
+    const boat = at(['tanks.fuel.0.currentLevel', 'tanks.freshWater.0.currentLevel']);
+    const tank = parseRule('it is below 20 % in the port tank', boat);
+    assert.equal(tank.ok, false);
+    assert.deepEqual(tank.alternatives, [], 'no tank here is the port one');
+    const mode = at([{ path: 'electrical.inverters.main.mode', valueType: 'string' }]);
+    assert.match(parseRule('the inverter mode is "" or "invert"', mode).reason, /empty quoted value/);
+  });
+});
+

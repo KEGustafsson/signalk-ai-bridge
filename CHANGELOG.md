@@ -283,11 +283,9 @@ this project uses [semantic versioning](https://semver.org/).
     with no subject before the comparison takes the qualifier as its
     subject; which paths fit the subject is decided by its words (meanings
     counted on the path, not the role, depth or display name), so freezers,
-    relearning sensors, named banks and twin engines named differently are
-    picked again; two
-    words a path writes as one ("engine room") match it; a repeated
-    qualifier with on/of/for/from is fine, a path picked from the
-    alternatives is not refused for its qualifier, and a qualifier that
+    relearning sensors and twin engines named differently are picked
+    again; two words a path writes as one ("engine room") match it; a
+    repeated qualifier with on/of/for/from is fine, and a qualifier that
     names none of the subject's paths is refused by name; blank quotes are
     refused with a reason. A repeating burst-and-outage cycle (a pair of
     readings every five minutes) is learned as the sender's rhythm after
@@ -306,6 +304,18 @@ this project uses [semantic versioning](https://semver.org/).
     settled, so a settled sensor that fails periodically keeps every
     outage reported (and its death); dead muted paths leave the feed's
     count entirely; a request's rows never share one moment in replay.
+    The review of that: a path's number segment no longer settles a tie
+    its display name contradicts ("battery 2" beside "Battery 3" at index
+    2 asks which); kind words and "boat"/"vessel" in a subject are fine,
+    and a word no path answers to is named in the refusal; a meaning
+    listed twice is counted once; a kind word in a qualifier that ties two
+    paths is tried without ("on the starter bank" beside `houseBank`); a
+    state is looked for among paths with states first; a settled path
+    learns a burst rhythm after 24 same-size outages, so a sender that
+    really changed is not reported for ever, while 20 equal outages of a
+    failing sensor still are; a duplicated edge row is replayed once;
+    "Which" lists only paths a qualifier names; empty quotes are told from
+    the gap between two quoted values.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

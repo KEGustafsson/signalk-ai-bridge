@@ -766,3 +766,49 @@ describe('review of 016d644: settled sensors, dead muted paths and merged rows',
   });
 });
 
+describe('review of 5f24be6: a settled sender that changes to bursts, and edge duplicates', () => {
+  it('learns a burst rhythm a settled sender changed to, after more outages than an unsettled one', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(31);
+    let t = run(engine, T0, T0 + 40 * MINUTE, 5 * SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 60; cycle += 1) {
+      engine.ingest(path, 12.8 + 0.02 * rand(), t);
+      engine.tick(t);
+      engine.ingest(path, 12.8 + 0.02 * rand(), t + 3 * SECOND);
+      engine.tick(t + 3 * SECOND);
+      t = run(engine, t + 3 * SECOND, t + 5 * MINUTE, 5 * SECOND, () => []);
+    }
+    const opened = engine.stats().byDetector.dropout || 0;
+    assert.ok(opened >= 20 && opened <= 30, `${opened} dropouts: the first two dozen, not all sixty`);
+  });
+
+  it('keeps one copy of an edge row a request sent twice', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const paths = Array.from({ length: 20 }, (_, index) => `environment.sensor${index}.temperature`);
+    let request = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = new URL(url).searchParams.get('paths').split(',').map((item) => item.split(':')[0]);
+      // The second request's rows are 3 s later, and it sends its last row twice.
+      const second = request++ === 1;
+      const times = [];
+      for (let at = start + (second ? 3 * SECOND : 0); at <= end; at += 10 * SECOND) times.push(at);
+      if (second) times.push(times[times.length - 1]);
+      const data = times.map((at) => [new Date(at).toISOString(), ...asked.map(() => 290.15 + ((at / 10000) % 3) * 0.05)]);
+      return new Response(JSON.stringify({ values: asked.map((path) => ({ path })), data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT6H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      assert.equal(result.rows, 6 * 360 + 1, 'the copy adds no moment of its own');
+      assert.equal(result.rowsDropped, 1);
+    } finally {
+      service.stop();
+    }
+  });
+});
+
