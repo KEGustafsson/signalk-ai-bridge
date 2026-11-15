@@ -149,12 +149,21 @@ this project uses [semantic versioning](https://semver.org/).
   default or `SIGNALK_AI_BRIDGE_*` variable, and saving a path selection or
   moving a path keeps every section as it is.
   Settings saved by an earlier version are moved into the sections on the
-  first start (`migrateSettings()`), so the form shows the stored values
-  instead of defaults that its first save would have put over them. A value
+  first start (`migrateSettings()`), and shown in the form from the start
+  even while the plugin is off, so the form shows the stored values instead
+  of defaults that its first save would have put over them. A value
   already in a section wins, the flat keys are removed, and the result is
   stored once through the options write queue. The server log gets one line
   naming the moved settings. Nothing is stored when nothing is flat or the
   plugin is stopped, and a failed save is tried again on the next start.
+  A plugin that is off is never started, so until then `schema()` reads the
+  stored options (`app.readPluginOptions()`) and gives each field whose
+  setting is still flat that value as its default: the form shows it, and
+  a save stores it in its section rather than the default over it. A
+  stored value the field does not take keeps the field's usual default,
+  with a note in its description. Loading the form writes nothing, and a
+  server without `readPluginOptions()`, or one that fails, gets the usual
+  form.
   Messages that name a setting use its new name and section ("Advanced →
   Context window (tokens)", "History server address", "Turn on AI Bridge").
 

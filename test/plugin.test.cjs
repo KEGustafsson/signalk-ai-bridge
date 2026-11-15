@@ -1427,3 +1427,86 @@ describe('settings saved flat by an earlier version', () => {
     }
   });
 });
+
+describe('the settings form for settings saved flat by an earlier version', () => {
+  const { settingsSchema } = require('../lib/settings.cjs');
+  const flat = () => ({
+    enabled: false,
+    baseUrl: 'http://gpu.local:11434',
+    model: 'qwen3:4b',
+    warmupOnStart: false,
+    maxTokens: 1024,
+    historyEnabled: true,
+    historySamples: 20,
+    numCtx: 4096,
+    aiDataPaths: ['a.one']
+  });
+
+  /** A plugin that is never started, as Signal K keeps one that is off. */
+  function offPlugin(readPluginOptions) {
+    const saves = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: () => {},
+      savePluginOptions: (stored, done) => {
+        saves.push(stored);
+        done(null);
+      }
+    };
+    if (readPluginOptions !== undefined) app.readPluginOptions = readPluginOptions;
+    return { plugin: createPlugin(app, {}), saves };
+  }
+
+  it('shows the stored values while the plugin is off, before any start has moved them', () => {
+    const { plugin, saves } = offPlugin(() => ({ enabled: false, configuration: flat() }));
+    const { properties } = plugin.schema();
+    assert.equal(properties.aiModel.properties.baseUrl.default, 'http://gpu.local:11434');
+    assert.equal(properties.aiModel.properties.model.default, 'qwen3:4b');
+    assert.equal(properties.aiModel.properties.warmupOnStart.default, false);
+    assert.equal(properties.answers.properties.maxTokens.default, 1024);
+    assert.equal(properties.history.properties.historyEnabled.default, true);
+    const [, on] = properties.history.dependencies.historyEnabled.oneOf;
+    assert.equal(on.properties.historySamples.default, 20);
+    assert.equal(properties.advanced.properties.numCtx.default, 4096);
+    // Everything not stored flat keeps its usual default.
+    const usual = settingsSchema().properties;
+    assert.equal(properties.aiModel.properties.keepAlive.default, usual.aiModel.properties.keepAlive.default);
+    assert.equal(properties.advanced.properties.numBatch.default, usual.advanced.properties.numBatch.default);
+    // Asking for the form writes nothing.
+    assert.deepEqual(saves, []);
+    assert.deepEqual(JSON.parse(JSON.stringify(plugin.schema())), plugin.schema());
+  });
+
+  it('reads the stored options each time the form is asked for', () => {
+    let configuration = flat();
+    const { plugin } = offPlugin(() => ({ enabled: false, configuration }));
+    assert.equal(plugin.schema().properties.aiModel.properties.model.default, 'qwen3:4b');
+    // Saved from the form: in the sections now, so the form is the usual one.
+    configuration = { aiModel: { model: 'qwen3:4b' } };
+    assert.deepEqual(plugin.schema(), settingsSchema());
+  });
+
+  it('is the usual form when the stored options are in sections, empty or cannot be read', () => {
+    const usual = settingsSchema();
+    const hosts = {
+      'in sections': () => ({ enabled: true, configuration: { aiModel: { model: 'qwen3:4b' }, advanced: { numCtx: 4096 } } }),
+      'nothing stored': () => ({}),
+      'empty configuration': () => ({ enabled: false, configuration: {} }),
+      'returns nothing': () => undefined,
+      'returns null': () => null,
+      'returns a string': () => 'options',
+      'configuration not an object': () => ({ configuration: 'flat' }),
+      throws: () => {
+        throw new Error('EACCES');
+      },
+      'not a function': 'readPluginOptions'
+    };
+    for (const [name, readPluginOptions] of Object.entries(hosts)) {
+      const { plugin } = offPlugin(readPluginOptions);
+      assert.deepEqual(plugin.schema(), usual, name);
+    }
+    // A host without readPluginOptions at all.
+    assert.deepEqual(offPlugin().plugin.schema(), usual);
+  });
+});

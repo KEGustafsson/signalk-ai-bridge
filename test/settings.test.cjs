@@ -10,6 +10,7 @@ const {
   DOCS_URL,
   SECTIONS,
   SETTING_LABELS,
+  STORED_VALUE_NOT_SHOWN,
   TOP_LEVEL_KEYS,
   migrateSettings,
   readSettings,
@@ -325,6 +326,63 @@ describe('migrateSettings', () => {
     for (const [key, value] of Object.entries(readSettings(FLAT))) {
       assert.deepEqual(readSettings(after)[key], value, key);
     }
+  });
+});
+
+describe('the settings form for the stored options', () => {
+  const FORM_KEYS = Object.values(SECTIONS).flat();
+
+  it('shows the settings stored flat as their fields\' defaults, so a save stores them', () => {
+    const schema = settingsSchema(FLAT);
+    const fields = allFields(schema);
+    for (const key of FORM_KEYS) assert.deepEqual(fields[key].field.default, FLAT[key], key);
+    // The admin page fills the stored options with those defaults and saves
+    // them: every stored value is kept, in its section.
+    const saved = fillFormDefaults(schema, FLAT);
+    for (const [section, keys] of Object.entries(SECTIONS)) {
+      for (const key of keys) assert.deepEqual(saved[section][key], FLAT[key], `${section}.${key}`);
+    }
+    assert.deepEqual(readSettings(saved), readSettings(FLAT));
+    assert.deepEqual(normalizeAiConfig(readSettings(saved), {}), normalizeAiConfig(FLAT, {}));
+    assert.deepEqual(normalizeHistoryConfig(readSettings(saved), {}), normalizeHistoryConfig(FLAT, {}));
+    // And it stays a form the server can store and plugin-ci can walk.
+    assert.deepEqual(JSON.parse(JSON.stringify(schema)), schema);
+  });
+
+  it('changes only the fields whose value is stored flat, and not one a section already holds', () => {
+    const schema = settingsSchema({ model: 'qwen3:4b', numCtx: 4096, aiModel: { baseUrl: 'http://x:1' }, baseUrl: 'http://flat:2' });
+    const expected = settingsSchema();
+    expected.properties.aiModel.properties.model.default = 'qwen3:4b';
+    expected.properties.advanced.properties.numCtx.default = 4096;
+    // baseUrl is in its section: the form shows that one, from the stored options.
+    assert.deepEqual(schema, expected);
+  });
+
+  it('is the usual form when nothing is stored flat', () => {
+    for (const stored of [undefined, null, {}, NESTED, 'not options', [], { enabled: false, aiDataPaths: ['a'] }, { aiModel: 'not a section', model: 'm' }]) {
+      assert.deepEqual(settingsSchema(stored), settingsSchema(), JSON.stringify(stored));
+    }
+  });
+
+  it('keeps the default, and says so, for a stored value the field does not take', () => {
+    const stored = { numCtx: 999999, backend: 'llama.cpp', temperature: 'hot', historySamples: 2.5, warmupOnStart: 'yes', model: 'qwen3:4b' };
+    const schema = settingsSchema(stored);
+    const fields = allFields(schema);
+    const usual = allFields(settingsSchema());
+    for (const key of ['numCtx', 'backend', 'temperature', 'historySamples', 'warmupOnStart']) {
+      assert.deepEqual(fields[key].field.default, usual[key].field.default, key);
+      assert.equal(fields[key].field.description, `${usual[key].field.description} ${STORED_VALUE_NOT_SHOWN}`, key);
+    }
+    // The value it does take is still shown.
+    assert.equal(fields.model.field.default, 'qwen3:4b');
+    assert.equal(fields.model.field.description, usual.model.field.description);
+    assert.equal(fields.numBatch.field.description, usual.numBatch.field.description);
+  });
+
+  it('does not change the options it is given', () => {
+    const stored = JSON.parse(JSON.stringify(FLAT));
+    settingsSchema(stored);
+    assert.deepEqual(stored, FLAT);
   });
 });
 

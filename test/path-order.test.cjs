@@ -155,14 +155,14 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       plugin.stop();
       // The restart's list no longer has b.two: the redone move finds nothing.
-      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'new-model' }, aiDataPaths: ['a.one', 'c.three'] });
+      plugin.start({ aiModel: { warmupOnStart: false, model: 'new-model' }, aiDataPaths: ['a.one', 'c.three'] });
       finish();
       await moving;
       const last = saves[saves.length - 1];
@@ -182,19 +182,19 @@ describe('path priority order', () => {
       pending.push(done);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm1' }, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false, model: 'm1' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 1: b.two is gone, so the redone move has nothing to do and
       // the restart's options are written back.
       plugin.stop();
-      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm2' }, aiDataPaths: ['a.one'] });
+      plugin.start({ aiModel: { warmupOnStart: false, model: 'm2' }, aiDataPaths: ['a.one'] });
       pending.shift()();
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 2 while that re-save is in flight.
       plugin.stop();
-      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm3' }, aiDataPaths: ['a.one'] });
+      plugin.start({ aiModel: { warmupOnStart: false, model: 'm3' }, aiDataPaths: ['a.one'] });
       while (pending.length > 0) {
         pending.shift()();
         await new Promise((resolve) => setImmediate(resolve));
@@ -233,14 +233,14 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(typeof finish, 'function', 'the save is in flight');
       plugin.stop();
-      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'new-model' }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+      plugin.start({ aiModel: { warmupOnStart: false, model: 'new-model' }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
       finish();
       await moving;
       // The move is made again on the restart's options, and that is what is
@@ -264,7 +264,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'kept-model' }, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false, model: 'kept-model' }, aiDataPaths: ['a.one', 'b.two'] });
     const first = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
     await new Promise((resolve) => setImmediate(resolve));
     const queuedReply = recorder();
@@ -317,7 +317,7 @@ describe('path priority order', () => {
       }, 5);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'kept' }, aiDataPaths: ['a.one', 'b.two'], historyPaths: ['h.one', 'h.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false, model: 'kept' }, aiDataPaths: ['a.one', 'b.two'], historyPaths: ['h.one', 'h.two'] });
     try {
       const replies = [recorder(), recorder(), recorder()];
       await Promise.all([
