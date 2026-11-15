@@ -745,12 +745,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // without the cap, so a restart whose list was tidied, gained paths
       // (pushing the neighbour past the cap) or came from an earlier attempt
       // still counts as moved, as long as `path` and that neighbour are
-      // still next to each other.
+      // still next to each other and `path` itself is still shown (within
+      // the cap). A path the restart pushed past the cap is answered as no
+      // longer in the selection, as any move of it would be.
       const neighbours = [];
       await updatePluginOptions((current) => {
         const shown = shownEntries(current[key], normalizeOne, Number.POSITIVE_INFINITY).map((entry) => entry.key);
         const at = shown.indexOf(path);
-        if (at >= 0 && neighbours.some((neighbour) => shown.indexOf(neighbour) === at - delta)) {
+        if (at >= 0 && at < limit && neighbours.some((neighbour) => shown.indexOf(neighbour) === at - delta)) {
           outcome = 'moved';
           return current;
         }

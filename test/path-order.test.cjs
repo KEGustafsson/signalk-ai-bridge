@@ -516,6 +516,40 @@ describe('path priority order', () => {
     }
   });
 
+  it('answers 409 when a restart pushes the moved history path itself past the cap', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    const full = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `p.${index}`);
+    const moving = full[full.length - 2];
+    plugin.start({ warmupOnStart: false, historyPaths: full });
+    try {
+      const reply = recorder();
+      const pending = routes['POST /paths/move']({ body: { kind: 'history', path: moving, delta: 1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      const moved = [...full.slice(0, -2), full[full.length - 1], moving];
+      assert.deepEqual(saves[0].historyPaths, moved);
+      // Restarted from the moved list with a path added at the front: the
+      // moved path itself is now past the cap, so it is not shown.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, historyPaths: ['new.front', ...moved] });
+      finish();
+      await pending;
+      assert.equal(reply.statusCode, 409);
+      assert.match(reply.body.error.message, /no longer in the saved selection/);
+      assert.ok(!reply.body.history.paths.includes(moving));
+      assert.deepEqual(saves[saves.length - 1].historyPaths, ['new.front', ...moved], 'nothing moved again');
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('does not move a path twice when two restarts arrive out of order', async () => {
     const host = createHost();
     const pending = [];
