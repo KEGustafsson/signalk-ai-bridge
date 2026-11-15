@@ -865,3 +865,74 @@ describe('review of cc73c01: a learned cycle once the path is regular again', ()
   });
 });
 
+describe('CodeRabbit review of b103610..014985f, and the review of 014985f: detection and replay', () => {
+  it('keeps a burst sender quiet between bursts once its rhythm is learned', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(47);
+    let t = T0;
+    let opened = 0;
+    for (let cycle = 0; cycle < 60; cycle += 1) {
+      t = run(engine, t, t + 10 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+      const before = detectors(engine).includes(`dropout:${path}`);
+      t = run(engine, t, t + 5 * MINUTE, 5 * SECOND, () => []);
+      if (!before && detectors(engine).includes(`dropout:${path}`) && cycle >= 30) opened += 1;
+    }
+    assert.equal(opened, 0, `${opened} dropouts once the rhythm is known`);
+  });
+
+  it('still reports a slow cycling sender dying long after its rhythm was learned', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(53);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 23 + 40; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    t = run(engine, t, t + 90 * MINUTE, 5 * SECOND, () => []);
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'its death is reported');
+  });
+
+  it('counts dead cycling paths toward a silent feed', () => {
+    const engine = newEngine();
+    const steady = Array.from({ length: 3 }, (_, index) => `environment.steady${index}.temperature`);
+    const cycling = Array.from({ length: 10 }, (_, index) => `environment.cycling${index}.temperature`);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [...steady, ...cycling].map((name) => [name, 290.15, 'gateway']));
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => steady.map((name) => [name, 290.15, 'gateway']));
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [...steady, ...cycling].map((name) => [name, 290.15, 'gateway']));
+    }
+    // The gateway dies: once the cycling paths are overdue too, one silent feed.
+    t = run(engine, t, t + 30 * MINUTE, 5 * SECOND, () => []);
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+  });
+
+  it('says which replay requests could not be read, and how many paths had data', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - HOUR;
+    const paths = Array.from({ length: 20 }, (_, index) => `environment.sensor${index}.temperature`);
+    let request = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = new URL(url).searchParams.get('paths').split(',').map((item) => item.split(':')[0]);
+      if (request++ === 1) return new Response('{}', { status: 200, headers: { 'content-length': String(64 * 1024 * 1024) } });
+      const data = [];
+      for (let at = start; at <= end; at += 10 * SECOND) data.push([new Date(at).toISOString(), ...asked.map(() => 290.15)]);
+      return new Response(JSON.stringify({ values: asked.map((path) => ({ path })), data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      assert.equal(result.pathsReplayed, 20);
+      assert.equal(result.pathsEvaluated, 10);
+      assert.equal(result.pathsFailed, 10);
+      assert.match(result.note, /10 of the 20 paths could not be read/);
+    } finally {
+      service.stop();
+    }
+  });
+});
+

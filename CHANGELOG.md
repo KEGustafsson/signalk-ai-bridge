@@ -334,7 +334,25 @@ this project uses [semantic versioning](https://semver.org/).
     is cleared by a settled regular stretch, applies only while the path
     is otherwise irregular, keeps its longest outage, is lengthened by a
     dismissal and is left out of the feed's regular paths; a single
-    matching path with states is taken instead of asked about.
+    matching path with states is taken instead of asked about. From the
+    review of that and CodeRabbit's review of the commits since b103610:
+    a state path whose name has words the request leaves over that are
+    not modifiers or switch words is not the thing (no engine blower for
+    "the engine is running", no fridge fan for "the fridge is on"); a
+    quoted on/off on a flag is on/off, and any other word on a flag is
+    refused for model-written and hand-written rules too; the cabin and
+    saloon are "inside" again, only rooms that are not lived in are not; a
+    learned cycle's limit applies whatever the mean gap (burst senders),
+    and only gaps short enough for a regular path clear it, so a slow
+    cycle's death is still reported; a cycle path whose dropout is active
+    counts toward a silent feed; a "changes" rule ignores changes in a
+    mute's last seconds; an edit that moves a rule to another path or
+    operator starts it afresh; a rule's input is kept whatever the cap on
+    watched leaves; a History API URL with a query or fragment after an
+    API path is refused; History API error bodies are read at most 4 kB;
+    replay says how many of the asked paths had data and names requests
+    that could not be read; the panel keeps a newer status when an older
+    read fails.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

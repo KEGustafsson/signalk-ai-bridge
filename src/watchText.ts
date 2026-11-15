@@ -230,7 +230,11 @@ export interface WatchReplayResult {
   readonly from?: string;
   readonly to?: string;
   readonly pathsReplayed?: number;
+  readonly pathsEvaluated?: number;
+  readonly pathsFailed?: number;
   readonly pathsSkipped?: number;
+  readonly truncated?: boolean;
+  readonly failures?: readonly string[];
   readonly findingsOpened?: number;
   readonly incidentsOpened?: number;
   readonly byDetector?: Readonly<Record<string, number>>;

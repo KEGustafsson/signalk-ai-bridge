@@ -783,8 +783,13 @@ export default function WatchPanel(props: WatchPanelProps) {
               {replay.ok ? (
                 <>
                   <p style={{ margin: 0 }}>
-                    Over the last 24 h of recorded history ({replay.pathsReplayed} paths
-                    {replay.pathsSkipped ? `, ${replay.pathsSkipped} more not replayed` : ''}), this watch would have opened{' '}
+                    Over the last 24 h of recorded history (
+                    {typeof replay.pathsEvaluated === 'number' && replay.pathsEvaluated !== replay.pathsReplayed
+                      ? `${replay.pathsEvaluated} of ${replay.pathsReplayed} paths had data`
+                      : `${replay.pathsReplayed} paths`}
+                    {replay.pathsSkipped ? `, ${replay.pathsSkipped} more not replayed` : ''}
+                    {replay.pathsFailed ? `, ${replay.pathsFailed} could not be read` : ''}
+                    {replay.truncated ? ', some rows left out' : ''}), this watch would have opened{' '}
                     <strong>{replay.incidentsOpened ?? 0}</strong> incident{replay.incidentsOpened === 1 ? '' : 's'} from{' '}
                     {replay.findingsOpened ?? 0} finding{replay.findingsOpened === 1 ? '' : 's'}: {describeDetectorCounts(replay.byDetector)}.
                   </p>

@@ -1632,6 +1632,36 @@ describe('reading a History API response', () => {
     await assert.rejects(readJsonBounded(new Response('x'.repeat(200)), 100), /larger than 100 bytes/);
   });
 
+  it('refuses a server URL with a query or fragment after an API path', () => {
+    for (const url of ['http://boat.example:3000/signalk/v2/api/history?provider=archive', 'http://boat.example:3000/signalk/v1/api#x']) {
+      const config = normalizeHistoryConfig({ historyServerUrl: url }, {});
+      assert.equal(config.historyServerUrl, '', url);
+      assert.match(config.historyServerUrlProblem, /query or a fragment/, url);
+    }
+    assert.equal(normalizeHistoryConfig({ historyServerUrl: 'http://boat.example:3000/signalk/v2/api/history' }, {}).historyServerUrl, 'http://boat.example:3000');
+  });
+
+  it('reads an error reply at most a few kilobytes far', async () => {
+    let pulled = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        if (pulled > 64) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(new TextEncoder().encode('e'.repeat(1024 * 1024)));
+      }
+    });
+    const history = await collectHistoryContext(
+      { config: { settings: {} } },
+      historyConfig({ historyPaths: ['navigation.speedOverGround'], historyServerUrl: 'http://boat.example:3000' }),
+      { fetchImpl: async () => new Response(body, { status: 500 }) }
+    );
+    assert.match(history.message, /HTTP 500/);
+    assert.ok(pulled <= 3, `${pulled} MB read of an error reply`);
+  });
+
   it('turns a too-large history response into a message, not a crash', async () => {
     const history = await collectHistoryContext(
       { config: { settings: {} } },

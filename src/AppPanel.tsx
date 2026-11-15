@@ -603,7 +603,10 @@ export default function AppPanel(props: AppPanelProps) {
         }
       })
       .catch(() => {
-        if (isActive) {
+        // A failed read does not clear a newer status another read (a save's
+        // re-read) has already shown.
+        if (isActive && order >= statusOrderRef.applied) {
+          statusOrderRef.applied = order;
           latestStatusRef.current = null;
           setBackendStatus(null);
         }

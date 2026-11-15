@@ -700,3 +700,97 @@ describe('review of cc73c01: unanswered words, switch words, names and flags', (
   });
 });
 
+describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rules', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : { role: 'watching', ...item }));
+
+  it('does not take a blower, a fan or a fuel pump for the thing it is named after', () => {
+    const boat = at(['propulsion.main.revolutions', 'propulsion.main.temperature', { path: 'electrical.switches.engineBlower.state', valueType: 'boolean' }]);
+    for (const text of ['the engine is running', 'coolant above 95 °C while the engine is running', 'battery below 12 V while the engine is not running']) {
+      const result = parseRule(text, [...boat, 'electrical.batteries.house.voltage'].map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : item)));
+      const used = result.rule && [result.rule.path, result.rule.when && result.rule.when.path];
+      assert.ok(!used || !used.includes('electrical.switches.engineBlower.state'), `${text}: ${JSON.stringify(used)}`);
+    }
+    const fan = parseRule('the fridge is on', at([{ path: 'electrical.switches.fridgeFan.state', valueType: 'boolean' }]));
+    assert.equal(fan.ok, false, `not ${fan.rule && fan.rule.path}`);
+    // A guard with nothing to pick says so, rather than asking which of none.
+    const generator = parseRule('battery below 12 V while the generator is running', at(['electrical.batteries.house.voltage', { path: 'electrical.switches.generatorFuelPump.state', valueType: 'boolean' }]));
+    assert.equal(generator.ok, false);
+  });
+
+  it('reads a quoted on/off on a flag as on/off, and refuses another word for every kind of rule', () => {
+    const flag = at([{ path: 'propulsion.main.overTemperature', valueType: 'boolean' }, { path: 'electrical.switches.bilgePump.state', valueType: 'boolean' }]);
+    for (const text of ['the overtemperature is "on"', 'the overtemperature is "true"', 'bilge pump switches to "on"']) {
+      const result = parseRule(text, flag);
+      assert.equal(result.ok, true, `${text}: ${result.reason}`);
+      assert.equal(result.rule.value, true, text);
+    }
+    const high = parseRule('the overtemperature is "high"', flag);
+    assert.equal(high.ok, false);
+    assert.equal(high.terminal, true, 'not handed to a model to store anyway');
+    // A rule written by a model or by hand gets the same check.
+    const engine = newEngine();
+    engine.ingest('propulsion.main.overTemperature', false, T0);
+    assert.throws(() => engine.proveRule({ path: 'propulsion.main.overTemperature', op: 'equals', value: 'high', source: 'manual' }, T0), /is on or off/);
+  });
+
+  it('counts the cabin and saloon as inside, and only unlived rooms as not', () => {
+    const boat = at([{ path: 'environment.inside.temperature', units: 'K' }, { path: 'environment.inside.engineRoom.temperature', units: 'K' }, { path: 'environment.inside.mainCabin.temperature', units: 'K' }]);
+    assert.equal(parseRule('temperature above 30 °C in the cabin', boat).rule.path, 'environment.inside.mainCabin.temperature');
+    const saloon = at([{ path: 'environment.inside.saloon.temperature', units: 'K' }, { path: 'environment.outside.temperature', units: 'K' }]);
+    assert.equal(parseRule('cabin temperature above 30 °C', saloon).rule.path, 'environment.inside.saloon.temperature');
+  });
+
+  it('starts a rule afresh when an edit moves it to another path', () => {
+    const engine = newEngine();
+    let t = T0;
+    engine.ingest('electrical.switches.bilgePump.state', false, t);
+    engine.ingest('electrical.switches.deckLight.state', false, t);
+    engine.setRules([{ id: 'r-1', path: 'electrical.switches.bilgePump.state', op: 'changes', source: 'manual' }]);
+    for (let step = 0; step < 4; step += 1, t += 5 * SECOND) {
+      engine.ingest('electrical.switches.bilgePump.state', step % 2 === 1, t);
+      engine.tick(t);
+    }
+    // The pump changed twice; the deck light never did.
+    engine.setRules([{ id: 'r-1', path: 'electrical.switches.deckLight.state', op: 'changes', source: 'manual' }]);
+    for (let step = 0; step < 12; step += 1, t += 5 * SECOND) {
+      engine.ingest('electrical.switches.deckLight.state', false, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, 'no change on the deck light');
+  });
+
+  it('does not report changes made in the last seconds of a mute', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    let t = T0;
+    engine.ingest(pump, false, t);
+    engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', source: 'manual' }]);
+    engine.tick(t);
+    engine.mute(pump, t + 60 * SECOND, t);
+    for (t += 5 * SECOND; t <= T0 + 55 * SECOND; t += 5 * SECOND) {
+      engine.ingest(pump, false, t);
+      engine.tick(t);
+    }
+    // After the last muted tick, before the mute ends: on and off again.
+    engine.ingest(pump, true, T0 + 58 * SECOND);
+    engine.ingest(pump, false, T0 + 59 * SECOND);
+    for (t = T0 + 60 * SECOND; t <= T0 + 120 * SECOND; t += 5 * SECOND) {
+      engine.ingest(pump, false, t);
+      engine.tick(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `at ${(t - T0) / SECOND} s`);
+    }
+  });
+
+  it('keeps a rule input however many other leaves arrived first', () => {
+    const engine = createWatchEngine(normalizeWatchConfig({ watchEnabled: true, watchMaxPaths: 10000 }), { now: T0 });
+    engine.setRules([{ id: 'r-volt', path: 'electrical.batteries.house.voltage', op: 'below', value: 12, source: 'manual' }]);
+    for (let index = 0; index < 6100; index += 1) engine.ingest(`environment.sensor${index}.temperature`, 290, T0);
+    let t = T0;
+    for (; t <= T0 + 60 * SECOND; t += 5 * SECOND) {
+      engine.ingest('electrical.batteries.house.voltage', 11.5, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
+  });
+});
+
