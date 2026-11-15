@@ -791,6 +791,15 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
       engine.tick(t);
     }
     assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
+    // Rules replaced one after another leave nothing behind past the cap.
+    const before = engine.latestSize();
+    for (let index = 0; index < 200; index += 1) {
+      const path = `electrical.batteries.bank${index}.voltage`;
+      engine.setRules([{ id: `r-${index}`, path, op: 'below', value: 12, source: 'manual' }]);
+      engine.ingest(path, 12.5, t);
+    }
+    engine.setRules([]);
+    assert.ok(engine.latestSize() <= before + 1, `${engine.latestSize() - before} retired inputs kept`);
   });
 });
 
