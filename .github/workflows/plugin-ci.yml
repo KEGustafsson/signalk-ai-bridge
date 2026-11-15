@@ -13,9 +13,14 @@
 name: signalk-plugin-ci
 
 on:
+  # Every pushed branch and tag, not only main: the registry looks for a
+  # plugin-ci run on the exact commit a release was published from (its
+  # gitHead), and takes 10 points off the score when there is none.
   push:
     branches:
-      - main
+      - '**'
+    tags:
+      - '**'
   pull_request:
   workflow_dispatch:
 
@@ -35,10 +40,6 @@ jobs:
       build-command: npm run build
       test-command: npm run test
       node-versions: '["22", "24"]'
-      # armv7 (Venus OS / Cerbo GX) runs under QEMU emulation and is disabled:
-      # this plugin needs an NVIDIA GPU on the inference host, so 32-bit ARM is
-      # not a target platform for it.
-      enable-armv7: false
       # Install the packed plugin into a real signalk-server and assert it
       # loads and starts.
       enable-signalk-integration: true

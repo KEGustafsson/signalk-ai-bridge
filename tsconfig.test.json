@@ -8,30 +8,15 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "target": "ES2022",
-    "types": []
+    "types": [],
+    "rootDir": "./src"
   },
   "include": [
     "src/test-node-shims.d.ts",
-    "src/api.ts",
-    "src/ai.ts",
-    "src/policy.ts",
-    "src/audit.ts",
     "src/contracts.ts",
     "src/types.ts",
-    "src/signalkPaths.ts",
-    "src/api.test.ts",
-    "src/ai.test.ts",
-    "src/policy.test.ts",
-    "src/audit.test.ts",
-    "src/signalk.integration.test.ts",
     "src/bridgeRuntime.ts",
     "src/bridgeRuntime.test.ts",
-    "src/policySync.ts",
-    "src/policySync.test.ts",
-    "src/policyChannel.ts",
-    "src/policyChannel.test.ts",
-    "src/pathAccess.ts",
-    "src/pathAccess.test.ts",
     "src/pathSelection.ts",
     "src/pathSelection.test.ts"
   ]

@@ -125,5 +125,9 @@ const pluginCi = fs.readFileSync('.github/workflows/plugin-ci.yml', 'utf8');
 assert.match(pluginCi, /SignalK\/signalk-server\/\.github\/workflows\/plugin-ci\.yml@/);
 assert.match(pluginCi, /build-command: npm run build/);
 assert.match(pluginCi, /test-command: npm run test/);
+// The registry takes 10 points off unless plugin-ci ran on the exact commit a
+// release was published from, so it runs on every pushed branch and tag.
+assert.match(pluginCi, /push:\s*\n(?:\s*#.*\n)*\s*branches:\s*\n\s*-\s*'\*\*'/, 'plugin-ci must run on every pushed branch');
+assert.match(pluginCi, /tags:\s*\n\s*-\s*'\*\*'/, 'plugin-ci must run on every pushed tag');
 
 console.log('smoke-ok');

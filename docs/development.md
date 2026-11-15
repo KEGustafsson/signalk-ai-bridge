@@ -54,9 +54,9 @@ Two workflows run on every push and pull request:
   load it — package metadata, entry point, `schema()`, the start/stop/restart
   lifecycle, deprecated and internal API usage, `npm pack` contents and an
   `--ignore-scripts` App Store install — across Linux x64/arm64, macOS and
-  Windows on Node 22 and 24, plus a live `signalk-server` install. The armv7
-  (Venus OS / Cerbo GX) leg is disabled: this plugin targets hosts with an
-  NVIDIA GPU, not 32-bit ARM.
+  Windows on Node 22 and 24, plus a live `signalk-server` install. It runs on
+  every pushed branch and tag as well as on pull requests, so whichever commit
+  a release is published from has a run for the registry to find.
 - **`ci`** runs the repository's own smoke test, type check, unit tests and a
   production `npm audit`, and then packs the plugin, installs the tarball with
   production dependencies only and runs the suite again from there — which is
@@ -77,6 +77,9 @@ things about a release matter beyond the code in it:
   release. Publishing from an unpacked tarball or a tree without `.git` leaves
   `gitHead` unset, and the score takes a 10-point `no-plugin-ci` penalty for a
   workflow that did in fact run.
+- **Make the release `latest`.** The registry scores only the version npm's
+  `latest` dist-tag points at, so a release meant to be scored is published
+  without `--tag next` (or moved to `latest` with `npm dist-tag add`).
 - **Keep the suite in the tarball.** The registry runs `npm test` inside the
   installed plugin. `npm run lint` asserts that everything it reads —
   `scripts/run-tests.mjs`, `test/`, `src/` and the two `tsconfig` files — is
