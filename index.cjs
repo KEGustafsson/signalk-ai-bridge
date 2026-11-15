@@ -725,8 +725,21 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
       let outcome = 'unchanged';
+      // The list this move stored. A restart from the options just written
+      // already has it: redoing the move there would move the path twice.
+      let produced;
       await updatePluginOptions((current) => {
         const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
+        const stored = current[key];
+        if (
+          produced &&
+          Array.isArray(stored) &&
+          stored.length === produced.length &&
+          stored.every((item, index) => item === produced[index])
+        ) {
+          outcome = 'moved';
+          return current;
+        }
         const result =
           kind === 'live'
             ? moveInStoredList(current.aiDataPaths, normalizeLiveEntry, Number.POSITIVE_INFINITY, path, delta)
@@ -734,8 +747,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
         // History reusing the live paths, or the default live selection, has
         // no stored list to reorder (and reordering would freeze it into one).
         outcome = result.outcome;
-        // The same object back when nothing moves, so nothing is written.
-        return result.outcome === 'moved' ? { ...current, [key]: result.list } : current;
+        if (result.outcome !== 'moved') {
+          // The same object back when nothing moves, so nothing is written.
+          return current;
+        }
+        produced = result.list;
+        return { ...current, [key]: result.list };
       });
       const config = getConfig();
       // liveSelected is the live selection in use, the defaults included, as

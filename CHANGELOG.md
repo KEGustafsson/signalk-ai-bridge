@@ -100,6 +100,9 @@ this project uses [semantic versioning](https://semver.org/).
     at most 4 kB, keeping only the bytes within that limit. A History API
     URL with a query or fragment after an API path is refused.
   - The panel keeps a newer status when an older read fails.
+  - From CodeRabbit's review of the removal: a body whose declared length is
+    over the limit is refused without waiting on its cancel, and a move is
+    not made twice when the plugin restarts from the options it stored.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

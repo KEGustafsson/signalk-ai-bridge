@@ -396,6 +396,35 @@ describe('path priority order', () => {
     }
   });
 
+  it('does not move a path twice when the plugin restarts from the options the move stored', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(saves[0].aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      // The server restarts the plugin on the options just written.
+      plugin.stop();
+      plugin.start({ ...saves[0] });
+      finish();
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      assert.deepEqual(saves[saves.length - 1].aiDataPaths, ['a.one', 'c.three', 'b.two']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('takes delta only as the number 1 or -1', async () => {
     const host = createHost();
     let writes = 0;
