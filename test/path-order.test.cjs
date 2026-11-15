@@ -682,6 +682,34 @@ describe('path priority order', () => {
     }
   });
 
+  it('sends no stopped plugin\'s lists when it stops right after a save', async () => {
+    const cases = [];
+    for (const depth of [1, 2]) {
+      cases.push(['POST /paths/move', { kind: 'live', path: 'b.two', delta: -1 }, depth]);
+      cases.push(['POST /paths/selection', { aiDataPaths: ['a.one'] }, depth]);
+    }
+    for (const [route, body, depth] of cases) {
+      const host = createHost();
+      let plugin;
+      host.savePluginOptions = (options, done) => {
+        done();
+        // Stopped a microtask or two after the write lands: after the queue
+        // has answered, before the handler replies.
+        let later = Promise.resolve();
+        for (let step = 0; step < depth; step += 1) later = later.then(() => {});
+        later.then(() => plugin.stop());
+      };
+      const created = routesFor(host);
+      plugin = created.plugin;
+      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+      const reply = recorder();
+      await created.routes[route]({ body }, reply);
+      assert.equal(reply.statusCode, 503, `${route} after ${depth}`);
+      assert.equal(reply.body.aiDataPaths, undefined, `${route} after ${depth}`);
+      plugin.stop();
+    }
+  });
+
   it('takes delta only as the number 1 or -1', async () => {
     const host = createHost();
     let writes = 0;

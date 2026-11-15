@@ -645,6 +645,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
         ...(historyPaths === undefined ? {} : { historyPaths })
       }));
+      // Stopped between the save and this reply: a stopped plugin's empty
+      // options are not the selection, so they are not sent as one.
+      if (rejectIfStopped(res)) return;
 
       const config = getConfig();
       res.status(200).json({
@@ -790,6 +793,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
         neighbours.push(result.neighbour);
         return { ...current, [key]: result.list };
       });
+      // Stopped between the save and this reply: no lists from a stopped
+      // plugin for the panel to take as the selection.
+      if (rejectIfStopped(res)) return;
       const lists = currentLists();
       if (outcome === 'no-stored-list' || outcome === 'not-found') {
         res.status(statusForCode('conflict')).json({

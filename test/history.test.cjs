@@ -1660,6 +1660,31 @@ describe('reading a History API response', () => {
     assert.equal(outcome, 'too-large');
   });
 
+  it('keeps the part of an error body that arrived before it stalled', async () => {
+    const partial = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('partial reason'));
+          },
+          pull() {
+            return new Promise(() => {});
+          }
+        }),
+        { status: 500 }
+      );
+    // The bounds are unref'd timers: keep the loop alive while they run.
+    const keepAlive = setInterval(() => {}, 50);
+    try {
+      const listing = await listHistoryPaths({ config: { settings: {} } }, historyConfig({ historyServerUrl: 'http://boat.example:3000', historyTimeoutMs: 60000 }), {
+        fetchImpl: async () => partial()
+      });
+      assert.match(listing.message, /HTTP 500: partial reason/);
+    } finally {
+      clearInterval(keepAlive);
+    }
+  });
+
   it('does not wait for an error body that never arrives', async () => {
     const stalled = () =>
       new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 });
