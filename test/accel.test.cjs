@@ -191,6 +191,36 @@ describe('TensorRT-LLM backend', () => {
     assert.equal(result.createdAt, new Date(1776000000 * 1000).toISOString());
   });
 
+  it('does not wait for an error body that never arrives', async () => {
+    let timer;
+    const outcome = await Promise.race([
+      queryAiModel({ prompt: 'Status?' }, config, {
+        fetchImpl: async () =>
+          new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 })
+      }).then(
+        () => 'answered',
+        (error) => error
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 5000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.notEqual(outcome, 'hung', 'the request settled');
+    assert.ok(outcome instanceof Error);
+  });
+
+  it('reads an error message after a byte-order mark', async () => {
+    const outcome = await queryAiModel({ prompt: 'Status?' }, config, {
+      fetchImpl: async () =>
+        new Response(`\ufeff${JSON.stringify({ error: { message: 'model not loaded' } })}`, { status: 400 })
+    }).then(
+      () => undefined,
+      (error) => error
+    );
+    assert.match(String(outcome && outcome.message), /model not loaded/);
+  });
+
   it('sends a bearer token when an API key is configured', async () => {
     let authorization;
 
@@ -842,6 +872,31 @@ describe('cost and safety of the status and retune routes', () => {
       headers: { 'content-type': 'application/json' }
     });
   }
+
+  it('does not hold a re-tune whose model load answers an error with no body', async () => {
+    reset();
+    const config = normalizeAiConfig({ model: 'gemma4:e2b', warmupOnStart: true, requestTimeoutMs: 60000 });
+    const stalled = () => new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 });
+    let timer;
+    const outcome = await Promise.race([
+      retuneOffload(config, {
+        fetchImpl: async (url) => {
+          const key = String(url).replace(/^.*\/api\//, '');
+          if (key === 'tags') return jsonOk({ models: [{ name: 'gemma4:e2b', size: 3_000_000_000 }] });
+          if (key === 'ps') return jsonOk({ models: [] });
+          return stalled();
+        }
+      }).then(
+        () => 'settled',
+        () => 'settled'
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 15000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.equal(outcome, 'settled');
+  });
 
   it('runs one tuning ladder for concurrent re-tunes', async () => {
     // A re-tune loads and unloads the model up to four times. Ten at once used

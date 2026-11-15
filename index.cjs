@@ -64,8 +64,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
   const bridgeService = createBridgeService(app, dependencies);
 
   function normalizeServerConfig(options = {}) {
+    // Deduplicated keeping first occurrences: the stored order is the priority
+    // order, and a legacy config with repeats would otherwise show (and move)
+    // the same path twice.
     const aiDataPaths = Array.isArray(options.aiDataPaths)
-      ? options.aiDataPaths.map((item) => String(item || '').trim()).filter(Boolean)
+      ? [...new Set(options.aiDataPaths.map((item) => String(item || '').trim()).filter(Boolean))]
       : [];
 
     return {
@@ -256,9 +259,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       },
       historyApiKey: {
         type: 'string',
-        title: 'History API key (remote servers only)',
+        title: 'History API key (servers other than this one)',
         description:
-          'Bearer token for a history server that is not this machine. The operator\'s own session is forwarded only to this server on localhost — a cookie minted here is replayable against another Signal K instance, so a remote host is never sent it and needs a credential issued for itself. Leave blank for local history, or for an unauthenticated remote one.',
+          'Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator\'s own session is forwarded only to this server (a loopback address on the port it listens on) — a cookie minted here is replayable against another Signal K instance, so anything else is never sent it and needs a credential issued for itself. Leave blank for this server\'s own history, or for an unauthenticated one.',
         default: ''
       },
       historyProvider: {
@@ -272,7 +275,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         type: 'string',
         title: 'Signal K server URL (optional)',
         description:
-          'Where to reach the History API. Leave blank to call this server on localhost. Set it for history served by another Signal K instance, or when this server runs behind TLS with a certificate localhost cannot verify.',
+          'Where to reach the History API. Leave blank to call this server on localhost. Set it for history served by another Signal K instance (with its own History API key). With TLS on, leave it blank and start Signal K with NODE_EXTRA_CA_CERTS set to ssl-cert.pem in its configuration directory, so its own certificate verifies on localhost.',
         default: ''
       },
       historyTimeoutMs: {
@@ -304,6 +307,10 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // The same fallback the bridge applies: an unset `aiDataPaths` means the
       // default live paths, and those are what an empty history list reuses.
       paths: resolveHistoryPaths({ ...config, aiDataPaths: normalizeAiDataPaths(config) }),
+      // True when no history paths are stored and the list above is reused
+      // from the live selection: it follows that selection, so it is not
+      // reordered on its own (that would freeze it into a fixed list).
+      derived: !(Array.isArray(config.historyPaths) && config.historyPaths.length > 0),
       durationSeconds: window.durationSeconds,
       resolutionSeconds: window.resolutionSeconds,
       samples: config.historySamples,
@@ -329,6 +336,10 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return 400;
       case 'unauthorized':
         return 401;
+      // The request was valid but the stored state it refers to has moved on
+      // (a path another save removed, a list that is not stored at all).
+      case 'conflict':
+        return 409;
       case 'disabled':
         return 503;
       case 'timeout':
@@ -368,6 +379,24 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
     res.status(503).json({
       error: { code: 'disabled', message: 'AI Bridge is stopped.' }
+    });
+    return true;
+  };
+
+  // A save the plugin stopped right after: the change is stored, so the
+  // reply says so (and that it need not be made again) instead of the
+  // generic "stopped", and sends no stopped plugin's lists.
+  const rejectIfStoppedAfterSave = (res, saved) => {
+    if (running) {
+      return false;
+    }
+    res.status(503).json({
+      error: {
+        code: 'disabled',
+        message: saved
+          ? 'The change was saved, but the plugin stopped before it could reply; reload once it runs again instead of making the change again.'
+          : 'AI Bridge is stopped.'
+      }
     });
     return true;
   };
@@ -492,6 +521,92 @@ module.exports = function createPlugin(app, dependencies = {}) {
     return false;
   };
 
+  // Every write to the stored options goes through this one queue. Each
+  // handler used to copy pluginOptions, await the save, then assign its copy
+  // back - so two overlapping saves (a live and a history path selection, say)
+  // both started from the same options and the later one silently undid the
+  // earlier, while both reported success.
+  let optionsWriteQueue = Promise.resolve();
+
+  /**
+   * Read-modify-save the plugin's options, one at a time. `change` gets the
+   * options as they are once every earlier save has finished and returns the
+   * new options; they are stored, then applied to the running plugin.
+   * Returning the options it was given unchanged (the same object) means
+   * "nothing to change": nothing is written, so a no-op neither rewrites the
+   * stored settings nor fails on a host that cannot store them.
+   */
+  const updatePluginOptions = (change) => {
+    const run = optionsWriteQueue.then(async () => {
+      // A restart while a save is in flight replaces pluginOptions with the
+      // options the server started with. The change is then made again on
+      // those and saved again, so neither memory nor disk keeps an older copy
+      // - and a save queued while the plugin was stopped (pluginOptions is {}
+      // then) writes nothing at all instead of storing just its own change.
+      // What the last write stored: this change ('change'), the restart's
+      // own options put back because the redo had nothing to do ('restart'),
+      // or nothing yet.
+      let stored;
+      const stopped = () => {
+        const error = new Error(
+          stored === 'change'
+            ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
+            : stored === 'restart'
+              ? 'The plugin stopped; the stored settings are the ones it restarted with (which may or may not hold this change).'
+              : 'The plugin is stopped; nothing was saved.'
+        );
+        error.code = 'disabled';
+        error.statusCode = 503;
+        return error;
+      };
+      // Three attempts, then a fourth pass only to report: stopped, or kept
+      // restarting.
+      for (let attempt = 0; ; attempt += 1) {
+        if (!running) throw stopped();
+        if (attempt === 3) {
+          const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
+          error.code = 'conflict';
+          error.statusCode = 409;
+          throw error;
+        }
+        const generation = lifecycleGeneration;
+        const updated = change(pluginOptions);
+        if (updated === pluginOptions) {
+          // Redone after a restart and nothing to change now - but an
+          // earlier attempt already stored a copy made from the older
+          // options: put the restart's options back on disk.
+          if (stored) {
+            await new Promise((resolve, reject) => {
+              app.savePluginOptions(pluginOptions, (error) => (error ? reject(error) : resolve()));
+            });
+            stored = 'restart';
+            // Restarted again while that was written: start over on the
+            // newest options, so disk ends with what the plugin runs.
+            if (generation !== lifecycleGeneration) continue;
+          }
+          return updated;
+        }
+        if (typeof app.savePluginOptions !== 'function') {
+          const error = new Error('This Signal K server does not let plugins store their own settings.');
+          error.code = 'unknown';
+          error.statusCode = 501;
+          throw error;
+        }
+        await new Promise((resolve, reject) => {
+          app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
+        });
+        stored = 'change';
+        if (generation === lifecycleGeneration) {
+          pluginOptions = updated;
+          return updated;
+        }
+      }
+    });
+    // A failed save must not wedge the queue for the next one.
+    optionsWriteQueue = run.catch(() => {});
+    return run;
+  };
+
   /** A path list from the panel: strings, trimmed, deduplicated, bounded. */
   const normalizeSelection = (value, limit) => {
     if (!Array.isArray(value)) {
@@ -541,29 +656,16 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
 
-      const updated = {
-        ...pluginOptions,
-        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
-        ...(historyPaths === undefined ? {} : { historyPaths })
-      };
-
-      if (typeof app.savePluginOptions !== 'function') {
-        res.status(501).json({
-          error: {
-            code: 'unknown',
-            message: 'This Signal K server does not let plugins store their own settings.'
-          }
-        });
-        return;
-      }
-
-      await new Promise((resolve, reject) => {
-        app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
-      });
-
       // Applied to the running plugin as well as stored, so the next question
       // uses the new selection without waiting for a restart.
-      pluginOptions = updated;
+      await updatePluginOptions((current) => ({
+        ...current,
+        ...(aiDataPaths === undefined ? {} : { aiDataPaths }),
+        ...(historyPaths === undefined ? {} : { historyPaths })
+      }));
+      // Stopped between the save and this reply: a stopped plugin's empty
+      // options are not the selection, so they are not sent as one.
+      if (rejectIfStoppedAfterSave(res, true)) return;
 
       const config = getConfig();
       res.status(200).json({
@@ -572,6 +674,174 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
     } catch (error) {
       sendError(res, error, 500, 'Could not save the path selection.');
+    }
+  };
+
+  /**
+   * A stored path list as the panel shows it: the first occurrence of each
+   * normalised form (`normalizeOne` gives '' for an entry the shown list
+   * drops), at most `limit` of them, each with its index in the raw list.
+   */
+  const shownEntries = (raw, normalizeOne, limit) => {
+    const stored = Array.isArray(raw) ? raw : [];
+    const shown = [];
+    const seen = new Set();
+    for (let index = 0; index < stored.length && shown.length < limit; index += 1) {
+      const key = normalizeOne(stored[index]);
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        shown.push({ key, index });
+      }
+    }
+    return shown;
+  };
+
+  /**
+   * Move one entry of a stored path list by one place, in the raw stored list.
+   *
+   * The list the panel shows (`shownEntries`) is mapped back to the raw
+   * entries that produced it, and the move swaps the two raw entries for
+   * `path` and its neighbour in that shown order. Everything else stored
+   * (wildcards the history list ignores, blanks, repeats, entries past the
+   * cap, spacing) stays where and as it was, so a move changes the order and
+   * nothing else.
+   *
+   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved' },
+   * with `list` (the new raw list) and `neighbour` (the path swapped with)
+   * for 'moved' only.
+   */
+  const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
+    const shown = shownEntries(raw, normalizeOne, limit);
+    if (shown.length === 0) {
+      return { outcome: 'no-stored-list' };
+    }
+    const position = shown.findIndex((entry) => entry.key === path);
+    if (position < 0) {
+      return { outcome: 'not-found' };
+    }
+    const target = position + delta;
+    if (target < 0 || target >= shown.length) {
+      return { outcome: 'unchanged' };
+    }
+    const list = [...raw];
+    const from = shown[position].index;
+    const to = shown[target].index;
+    [list[from], list[to]] = [list[to], list[from]];
+    return { outcome: 'moved', list, neighbour: shown[target].key };
+  };
+
+  /** One live entry as the shown list has it: trimmed, '' when blank. */
+  const normalizeLiveEntry = (item) => String(item || '').trim();
+  /** One history entry as the shown list has it: its spec, '' when dropped (blank, wildcard). */
+  const normalizeHistoryEntry = (item) => normalizeHistoryConfig({ historyPaths: [item] }).historyPaths[0] || '';
+
+  /** Both selections as they now are; liveSelected includes the defaults, as the live picker starts from it. */
+  const currentLists = () => {
+    const config = getConfig();
+    return {
+      aiDataPaths: config.aiDataPaths,
+      liveSelected: normalizeAiDataPaths(config),
+      history: describeHistory(config)
+    };
+  };
+
+  /**
+   * POST /paths/move { kind: 'live' | 'history', path, delta }: move one path
+   * in the stored selection, applied to the selection as stored when its turn
+   * in the options-write queue comes - not to a list the panel read earlier,
+   * which another save, another browser or a quick second click may have made
+   * stale. Every answer that gets this far (moved, already at the end, or a
+   * 409 conflict) carries both selections as they now are, so the panel can
+   * show the stored list whether or not the move happened.
+   */
+  const movePathHandler = async (req, res) => {
+    if (rejectIfStopped(res)) {
+      return;
+    }
+    if (!isSelectionWriteAllowed(req)) {
+      res.status(401).json({
+        error: { code: 'unauthorized', message: 'Changing the path selection requires a Signal K login with write access.' }
+      });
+      return;
+    }
+    try {
+      const body = await readJsonBody(req);
+      const kind = body && body.kind;
+      const path = body && typeof body.path === 'string' ? body.path : '';
+      // The number itself: `true`, "1" and [1] all coerce to 1 and are not a move.
+      const delta = body ? body.delta : undefined;
+      if ((kind !== 'live' && kind !== 'history') || !path || (delta !== -1 && delta !== 1)) {
+        res.status(400).json({
+          error: { code: 'validation-failed', message: 'Send kind ("live" or "history"), path, and delta (-1 or 1).' }
+        });
+        return;
+      }
+      let outcome = 'unchanged';
+      const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
+      const normalizeOne = kind === 'live' ? normalizeLiveEntry : normalizeHistoryEntry;
+      const limit = kind === 'live' ? Number.POSITIVE_INFINITY : MAX_HISTORY_PATHS;
+      // The paths this move swapped `path` with. A restart from options one
+      // of its attempts wrote already has the move - `path` sits right
+      // before (moved up) or after (moved down) that neighbour - and redoing
+      // it there would move the path twice. Judged on the shown entries
+      // without the cap, so a restart whose list was tidied, gained paths
+      // (pushing the neighbour past the cap) or came from an earlier attempt
+      // still counts as moved, as long as `path` and that neighbour are
+      // still next to each other and `path` itself is still shown (within
+      // the cap). A path the restart pushed past the cap is answered as no
+      // longer in the selection, as any move of it would be.
+      const neighbours = [];
+      await updatePluginOptions((current) => {
+        const shown = shownEntries(current[key], normalizeOne, Number.POSITIVE_INFINITY).map((entry) => entry.key);
+        const at = shown.indexOf(path);
+        // shown[-1] is undefined, so a neighbour no longer in the list never
+        // matches a path that is first.
+        if (at >= 0 && at < limit && neighbours.includes(shown[at - delta])) {
+          outcome = 'moved';
+          return current;
+        }
+        const result = moveInStoredList(current[key], normalizeOne, limit, path, delta);
+        // History reusing the live paths, or the default live selection, has
+        // no stored list to reorder (and reordering would freeze it into one).
+        outcome = result.outcome;
+        if (result.outcome !== 'moved') {
+          // The same object back when nothing moves, so nothing is written.
+          return current;
+        }
+        neighbours.push(result.neighbour);
+        return { ...current, [key]: result.list };
+      });
+      // Stopped between the save and this reply: no lists from a stopped
+      // plugin for the panel to take as the selection.
+      if (rejectIfStoppedAfterSave(res, outcome === 'moved')) return;
+      const lists = currentLists();
+      if (outcome === 'no-stored-list' || outcome === 'not-found') {
+        res.status(statusForCode('conflict')).json({
+          error: {
+            code: 'conflict',
+            message:
+              outcome === 'not-found'
+                ? `${path} is no longer in the saved selection; the list has been refreshed.`
+                : 'There is no saved list to reorder: save a selection from the picker first.'
+          },
+          ...lists
+        });
+        return;
+      }
+      res.status(200).json(lists);
+    } catch (error) {
+      // `running` again here: a stop between the queue's answer and this
+      // catch must not send a stopped plugin's empty lists.
+      if (errorCode(error) === 'conflict' && running) {
+        // "Kept restarting while saving": the lists as they now are, like
+        // every other conflict, so the panel can refresh.
+        res.status(statusForCode('conflict')).json({
+          error: { code: 'conflict', message: errorMessage(error, 'Could not move the path.') },
+          ...currentLists()
+        });
+        return;
+      }
+      sendError(res, error, 500, 'Could not move the path.');
     }
   };
 
@@ -857,6 +1127,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/history/paths', historyPathsHandler);
       router.get('/signalk/paths', selfPathsHandler);
       router.post('/paths/selection', saveSelectionHandler);
+      router.post('/paths/move', movePathHandler);
       routesRegistered = true;
     },
     stop: () => {

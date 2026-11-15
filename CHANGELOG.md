@@ -7,8 +7,133 @@ this project uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Path selections can be put in priority order.** The `AI Path Selection`
+  and `History Context` cards list the saved paths with ↑/↓ controls, saved on
+  each move. The prompt budget gives earlier entries the first claim on the
+  context window, but the only order available was the picker's alphabetical
+  one, and every save from the picker re-sorted the list. Saving from the
+  picker now keeps the stored order and adds newly ticked paths at the end.
+  Each move is made on the server (`POST /paths/move`) against the selection
+  as stored and sends no list, so a move cannot overwrite another browser's
+  or an earlier save's change with a stale copy. A history list that reuses
+  the AI selection is not reorderable on its own, so a click cannot freeze it
+  into a fixed list.
+  History series reach the model in the stored order, not the provider's
+  column order. Repeats in an old stored selection are shown once.
+- **Review fixes for path moves**: a move swaps the two entries in the list
+  as stored and leaves the rest alone (it used to rewrite a history list in
+  its normalised form, dropping wildcards, repeats and entries past the cap);
+  a move that changes nothing writes nothing, so it no longer fails with 501
+  on a server that cannot store plugin settings; `delta` must be the number
+  1 or -1; a stale move answers `409` with code `conflict` and the lists as
+  stored, and the card shows them. The panel makes one change to the path
+  lists at a time - Save and the arrows are disabled while a move or a save
+  is in flight, so a save can no longer undo a move - and a status read that
+  was sent before a list change no longer puts the older order back.
+  Follow-ups from the review of those fixes: after a stale move the pickers
+  are re-ticked from the stored selection, so Save cannot put back a path
+  another browser removed; a late status read keeps only the newer order, and
+  one that lands after a later read is ignored, so it cannot bring back an
+  older model or history counters; a save still in flight when the plugin
+  restarts no longer puts the older options back in memory. And from the
+  review of those: a save in flight across a restart is made again on the
+  restart's options, so disk matches memory, and a save queued while the
+  plugin stops writes nothing instead of storing only its own change; and
+  the pickers take only what another browser changed (on every move reply,
+  the default live selection included), keeping unsaved ticks. Then: a redone
+  change with nothing left to do puts the restart's options back on disk; a
+  save the plugin stopped after says it was saved; and after a picker save
+  the picker compares with what the server uses (the defaults, for an empty
+  list), not with what was ticked. A re-save after a second restart starts
+  over on the newest options.
+- **History API fixes** (from the reviews of the pull request):
+  - Overlapping saves of the live and history path selections no longer
+    undo each other: every write to the plugin's options goes through one
+    queue, and a save waiting in it while the plugin stops writes nothing.
+  - **Security:** the operator's session is forwarded to the History API only
+    when it is this Signal K server: a loopback host on this server's own port.
+    A `historyServerUrl` of `localhost` at another port used to receive the
+    operator's cookie or bearer token, because only the hostname was checked.
+    It is now treated like another host and given `historyApiKey`, if set. "This
+    server" covers every port it listens on, picked the way Signal K picks
+    them (`PORT`, else `port`, else 3000; with TLS also `SSLPORT`, else
+    `sslport`, else 3443), so naming it explicitly, on its TLS port say,
+    keeps working; a 401 from a local service at another port says it was not
+    recognised as this server instead of calling it remote.
+  - **Security:** under systemd socket activation (`LISTEN_FDS`, the
+    `signalk-server-setup` port-80 install) the defaults 3000 and 3443 no
+    longer count as this server, since nothing of Signal K's listens there and
+    another service (Grafana on 3000, say) would have been sent the session.
+    A settings `port` or
+    `sslport` overridden by `PORT` or `SSLPORT` no longer counts either, and
+    `EXTERNALPORT` outside socket activation is no longer the port the default
+    History API URL is called on. With TLS on, that URL is now the HTTPS port
+    (`sslport`), not `port`, which carries only the redirect. A 401/403 from a
+    server that was sent the configured `historyApiKey` now shows the server's
+    error and says the key was rejected, instead of saying the session was not
+    sent.
+  - **Security:** under systemd socket activation, the default 3000 no longer
+    counts as this server (on an install whose socket is 80, Grafana often
+    holds 3000); the port is the one Signal K advertises, which
+    `signalk-server-setup` writes as the socket's own. With no valid port
+    known, the default History API URL is not called at all instead of
+    falling back to `localhost:3000`, and the reason is what the message
+    gives. A failed call names its cause (`fetch failed: ECONNREFUSED`), and
+    a rejected TLS certificate says how to make it verify
+    (`NODE_EXTRA_CA_CERTS`; see docs/history.md). The listener object is a
+    server internal plugins may not use, so it is not read. With TLS on,
+    only the HTTPS port counts (the HTTP port only redirects), a failed call
+    no longer quotes credentials from `historyServerUrl` back into the
+    panel or the prompt (a URL with a user name or password, or one that is
+    not a valid URL, is refused when the settings are read and never
+    called; the message names the setting or `SIGNALK_AI_BRIDGE_HISTORY_URL`
+    and says what to change, a URL with a query or fragment - even an empty
+    one - is refused too, and a setting of only spaces no longer hides
+    `SIGNALK_AI_BRIDGE_HISTORY_URL`), and the settings text no longer suggests a
+    `historyServerUrl` for a certificate localhost cannot verify.
+  - History API responses with a byte-order mark are read, as
+    `response.json()` reads them. Responses are read at most 16 MB far, so a
+    huge body is refused before it is held in the server's memory, and the
+    read does not wait on a cancel that never settles. Error bodies are read
+    at most 4 kB, keeping only the bytes within that limit. A History API
+    URL with a query or fragment after an API path is refused.
+  - The panel keeps a newer status when an older read fails.
+  - From CodeRabbit's review of the removal: a body whose declared length is
+    over the limit is refused without waiting on its cancel, and a move is
+    not made twice when the plugin restarts from the options it stored.
+  - A save the plugin was stopped during answers 503 saying what is stored:
+    the change, or, when its last write put the restart's options back, that
+    those are what is stored; it no longer answers "kept restarting" (409), and
+    a move no longer sends a stopped plugin's empty lists for the panel to
+    take as the selection.
+  - An error reply's body is waited for at most 2 s, by every request the
+    plugin makes (Ollama's client, the model preload, the History API,
+    TensorRT-LLM): the request's own timer used to stop once a non-2xx status
+    arrived, so a 500 whose body never came held a question, a re-tune (and
+    every streamed question behind it) or the history read for good.
+    TensorRT-LLM error JSON after a byte-order mark is read, as before.
+- **A shorter README, with the depth moved to `docs/`.** The README had grown
+  to 1,100 lines, and it is also the plugin's App Store page, so a new user
+  scrolled past 350 lines of Jetson memory tuning before reaching how to use
+  the panel. It is now a short landing page: what the plugin does, the two
+  parts it needs, quick start, compose files, the panel, the key settings and
+  a documentation index. The detailed sections moved unchanged to
+  `docs/jetson.md`, `docs/how-it-works.md`, `docs/history.md`,
+  `docs/settings.md` and `docs/development.md`, with their cross-links
+  updated.
+
 ### Changed
 
+- CI tests on Node 24 and 26 (the reusable Signal K plugin CI and this
+  repository's own `ci` jobs); Node 22 is no longer in the matrix.
+
+- **Watchkeeper is its own plugin.** The background watch of every path,
+  developed for this release, moved to
+  [signalk-watchkeeper](https://github.com/KEGustafsson/signalk-watchkeeper)
+  before release: Ask AI and the watch have different needs, and the watch
+  needs no model at all.
 - **A question no longer pays for a timestamp on every leaf.** Each value in
   the snapshot carried its ISO timestamp as a sibling key, which told the model
   nothing about a value refreshed a second ago and cost more characters than the

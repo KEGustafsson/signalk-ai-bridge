@@ -85,6 +85,115 @@ describe('createTimedFetch', () => {
     assert.equal(await response.text(), 'nope');
   });
 
+  it('bounds an error reply\'s body, even with the timeout disabled', async () => {
+    const { ERROR_BODY_TIMEOUT_MS } = require('../lib/http-utils.cjs');
+    const timedFetch = createTimedFetch(
+      async (_input, init) => {
+        const response = stalledBodyResponse(init.signal);
+        return new Response(response.body, { status: 500 });
+      },
+      0
+    );
+    await withEventLoopAlive(async () => {
+      const response = await timedFetch('http://localhost:11434/api/chat');
+      const started = Date.now();
+      await assert.rejects(response.text(), (error) => error.code === 'timeout');
+      assert.ok(Date.now() - started < ERROR_BODY_TIMEOUT_MS + 1000);
+    });
+  });
+
+  it('times out an error body even when fetch ignores the abort', async () => {
+    const timedFetch = createTimedFetch(
+      async () => new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 }),
+      0
+    );
+    await withEventLoopAlive(async () => {
+      const response = await timedFetch('http://localhost:11434/api/chat');
+      // A timeout, not an empty body passed off as the whole reply.
+      await assert.rejects(response.text(), (error) => error.code === 'timeout');
+    });
+  });
+
+  it('lets go of the caller\'s abort listener when an error body is never read', async () => {
+    const caller = new AbortController();
+    let listeners = 0;
+    const add = caller.signal.addEventListener.bind(caller.signal);
+    const remove = caller.signal.removeEventListener.bind(caller.signal);
+    caller.signal.addEventListener = (type, fn, options) => {
+      if (type === 'abort') listeners += 1;
+      return add(type, fn, options);
+    };
+    caller.signal.removeEventListener = (type, fn, options) => {
+      if (type === 'abort') listeners -= 1;
+      return remove(type, fn, options);
+    };
+    const timedFetch = createTimedFetch(async () => new Response('oops', { status: 500 }), 100);
+    await withEventLoopAlive(async () => {
+      for (let index = 0; index < 20; index += 1) {
+        await timedFetch('http://localhost:11434/api/chat', { signal: caller.signal });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    assert.equal(listeners, 0);
+  });
+
+  it('stops watching the request\'s abort once a body has ended', async () => {
+    let listeners = 0;
+    const timedFetch = createTimedFetch(async (_input, init) => {
+      const add = init.signal.addEventListener.bind(init.signal);
+      const remove = init.signal.removeEventListener.bind(init.signal);
+      init.signal.addEventListener = (type, fn, options) => {
+        if (type === 'abort') listeners += 1;
+        return add(type, fn, options);
+      };
+      init.signal.removeEventListener = (type, fn, options) => {
+        if (type === 'abort') listeners -= 1;
+        return remove(type, fn, options);
+      };
+      return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }, 1000);
+    const response = await timedFetch('http://localhost:11434/api/tags');
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(listeners, 0);
+  });
+
+  it('does not keep a reaction per chunk of a long body', async () => {
+    // Collected before each measurement, so only what the read still holds
+    // is counted.
+    require('node:v8').setFlagsFromString('--expose_gc');
+    const gc = require('node:vm').runInNewContext('gc');
+    let sent = 0;
+    const chunk = new Uint8Array(16);
+    const timedFetch = createTimedFetch(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              sent += 1;
+              if (sent > 200000) controller.close();
+              else controller.enqueue(chunk);
+            }
+          }),
+          { status: 200 }
+        ),
+      60000
+    );
+    const response = await timedFetch('http://localhost:11434/api/chat');
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const reader = response.body.getReader();
+    let grown = 0;
+    for (let count = 1; ; count += 1) {
+      const { done } = await reader.read();
+      if (done) break;
+      if (count === 190000) {
+        gc();
+        grown = process.memoryUsage().heapUsed - before;
+      }
+    }
+    assert.ok(grown < 10 * 1024 * 1024, `the read held ${Math.round(grown / 1024 / 1024)} MB after 190,000 chunks`);
+  });
+
   it('reports a timeout rather than a bare abort', async () => {
     const timedFetch = createTimedFetch(
       (_input, init) =>

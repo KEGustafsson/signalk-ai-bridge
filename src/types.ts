@@ -11,7 +11,7 @@ export interface EmbeddedWebAppApi {
 }
 
 export interface ApiError {
-  readonly code: 'unauthorized' | 'validation-failed' | 'timeout' | 'unknown';
+  readonly code: 'unauthorized' | 'validation-failed' | 'conflict' | 'timeout' | 'unknown';
   readonly message: string;
 }
 
@@ -81,6 +81,8 @@ export interface AiHistoryFetchStatus {
 export interface AiHistoryStatus {
   readonly enabled: boolean;
   readonly paths: readonly string[];
+  /** True when the paths are reused from the live selection, not stored. */
+  readonly derived?: boolean;
   readonly durationSeconds: number;
   readonly resolutionSeconds: number;
   readonly samples: number;

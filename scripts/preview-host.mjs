@@ -178,6 +178,11 @@ function createSignalKAppShim() {
     selfId: 'urn:mrn:signalk:uuid:preview-vessel',
     setPluginStatus: (message) => console.log(`[plugin status] ${message}`),
     setPluginError: (message) => console.error(`[plugin error] ${message}`),
+    // Stored for the life of the preview, so the panel's saves work.
+    savePluginOptions: (options, callback) => {
+      console.log('[plugin options saved]');
+      callback();
+    },
     debug: () => {},
     error: (message) => console.error(message),
     getSelfPath: (path) =>

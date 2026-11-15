@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 
 const requiredFiles = [
   'src/AppPanel.tsx',
@@ -19,6 +20,11 @@ const requiredFiles = [
   'lib/tensorrt-service.cjs',
   'index.cjs',
   'README.md',
+  'docs/jetson.md',
+  'docs/how-it-works.md',
+  'docs/history.md',
+  'docs/settings.md',
+  'docs/development.md',
   'CHANGELOG.md',
   'LICENSE',
   'docker-compose.gemma.yml',
@@ -120,5 +126,18 @@ const pluginCi = fs.readFileSync('.github/workflows/plugin-ci.yml', 'utf8');
 assert.match(pluginCi, /SignalK\/signalk-server\/\.github\/workflows\/plugin-ci\.yml@/);
 assert.match(pluginCi, /build-command: npm run build/);
 assert.match(pluginCi, /test-command: npm run test/);
+// The registry takes 10 points off unless plugin-ci ran on the exact commit a
+// release was published from, so it runs on every pushed branch and tag:
+// on.push lists '**' for both, with no exclusions and no path filter.
+{
+  const workflow = parseYaml(pluginCi);
+  const push = workflow && workflow.on && workflow.on.push;
+  assert.ok(push && typeof push === 'object', 'plugin-ci must run on push');
+  const runsOnEvery = (key) =>
+    Array.isArray(push[key]) && push[key].includes('**') && !push[key].some((item) => String(item).startsWith('!'));
+  assert.ok(runsOnEvery('branches'), 'plugin-ci must run on every pushed branch');
+  assert.ok(runsOnEvery('tags'), 'plugin-ci must run on every pushed tag');
+  assert.ok(!('paths' in push) && !('paths-ignore' in push), 'plugin-ci must not filter pushes by path');
+}
 
 console.log('smoke-ok');
