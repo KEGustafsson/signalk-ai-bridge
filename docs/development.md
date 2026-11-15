@@ -55,9 +55,11 @@ Two workflows run on pull requests and pushes:
   lifecycle, deprecated and internal API usage, `npm pack` contents and an
   `--ignore-scripts` App Store install — across Linux x64/arm64, macOS and
   Windows on Node 22 and 24, plus a live `signalk-server` install. It runs on
-  every pushed branch and tag as well as on pull requests, so whichever commit
-  a release is published from has a run for the registry to find.
-- **`ci`** (pull requests and pushes to `main`) runs the repository's own smoke test, type check, unit tests and a
+  every pushed branch and tag as well as on pull requests: GitHub starts a
+  push run for the newest commit of each push, which is the commit a release
+  is normally published from.
+- **`ci`** (pull requests and pushes to `main`) runs the repository's own
+  smoke test, type check, unit tests and a
   production `npm audit`, and then packs the plugin, installs the tarball with
   production dependencies only and runs the suite again from there — which is
   how the plugin registry runs it.
@@ -75,16 +77,20 @@ things about a release matter beyond the code in it:
   after the release is merged). `npm publish` records the commit it published
   from as `gitHead`, and the registry needs that together with the
   `repository` field to find this plugin's `signalk-plugin-ci` run for the
-  release; plugin-ci runs on every pushed branch and tag, so any pushed
-  commit has one. Publishing from an unpacked tarball or a tree without `.git` leaves
-  `gitHead` unset, and the score takes a 10-point `no-plugin-ci` penalty for a
-  workflow that did in fact run.
+  release. GitHub starts a push run only for the newest commit of a push (not
+  for the commits before it, nor with `[skip ci]`), so publish from a commit
+  that was the tip of a push, or push a tag on the release commit, which
+  starts a run there, and let it start before publishing. Publishing from an
+  unpacked tarball or a tree without `.git` leaves `gitHead` unset, and the
+  score takes a 10-point `no-plugin-ci` penalty for a workflow that did in
+  fact run.
 - **Make the release `latest`.** The registry tests the version npm's
-  `latest` dist-tag points at, and its page shows the newest stable release
-  (a pre-release only when there is none). Publish with `--tag latest` - npm
-  11 refuses a pre-release such as `0.2.0-beta.1` without an explicit `--tag`
-  - or move it afterwards with
-  `npm dist-tag add signalk-ai-bridge@<version> latest`.
+  `latest` dist-tag points at and marks every other version outdated, so its
+  page shows `latest` once it has scanned it. Publish with `--tag latest`
+  (npm 11 refuses a pre-release such as `0.2.0-beta.1` without an explicit
+  `--tag`), or move it afterwards with
+  `npm dist-tag add signalk-ai-bridge@<version> latest`. A pre-release on
+  `latest` is also what a plain `npm install` and the App Store install.
 - **Keep the suite in the tarball.** The registry runs `npm test` inside the
   installed plugin. `npm run lint` asserts that everything it reads —
   `scripts/run-tests.mjs`, `test/`, `src/` and the two `tsconfig` files — is

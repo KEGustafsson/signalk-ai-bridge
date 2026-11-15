@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { parse as parseYaml } from 'yaml';
 
 const requiredFiles = [
   'src/AppPanel.tsx',
@@ -126,41 +127,17 @@ assert.match(pluginCi, /SignalK\/signalk-server\/\.github\/workflows\/plugin-ci\
 assert.match(pluginCi, /build-command: npm run build/);
 assert.match(pluginCi, /test-command: npm run test/);
 // The registry takes 10 points off unless plugin-ci ran on the exact commit a
-// release was published from, so it runs on every pushed branch and tag.
-// The `push:` block is read on its own (up to the next key at its indent),
-// and its lists may be block or flow style, quoted either way.
+// release was published from, so it runs on every pushed branch and tag:
+// on.push lists '**' for both, with no exclusions and no path filter.
 {
-  const lines = pluginCi.replace(/\r\n/g, '\n').split('\n');
-  const start = lines.findIndex((line) => /^\s*push:\s*(#.*)?$/.test(line));
-  assert.ok(start >= 0, 'plugin-ci must run on push');
-  const indent = lines[start].search(/\S/);
-  const block = [];
-  for (const line of lines.slice(start + 1)) {
-    if (line.trim() && !line.trim().startsWith('#') && line.search(/\S/) <= indent) break;
-    block.push(line.replace(/\s+#.*$/, ''));
-  }
-  const allows = (key) => {
-    const text = block.join('\n');
-    const flow = new RegExp(`^\\s*${key}:\\s*\\[([^\\]]*)\\]`, 'm').exec(text);
-    const items = flow
-      ? flow[1].split(',')
-      : (() => {
-          const at = block.findIndex((line) => new RegExp(`^\\s*${key}:\\s*$`).test(line));
-          if (at < 0) return [];
-          const own = block[at].search(/\S/);
-          const found = [];
-          for (const line of block.slice(at + 1)) {
-            if (!line.trim()) continue;
-            if (line.search(/\S/) <= own) break;
-            const item = /^\s*-\s*(.*)$/.exec(line);
-            if (item) found.push(item[1]);
-          }
-          return found;
-        })();
-    return items.map((item) => item.trim().replace(/^(['"])(.*)\1$/, '$2')).includes('**');
-  };
-  assert.ok(allows('branches'), 'plugin-ci must run on every pushed branch');
-  assert.ok(allows('tags'), 'plugin-ci must run on every pushed tag');
+  const workflow = parseYaml(pluginCi);
+  const push = workflow && workflow.on && workflow.on.push;
+  assert.ok(push && typeof push === 'object', 'plugin-ci must run on push');
+  const runsOnEvery = (key) =>
+    Array.isArray(push[key]) && push[key].includes('**') && !push[key].some((item) => String(item).startsWith('!'));
+  assert.ok(runsOnEvery('branches'), 'plugin-ci must run on every pushed branch');
+  assert.ok(runsOnEvery('tags'), 'plugin-ci must run on every pushed tag');
+  assert.ok(!('paths' in push) && !('paths-ignore' in push), 'plugin-ci must not filter pushes by path');
 }
 
 console.log('smoke-ok');
