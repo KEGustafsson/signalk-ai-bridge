@@ -1676,6 +1676,23 @@ describe('reading a History API response', () => {
     assert.equal(text.length, 4096);
   });
 
+  it('does not wait on a too-large history body whose cancel never settles', async () => {
+    const { readJsonBounded } = require('../lib/history-service.cjs');
+    const stuck = {
+      body: {
+        getReader: () => ({
+          read: async () => ({ done: false, value: new Uint8Array(1024 * 1024).fill(32) }),
+          cancel: () => new Promise(() => {})
+        })
+      }
+    };
+    const outcome = await Promise.race([
+      readJsonBounded(stuck, 4 * 1024 * 1024).then(() => 'read', (error) => error.code || error.message),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 1000))
+    ]);
+    assert.equal(outcome, 'too-large');
+  });
+
   it('keeps only the bytes within the error-body limit, however large the first chunk', async () => {
     const { readTextBounded } = require('../lib/history-service.cjs');
     const kept = [];

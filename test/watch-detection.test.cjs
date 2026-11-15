@@ -960,6 +960,46 @@ describe('review of 21f6d5f: healed saves and replay counts', () => {
     assert.ok(detectors(restarted).includes(`dropout:${path}`), 'its death is reported');
   });
 
+  it('keeps the cycle of a settled path that merely slowed down off across a restart', () => {
+    const engine = newEngine();
+    const path = 'environment.inside.cyc.temperature';
+    const rand = noise(61);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 293 + 0.05 * rand()]]);
+    // One sample every 5 min for 4 h: a slower rate, not outages.
+    const start = t;
+    t = run(engine, t, t + 4 * HOUR, SECOND, (at) => ((at - start) % (5 * MINUTE) === 0 ? [[path, 293 + 0.05 * rand()]] : []));
+    const saved = JSON.parse(JSON.stringify(engine.exportState(t)));
+    const restarted = newEngine();
+    restarted.importState(saved, t);
+    t = run(restarted, t, t + 2 * HOUR, 5 * SECOND, () => []);
+    assert.ok(!detectors(restarted).includes(`dropout:${path}`), 'a quiet spell after the restart is not a dropout');
+  });
+
+  it('names each distinct replay failure once', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - HOUR;
+    const paths = Array.from({ length: 60 }, (_, index) => `environment.s${index}.temperature`);
+    // The first request is read; the five after it all fail the same way.
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = (new URL(url).searchParams.get('paths') || '').split(',').map((item) => item.split(':')[0]).filter(Boolean);
+      if (!asked.includes(paths[0])) return new Response('boom', { status: 500 });
+      const data = [];
+      for (let at = start; at <= end; at += 10 * SECOND) data.push([new Date(at).toISOString(), ...asked.map(() => 290.15)]);
+      return new Response(JSON.stringify({ values: asked.map((path) => ({ path })), data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT1H', paths }, { historyTimeoutMs: 5000 });
+      assert.equal(result.pathsFailed, 50);
+      assert.equal(result.note.split('HTTP 500').length - 1, 1, result.note);
+      assert.match(result.note, /5 requests/);
+    } finally {
+      service.stop();
+    }
+  });
+
   it('replays a path asked for twice once', async () => {
     const end = Date.parse('2026-06-02T08:00:00Z');
     const start = end - HOUR;

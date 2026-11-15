@@ -356,7 +356,8 @@ this project uses [semantic versioning](https://semver.org/).
     that: a retired rule's input stored past the cap goes with its rule;
     a "changes" rule honours a mute that began and ended between two
     ticks, and never restores an earlier mute's value; an edited rule's
-    pending duration starts again on its new path; an error body keeps
+    pending duration starts again on its new path (and, from the next
+    review, its open finding closes); an error body keeps
     only bytes within its limit and does not wait on its cancel; a part,
     place or number of a thing is the thing (`bilgePump` for "the bilge",
     `anchorLightMasthead`, `bilgePump1`), only a separate device (blower,
@@ -364,7 +365,19 @@ this project uses [semantic versioning](https://semver.org/).
     the thing itself is taken or offered first; a numbered inside room
     whose display name is a cabin or saloon is inside; saves that called a
     slow cycling path settled are healed; replay counts a path asked twice
-    once and names up to three failed requests.
+    once and names up to three failed requests. And from the review of
+    842b674..56822ed: a numbered device (`engineBlower1`) is no more the
+    thing than the device; only words after the thing's own word say what
+    a path is, so `batteryCharger` is "the charger" and `engineStartRelay`
+    or `fridgeDoor` is not "the engine" or "the fridge" (beyond the thing
+    itself, at most one part or place word); a numbered inside room named
+    after an unlived thing ("Galley fridge") is not a cabin; a "changes"
+    rule added or edited after a mute does not report the mute's changes;
+    an edited rule's open finding closes and the new path waits its full
+    duration; a restart does not give a path that merely slowed down a
+    cycle limit; a History API body over 16 MB does not wait on its
+    cancel; replay names each distinct failure once, with how many
+    requests gave it.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

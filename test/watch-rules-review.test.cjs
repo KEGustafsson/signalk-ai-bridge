@@ -932,3 +932,127 @@ describe('review of 21f6d5f: parts, places and numbers of a thing', () => {
   });
 });
 
+
+describe('review of 842b674..56822ed: devices, rooms and edited rules', () => {
+  const sw = (name) => ({ path: `electrical.switches.${name}.state`, role: 'watching', valueType: 'boolean' });
+  const base = [
+    { path: 'electrical.batteries.house.voltage', role: 'watching', units: 'V' },
+    { path: 'propulsion.main.revolutions', role: 'watching', units: 'Hz' },
+    { path: 'propulsion.main.temperature', role: 'watching', units: 'K' }
+  ];
+
+  it('does not take a numbered blower or fan for the thing it is named after', () => {
+    for (const [name, text] of [
+      ['engineBlower1', 'the engine is running'],
+      ['engineBlower1', 'battery below 12 V while the engine is running'],
+      ['mainEngineBlower2', 'the main engine is running'],
+      ['fridgeFan2', 'the fridge is on']
+    ]) {
+      const result = parseRule(text, [...base, sw(name)]);
+      assert.equal(result.ok, false, `${name}: ${text}`);
+      assert.ok(result.alternatives.some((item) => item.path === `electrical.switches.${name}.state`), `${name}: ${text}`);
+    }
+  });
+
+  it('does not take another device whose word is not a known device word', () => {
+    for (const [name, text] of [
+      ['engineBilgePump', 'the engine is running'],
+      ['engineStartRelay', 'the engine is running'],
+      ['engineStartRelay', 'battery below 12 V while the engine is running'],
+      ['engineStopSolenoid', 'the engine is running'],
+      ['engineGlowPlugs', 'the engine is running'],
+      ['engineRawWaterPump', 'the engine is running'],
+      ['generatorStartRelay', 'the generator is running'],
+      ['fridgeDoor', 'the fridge is on'],
+      ['windlassUp', 'the windlass is on']
+    ]) {
+      assert.equal(parseRule(text, [...base, sw(name)]).ok, false, `${name}: ${text}`);
+    }
+  });
+
+  it('takes a device whose own word comes last, and a part, place or number of the thing', () => {
+    for (const [name, text] of [
+      ['batteryCharger', 'the charger is on'],
+      ['batteryCharger', 'battery below 12 V while the charger is on'],
+      ['batteryInverter', 'the inverter is on'],
+      ['fuelTransferPump', 'the transfer pump is on'],
+      ['tankHeater', 'the heater is on'],
+      ['cabinFanHeater', 'the cabin heater is on'],
+      ['batteryIsolator', 'the isolator is on'],
+      ['fuelPump', 'the pump is on'],
+      ['bilgePump', 'the bilge is on'],
+      ['bilgePump1', 'the bilge is on'],
+      ['fridgeCompressor', 'the fridge is on'],
+      ['anchorLightMasthead', 'the anchor light is on']
+    ]) {
+      const result = parseRule(text, [...base, sw(name)]);
+      assert.equal(result.ok, true, `${name}: ${text}`);
+      assert.equal((result.rule.when || result.rule).path, `electrical.switches.${name}.state`, `${name}: ${text}`);
+    }
+  });
+
+  it('does not count a thing named after a lived room ("Galley fridge") as that room', () => {
+    const k = (path, displayName) => ({ path, role: 'watching', units: 'K', ...(displayName ? { displayName } : {}) });
+    const boat = [k('environment.inside.0.temperature', 'Galley fridge'), k('environment.inside.1.temperature', 'Engine room'), k('environment.outside.temperature')];
+    for (const text of ['cabin temperature above 30 °C', 'saloon temperature above 30 °C']) {
+      assert.equal(parseRule(text, boat).ok, false, text);
+    }
+    const two = [k('environment.inside.0.temperature', 'Cabin fridge'), k('environment.inside.1.temperature', 'Saloon')];
+    assert.equal(parseRule('saloon temperature above 30 °C', two).rule.path, 'environment.inside.1.temperature');
+  });
+
+  it('does not report an old mute as a change to a rule added after it', () => {
+    for (const scenario of ['added', 'edited']) {
+      const engine = newEngine();
+      const pump = 'electrical.switches.bilgePump.state';
+      const light = 'electrical.switches.anchorLight.state';
+      let t = T0;
+      engine.ingest(pump, false, t);
+      engine.ingest(light, false, t);
+      if (scenario === 'edited') engine.setRules([{ id: 'r-pump', path: light, op: 'changes', source: 'manual' }]);
+      engine.tick(t);
+      engine.mute(pump, T0 + MINUTE, t);
+      t += 10 * SECOND;
+      engine.ingest(pump, false, t);
+      for (; t < T0 + 2 * MINUTE; t += 5 * SECOND) engine.tick(t);
+      engine.ingest(pump, true, T0 + 10 * MINUTE);
+      engine.ingest(pump, false, T0 + 15 * MINUTE);
+      engine.ingest(pump, true, T0 + 30 * MINUTE);
+      for (t = T0 + HOUR; t < T0 + HOUR + 100 * SECOND; t += 5 * SECOND) {
+        engine.ingest(pump, true, t);
+        engine.tick(t);
+      }
+      engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', source: 'manual' }]);
+      for (const end = t + 5 * MINUTE; t < end; t += 5 * SECOND) {
+        engine.ingest(pump, true, t);
+        engine.tick(t);
+        assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, scenario);
+      }
+    }
+  });
+
+  it('closes an edited rule\'s open finding, and opens one for the new path after its duration', () => {
+    const engine = newEngine();
+    const house = 'electrical.batteries.house.voltage';
+    const starter = 'electrical.batteries.starter.voltage';
+    const feed = (t) => {
+      engine.ingest(house, 11.5, t);
+      engine.ingest(starter, 11.8, t);
+      engine.tick(t);
+    };
+    let t = T0;
+    engine.setRules([{ id: 'r-bat', path: house, op: 'below', value: 12, forSeconds: 300, source: 'manual' }]);
+    for (; t < T0 + 400 * SECOND; t += 5 * SECOND) feed(t);
+    assert.equal(engine.status(t).activeFindings.find((item) => item.detector === 'rule').path, house);
+    engine.setRules([{ id: 'r-bat', path: starter, op: 'below', value: 12, forSeconds: 300, source: 'manual' }]);
+    const editedAt = t;
+    for (; t < editedAt + 295 * SECOND; t += 5 * SECOND) {
+      feed(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `${(t - editedAt) / SECOND} s after the edit`);
+    }
+    for (; t < editedAt + 320 * SECOND; t += 5 * SECOND) feed(t);
+    const open = engine.status(t).activeFindings.filter((item) => item.detector === 'rule');
+    assert.equal(open.length, 1);
+    assert.equal(open[0].path, starter);
+  });
+});

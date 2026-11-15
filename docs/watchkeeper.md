@@ -151,7 +151,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, the dropout limit is at least twice its longest outage, whatever the mean gap: a burst sender (ten readings a second apart, then five minutes quiet) is not reported at each quiet spell, and a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch - more than 30 gaps in a row short enough for a regular path - clears the learned cycle, and so does a plain slower rate (eight long gaps in a row); a slow cycle's own five-minute gaps never do. A restart gives a saved settled path a cycle limit back only if its outages were silences well beyond its interval (more than 1.5 times it), not a sensor that merely slowed down. While it reports, such a path does not count toward the data feed's steady paths; once its dropout is active it counts, regular and silent, so a gateway taking it down with the rest is one silent feed |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -483,7 +483,7 @@ A rule is stored data, checked deterministically on every tick:
   breaker, relay, fuse, contactor* are answered by any path with states.
   A room within the boat that is not lived in (`environment.inside.engineRoom`,
   the fridge) is not its *cabin* or *saloon*; a cabin, saloon, galley or
-  cockpit is. A state ("is on", "is fault") is first looked for among paths with
+  cockpit is, unless its name also names such a thing ("Galley fridge"). A state ("is on", "is fault") is first looked for among paths with
   states (not measurements by name or units, or a `.state`/`.mode`/
   `.status` leaf, whatever its units, or data seen as a flag or word; on a
   flag, only on/off words are values), so "the shore power is
@@ -491,9 +491,13 @@ A rule is stored data, checked deterministically on every tick:
   reading. Such a path is taken only if it answers every word of the
   subject and is the thing itself, not a separate device named after it
   (the engine's blower is no answer to "the engine is running", nor the
-  fridge's fan to "the fridge is on"); a part, place or number of the thing
-  is still the thing (`bilgePump` for "the bilge", `anchorLightMasthead`,
-  `bilgePump1`). When the plain reading is such a device, a single path
+  fridge's fan to "the fridge is on", nor `engineStartRelay` or
+  `engineBlower1`). What a path is, is said by the words after the thing's
+  own word: `batteryCharger` is "the charger". Beyond the thing itself, at
+  most one word may follow, a part or a place of it (*pump, compressor,
+  motor, masthead, forward, aft, port, starboard...*), and a number says
+  which one: `bilgePump` for "the bilge", `anchorLightMasthead` and
+  `bilgePump1` are still the thing. When the plain reading is such a device, a single path
   with states that is the thing itself is taken ("the main engine is
   running" is `propulsion.main.state`, not the main engine's blower), and
   otherwise those are offered first; a measurement
@@ -651,8 +655,9 @@ is no data for the window. The result says so
 (`truncated: true`, `rowsDropped`, and a sentence in `note`), so a provider
 that ignores the resolution cannot make a replay hold a week of one-second
 rows, while rows with a little jitter are all kept. A request that cannot be
-read (an HTTP error, a body over 16 MB) is named in `note` (the first three,
-and how many more) and counted in `pathsFailed`, and the panel shows how many
+read (an HTTP error, a body over 16 MB) is named in `note` (each distinct
+reason once, with how many requests gave it: the first three, and how many
+more) and counted in `pathsFailed`, and the panel shows how many
 of the asked paths had data. A path asked for twice is replayed once.
 
 Rows are an aggregate, so in a replay a path with a value in (nearly) every
