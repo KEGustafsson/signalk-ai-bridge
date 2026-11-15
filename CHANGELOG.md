@@ -147,9 +147,14 @@ this project uses [semantic versioning](https://semver.org/).
   sectioned options into the flat settings the plugin already read. Options
   stored flat are still read, a key set nowhere still falls back to its
   default or `SIGNALK_AI_BRIDGE_*` variable, and saving a path selection or
-  moving a path keeps every section as it is. The stored options are not
-  rewritten: after upgrading, the form shows the sections with their defaults
-  rather than the flat values, so check them before the first save.
+  moving a path keeps every section as it is.
+  Settings saved by an earlier version are moved into the sections on the
+  first start (`migrateSettings()`), so the form shows the stored values
+  instead of defaults that its first save would have put over them. A value
+  already in a section wins, the flat keys are removed, and the result is
+  stored once through the options write queue. The server log gets one line
+  naming the moved settings. Nothing is stored when nothing is flat or the
+  plugin is stopped, and a failed save is tried again on the next start.
   Messages that name a setting use its new name and section ("Advanced →
   Context window (tokens)", "History server address", "Turn on AI Bridge").
 

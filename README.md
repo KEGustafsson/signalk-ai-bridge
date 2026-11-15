@@ -109,8 +109,8 @@ The settings form starts with one switch, **Turn on AI Bridge**, and groups the
 rest into four sections. Usually only the switch and **AI model** need
 attention. In the plugin's options each section is a nested object (its key is
 in parentheses), and a setting keeps its long-standing key inside it, for
-example `aiModel.model`; settings stored flat, as before the sections, are
-still read.
+example `aiModel.model`. Settings saved by an earlier version are moved into
+the sections on the first start.
 
 | Setting | Default | |
 | --- | --- | --- |

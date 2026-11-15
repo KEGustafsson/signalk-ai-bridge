@@ -11,6 +11,7 @@ const {
   SECTIONS,
   SETTING_LABELS,
   TOP_LEVEL_KEYS,
+  migrateSettings,
   readSettings,
   settingsSchema,
   settingsUiSchema
@@ -219,6 +220,111 @@ describe('readSettings', () => {
     const options = JSON.parse(JSON.stringify(NESTED));
     readSettings(options);
     assert.deepEqual(options, NESTED);
+  });
+});
+
+/**
+ * What the admin page's form does with stored options before they are
+ * saved: fill each field it shows and that has no value with its default
+ * (react-jsonschema-form's getDefaultFormState, for this schema's shape).
+ * Fields a switch hides are not filled; keys it does not know are kept.
+ */
+function fillFormDefaults(schema, options) {
+  const filled = { ...options };
+  for (const [key, field] of Object.entries(schema.properties)) {
+    if (field.type !== 'object') {
+      if (filled[key] === undefined) filled[key] = field.default;
+      continue;
+    }
+    const section = { ...(filled[key] || {}) };
+    for (const [name, sub] of Object.entries(field.properties)) {
+      if (section[name] === undefined) section[name] = sub.default;
+    }
+    for (const [switchKey, dependency] of Object.entries(field.dependencies || {})) {
+      const branch = dependency.oneOf.find((item) => item.properties[switchKey].enum.includes(section[switchKey]));
+      for (const [name, sub] of Object.entries(branch ? branch.properties : {})) {
+        if (name !== switchKey && section[name] === undefined) section[name] = sub.default;
+      }
+    }
+    filled[key] = section;
+  }
+  return filled;
+}
+
+describe('migrateSettings', () => {
+  const FORM_KEYS = Object.values(SECTIONS).flat();
+
+  it('moves every setting stored flat into its section, with the same value, and drops the flat key', () => {
+    const { options, moved, kept } = migrateSettings(FLAT);
+    assert.deepEqual(options, NESTED);
+    assert.deepEqual([...moved].sort(), [...FORM_KEYS].sort());
+    assert.deepEqual(kept, []);
+    for (const key of FORM_KEYS) assert.equal(key in options, false, key);
+    assert.deepEqual(readSettings(options), readSettings(FLAT));
+    assert.deepEqual(normalizeAiConfig(readSettings(options), {}), normalizeAiConfig(FLAT, {}));
+    assert.deepEqual(normalizeHistoryConfig(readSettings(options), {}), normalizeHistoryConfig(FLAT, {}));
+  });
+
+  it('keeps a value already in the section over the flat one', () => {
+    const { options, moved, kept } = migrateSettings({
+      model: 'old-flat',
+      numCtx: 2048,
+      historyEnabled: true,
+      aiModel: { model: 'from-the-form' },
+      advanced: { numBatch: 128 }
+    });
+    assert.deepEqual(options, {
+      aiModel: { model: 'from-the-form' },
+      advanced: { numBatch: 128, numCtx: 2048 },
+      history: { historyEnabled: true }
+    });
+    // In the form's order: section by section.
+    assert.deepEqual(moved, ['historyEnabled', 'numCtx']);
+    assert.deepEqual(kept, ['model']);
+  });
+
+  it('changes nothing, and gives the same object back, when nothing is flat', () => {
+    for (const stored of [NESTED, {}, { enabled: false, aiDataPaths: ['a'] }, { aiModel: {}, somethingElse: 1 }]) {
+      const result = migrateSettings(stored);
+      assert.equal(result.options, stored);
+      assert.deepEqual(result.moved, []);
+    }
+    // Idempotent: a second pass has nothing to do.
+    const once = migrateSettings(FLAT).options;
+    assert.equal(migrateSettings(once).options, once);
+  });
+
+  it('keeps the switch, the path selections and keys it does not know where they are', () => {
+    const { options } = migrateSettings({ enabled: false, aiDataPaths: ['a'], historyPaths: ['b'], futureKey: { x: 1 }, model: 'm' });
+    assert.deepEqual(options, { enabled: false, aiDataPaths: ['a'], historyPaths: ['b'], futureKey: { x: 1 }, aiModel: { model: 'm' } });
+  });
+
+  it('loses no value: a section stored as something else is left alone, with its flat keys', () => {
+    const stored = { aiModel: 'not a section', model: 'm', numCtx: 4096 };
+    const { options, moved } = migrateSettings(stored);
+    assert.deepEqual(options, { aiModel: 'not a section', model: 'm', advanced: { numCtx: 4096 } });
+    assert.deepEqual(moved, ['numCtx']);
+    assert.equal(readSettings(options).model, 'm');
+  });
+
+  it('does not change the options it is given', () => {
+    const stored = JSON.parse(JSON.stringify({ ...FLAT, aiModel: { model: 'x' } }));
+    const copy = JSON.parse(JSON.stringify(stored));
+    migrateSettings(stored);
+    assert.deepEqual(stored, copy);
+  });
+
+  it('leaves nothing for the form to fill over a stored value on its first save', () => {
+    const schema = settingsSchema();
+    // Flat options, as an earlier version stored them: the form's defaults
+    // would have replaced every one of them.
+    const before = fillFormDefaults(schema, FLAT);
+    assert.notDeepEqual(readSettings(before), readSettings(FLAT));
+    // Moved into the sections first, the form keeps every stored value.
+    const after = fillFormDefaults(schema, migrateSettings(FLAT).options);
+    for (const [key, value] of Object.entries(readSettings(FLAT))) {
+      assert.deepEqual(readSettings(after)[key], value, key);
+    }
   });
 });
 

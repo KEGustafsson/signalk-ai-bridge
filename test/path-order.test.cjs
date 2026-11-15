@@ -54,7 +54,7 @@ describe('path priority order', () => {
       done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three', 'a.one'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two', 'c.three', 'a.one'] });
     try {
       const status = recorder();
       await routes['GET /ai/status']({}, status);
@@ -92,7 +92,7 @@ describe('path priority order', () => {
     // Past the cap, so the tail is stored but not shown.
     const tail = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `tail.p${index}`);
     const stored = [' b.two ', 'navigation.*', '', 'a.one', 'b.two', 'c.three:average', ...tail];
-    plugin.start({ warmupOnStart: false, historyPaths: stored });
+    plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: stored });
     try {
       const moved = recorder();
       await routes['POST /paths/move']({ body: { kind: 'history', path: 'a.one', delta: -1 } }, moved);
@@ -109,7 +109,7 @@ describe('path priority order', () => {
   it('writes nothing for a move that changes nothing, even on a host that cannot store settings', async () => {
     const host = createHost();
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const atEnd = recorder();
       await routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: 1 } }, atEnd);
@@ -134,7 +134,7 @@ describe('path priority order', () => {
       done();
     };
     const second = routesFor(counting);
-    second.plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    second.plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       await second.routes['POST /paths/move']({ body: { kind: 'live', path: 'a.one', delta: -1 } }, recorder());
       await second.routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, recorder());
@@ -155,18 +155,18 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, model: 'old-model', aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       plugin.stop();
       // The restart's list no longer has b.two: the redone move finds nothing.
-      plugin.start({ warmupOnStart: false, model: 'new-model', aiDataPaths: ['a.one', 'c.three'] });
+      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'new-model' }, aiDataPaths: ['a.one', 'c.three'] });
       finish();
       await moving;
       const last = saves[saves.length - 1];
-      assert.equal(last.model, 'new-model', 'disk holds the restart\'s options, not the older copy');
+      assert.equal(last.aiModel.model, 'new-model', 'disk holds the restart\'s options, not the older copy');
       assert.deepEqual(last.aiDataPaths, ['a.one', 'c.three']);
     } finally {
       plugin.stop();
@@ -182,25 +182,25 @@ describe('path priority order', () => {
       pending.push(done);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, model: 'm1', aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm1' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 1: b.two is gone, so the redone move has nothing to do and
       // the restart's options are written back.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, model: 'm2', aiDataPaths: ['a.one'] });
+      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm2' }, aiDataPaths: ['a.one'] });
       pending.shift()();
       await new Promise((resolve) => setImmediate(resolve));
       // Restart 2 while that re-save is in flight.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, model: 'm3', aiDataPaths: ['a.one'] });
+      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'm3' }, aiDataPaths: ['a.one'] });
       while (pending.length > 0) {
         pending.shift()();
         await new Promise((resolve) => setImmediate(resolve));
       }
       await moving;
-      assert.equal(saves[saves.length - 1].model, 'm3');
+      assert.equal(saves[saves.length - 1].aiModel.model, 'm3');
     } finally {
       plugin.stop();
     }
@@ -213,7 +213,7 @@ describe('path priority order', () => {
       finish = done;
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     const reply = recorder();
     const saving = routes['POST /paths/selection']({ body: { historyPaths: ['h.one'] } }, reply);
     await new Promise((resolve) => setImmediate(resolve));
@@ -233,20 +233,20 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, model: 'old-model', aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'old-model' }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(typeof finish, 'function', 'the save is in flight');
       plugin.stop();
-      plugin.start({ warmupOnStart: false, model: 'new-model', aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+      plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'new-model' }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
       finish();
       await moving;
       // The move is made again on the restart's options, and that is what is
       // stored and answered: no older copy on disk or in memory.
       const last = saves[saves.length - 1];
-      assert.equal(last.model, 'new-model');
+      assert.equal(last.aiModel.model, 'new-model');
       assert.deepEqual(last.aiDataPaths, ['b.two', 'a.one', 'c.three']);
       assert.deepEqual(reply.body.aiDataPaths, ['b.two', 'a.one', 'c.three']);
     } finally {
@@ -264,7 +264,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, model: 'kept-model', aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'kept-model' }, aiDataPaths: ['a.one', 'b.two'] });
     const first = routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, recorder());
     await new Promise((resolve) => setImmediate(resolve));
     const queuedReply = recorder();
@@ -274,14 +274,14 @@ describe('path priority order', () => {
     await first;
     await queued;
     assert.equal(saves.length, 1, 'the queued save must not store just its own change over the stopped options');
-    assert.equal(saves[0].model, 'kept-model');
+    assert.equal(saves[0].aiModel.model, 'kept-model');
   });
 
   it('answers a stale move with 409 conflict and the lists as stored, so the panel can refresh', async () => {
     const host = createHost();
     host.savePluginOptions = (options, done) => done();
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const gone = recorder();
       await routes['POST /paths/move']({ body: { kind: 'live', path: 'z.missing', delta: 1 } }, gone);
@@ -317,7 +317,7 @@ describe('path priority order', () => {
       }, 5);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, model: 'kept', aiDataPaths: ['a.one', 'b.two'], historyPaths: ['h.one', 'h.two'] });
+    plugin.start({ aiModel: { aiModel: { warmupOnStart: false }, model: 'kept' }, aiDataPaths: ['a.one', 'b.two'], historyPaths: ['h.one', 'h.two'] });
     try {
       const replies = [recorder(), recorder(), recorder()];
       await Promise.all([
@@ -334,7 +334,7 @@ describe('path priority order', () => {
       const last = saves[saves.length - 1];
       assert.deepEqual(last.aiDataPaths, ['a.one', 'b.two', 'c.three']);
       assert.deepEqual(last.historyPaths, ['h.two', 'h.one', 'h.three']);
-      assert.equal(last.model, 'kept');
+      assert.equal(last.aiModel.model, 'kept');
       const status = recorder();
       await routes['GET /ai/status']({}, status);
       assert.deepEqual(status.body.history.paths, ['h.two', 'h.one', 'h.three']);
@@ -352,7 +352,7 @@ describe('path priority order', () => {
       setTimeout(() => done(nth === 1 ? new Error('disk full') : null), 5);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const failed = recorder();
       const next = recorder();
@@ -371,7 +371,7 @@ describe('path priority order', () => {
 
   it('answers 409 when the plugin restarts during every attempt of a save', async () => {
     const host = createHost();
-    const options = { warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] };
+    const options = { aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] };
     let saves = 0;
     let plugin;
     host.savePluginOptions = (stored, done) => {
@@ -407,7 +407,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
@@ -436,7 +436,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: [' a.one', 'b.two', 'c.three'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: [' a.one', 'b.two', 'c.three'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
@@ -444,7 +444,7 @@ describe('path priority order', () => {
       assert.deepEqual(saves[0].aiDataPaths, [' a.one', 'c.three', 'b.two']);
       // The same order, trimmed by a hand edit before the restart.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'c.three', 'b.two'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'c.three', 'b.two'] });
       finish();
       await moving;
       assert.equal(reply.statusCode, 200);
@@ -465,7 +465,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, historyPaths: ['a.one', 'navigation.*', 'b.two', 'c.three'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: ['a.one', 'navigation.*', 'b.two', 'c.three'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'history', path: 'c.three', delta: -1 } }, reply);
@@ -473,7 +473,7 @@ describe('path priority order', () => {
       assert.deepEqual(saves[0].historyPaths, ['a.one', 'navigation.*', 'c.three', 'b.two']);
       // Restarted from the moved list with one more path added elsewhere.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, historyPaths: ['a.one', 'navigation.*', 'c.three', 'b.two', 'd.four'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: ['a.one', 'navigation.*', 'c.three', 'b.two', 'd.four'] });
       finish();
       await moving;
       assert.equal(reply.statusCode, 200);
@@ -497,7 +497,7 @@ describe('path priority order', () => {
     const full = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `p.${index}`);
     const last = full[full.length - 1];
     const before = full[full.length - 2];
-    plugin.start({ warmupOnStart: false, historyPaths: full });
+    plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: full });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'history', path: last, delta: -1 } }, reply);
@@ -507,7 +507,7 @@ describe('path priority order', () => {
       // Restarted from the moved list with a path added at the front: the
       // neighbour now sits past the cap.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, historyPaths: ['new.front', ...moved] });
+      plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: ['new.front', ...moved] });
       finish();
       await moving;
       assert.equal(reply.statusCode, 200);
@@ -529,7 +529,7 @@ describe('path priority order', () => {
     const { plugin, routes } = routesFor(host);
     const full = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `p.${index}`);
     const moving = full[full.length - 2];
-    plugin.start({ warmupOnStart: false, historyPaths: full });
+    plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: full });
     try {
       const reply = recorder();
       const pending = routes['POST /paths/move']({ body: { kind: 'history', path: moving, delta: 1 } }, reply);
@@ -539,7 +539,7 @@ describe('path priority order', () => {
       // Restarted from the moved list with a path added at the front: the
       // moved path itself is now past the cap, so it is not shown.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, historyPaths: ['new.front', ...moved] });
+      plugin.start({ aiModel: { warmupOnStart: false }, historyPaths: ['new.front', ...moved] });
       finish();
       await pending;
       assert.equal(reply.statusCode, 409);
@@ -561,7 +561,7 @@ describe('path priority order', () => {
       else done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'a.one', delta: 1 } }, reply);
@@ -569,7 +569,7 @@ describe('path priority order', () => {
       assert.deepEqual(saves[0].aiDataPaths, ['b.two', 'a.one', 'c.three']);
       // The restart no longer has b.two, the path a.one was swapped with.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'c.three'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'c.three'] });
       finish();
       await moving;
       assert.equal(reply.statusCode, 200);
@@ -588,7 +588,7 @@ describe('path priority order', () => {
       pending.push(done);
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
     try {
       const reply = recorder();
       const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
@@ -597,7 +597,7 @@ describe('path priority order', () => {
       assert.deepEqual(first.aiDataPaths, ['a.one', 'c.three', 'b.two']);
       // Restart 1 from a list reordered elsewhere: the redo moves c.three there.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, aiDataPaths: ['b.two', 'a.one', 'c.three'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['b.two', 'a.one', 'c.three'] });
       pending.shift()();
       await new Promise((resolve) => setImmediate(resolve));
       assert.deepEqual(saves[1].aiDataPaths, ['b.two', 'c.three', 'a.one']);
@@ -619,7 +619,7 @@ describe('path priority order', () => {
 
   it('answers 503 without lists when the plugin is left stopped after its last attempt', async () => {
     const host = createHost();
-    const options = { warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] };
+    const options = { aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] };
     let saves = 0;
     let plugin;
     host.savePluginOptions = (stored, done) => {
@@ -662,14 +662,14 @@ describe('path priority order', () => {
     };
     const created = routesFor(host);
     plugin = created.plugin;
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       const reply = recorder();
       const moving = created.routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
       await new Promise((resolve) => setImmediate(resolve));
       // Restarted without b.two: the redo has nothing to move and puts these options back.
       plugin.stop();
-      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one'] });
       finish();
       await moving;
       assert.equal(saves.length, 2);
@@ -701,7 +701,7 @@ describe('path priority order', () => {
       };
       const created = routesFor(host);
       plugin = created.plugin;
-      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+      plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
       const reply = recorder();
       await created.routes[route]({ body }, reply);
       assert.equal(reply.statusCode, 503, `${route} after ${depth}`);
@@ -720,7 +720,7 @@ describe('path priority order', () => {
       done();
     };
     const { plugin, routes } = routesFor(host);
-    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    plugin.start({ aiModel: { warmupOnStart: false }, aiDataPaths: ['a.one', 'b.two'] });
     try {
       for (const delta of [true, '1', '-1', [1], 2, 0.5, null]) {
         const response = recorder();

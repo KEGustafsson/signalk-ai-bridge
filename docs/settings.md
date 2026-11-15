@@ -36,20 +36,32 @@ a section a setting keeps the key it has always had:
 The switch and the two path selections (`aiDataPaths`, `historyPaths`, written
 by the panel) stay at the top level.
 
-Settings stored flat, as every version before the sections stored them
-(`"model": "qwen3:4b"` at the top level), are still read: a key in its section
-wins, and the top-level key is used when the section does not have it. A
-setting given in neither place is not set at all, so its default — or the
-environment variable below — applies. The plugin never rewrites the stored
-settings to move them into sections; saving a path selection or moving a path
-changes only that list.
+**Settings saved by an earlier version are moved into the sections on the
+first start.** Every version before the sections stored the settings flat
+(`"model": "qwen3:4b"` at the top level). The admin page's form shows only
+what the sections hold, so it would show the defaults instead, and its first
+save would put them over the stored values. On start, the plugin therefore
+moves each flat setting into its section, with its value unchanged, removes
+the flat key, and stores the result once, through the same write queue as the
+path selections. A value already in the section (written by the form) wins
+over the flat one. The switch, the path selections and keys the plugin does
+not know stay as they are. The server log gets one line naming the moved
+settings:
 
-**After upgrading from a flat configuration**, the form shows the sections
-with their defaults, not the values stored flat, because the admin page reads
-the sections only. The plugin keeps running on the flat values until the form
-is saved; once it is, what the sections hold is used. So the first time you
-open the form after upgrading, check the sections — in particular the model
-server address, the model name and the context window — before saving.
+```
+signalk-ai-bridge: moved settings saved by an earlier version into their sections: baseUrl, model, numCtx.
+```
+
+Nothing is stored when nothing is flat, which is every start after the first.
+Nothing is stored while the plugin is stopped, either. If the server cannot
+store the result, the plugin runs on the moved settings, which are the same
+values, and the next start tries again.
+
+Flat settings are still read in any case: a key in its section wins, and the
+top-level key is used when the section does not have it. A setting given in
+neither place is not set at all, so its default — or the environment variable
+below — applies. Saving a path selection or moving a path changes only that
+list and keeps every section as it is.
 
 ## Turn on AI Bridge
 

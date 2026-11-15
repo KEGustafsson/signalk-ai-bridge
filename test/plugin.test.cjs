@@ -330,7 +330,7 @@ describe('signalk-ai-bridge plugin', () => {
         }
       );
 
-      plugin.start({ warmupOnStart: false });
+      plugin.start({ aiModel: { warmupOnStart: false } });
       const routes = {};
       plugin.registerWithRouter({
         get(path, handler) {
@@ -1240,6 +1240,188 @@ describe('settings stored in sections', () => {
     const { plugin, statuses } = startWith({ ...sectioned(), enabled: false });
     try {
       assert.match(statuses.at(-1), /switch on "Turn on AI Bridge"/);
+    } finally {
+      plugin.stop();
+    }
+  });
+});
+
+describe('settings saved flat by an earlier version', () => {
+  /** Flat options, as every version before the sections stored them. */
+  const flat = () => ({
+    enabled: true,
+    baseUrl: 'http://gpu.local:11434',
+    model: 'qwen3:4b',
+    warmupOnStart: false,
+    maxTokens: 1024,
+    historyEnabled: true,
+    historySamples: 20,
+    numCtx: 4096,
+    aiDataPaths: ['a.one', 'b.two'],
+    historyPaths: ['h.one']
+  });
+  const migrated = () => ({
+    enabled: true,
+    aiDataPaths: ['a.one', 'b.two'],
+    historyPaths: ['h.one'],
+    aiModel: { baseUrl: 'http://gpu.local:11434', model: 'qwen3:4b', warmupOnStart: false },
+    answers: { maxTokens: 1024 },
+    history: { historyEnabled: true, historySamples: 20 },
+    advanced: { numCtx: 4096 }
+  });
+
+  /** Let the options write queue run what start() put on it. */
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function host(save) {
+    const saved = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: () => {},
+      savePluginOptions: (stored, done) => {
+        saved.push(JSON.parse(JSON.stringify(stored)));
+        (save || ((callback) => callback(null)))(done);
+      }
+    };
+    const plugin = createPlugin(app, {
+      fetchImpl: async () => new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    });
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    return { plugin, routes, saved };
+  }
+
+  const status = async (routes) => {
+    const response = createResponseRecorder();
+    await routes['GET /ai/status']({}, response);
+    return response.body;
+  };
+
+  it('moves them into their sections on start and stores that once, so the form shows them', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved } = host();
+    const options = flat();
+    plugin.start(options);
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0], migrated());
+      // The options it was started with are not changed in place.
+      assert.deepEqual(options, flat());
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^signalk-ai-bridge: moved settings saved by an earlier version into their sections: baseUrl, model, warmupOnStart, maxTokens, historyEnabled, historySamples, numCtx\.$/);
+      // Running on the same values as before.
+      const body = await status(routes);
+      assert.equal(body.model, 'qwen3:4b');
+      assert.equal(body.configuredNumCtx, 4096);
+      assert.equal(body.history.samples, 20);
+      // A later save keeps the sections and brings back no flat key.
+      const selection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['c.three'] } }, selection);
+      assert.equal(selection.statusCode, 200);
+      assert.deepEqual(saved[1], { ...migrated(), aiDataPaths: ['c.three'] });
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('keeps a value already in its section over the flat one', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved } = host();
+    plugin.start({ model: 'old-flat', numCtx: 2048, aiModel: { model: 'from-the-form' } });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ aiModel: { model: 'from-the-form' }, advanced: { numCtx: 2048 } }]);
+      assert.match(logged.mock.calls[0].arguments[0], /numCtx; for model the value already in its section was kept\.$/);
+      assert.equal((await status(routes)).model, 'from-the-form');
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing, and says nothing, when nothing is flat', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = host();
+    plugin.start(migrated());
+    plugin.stop();
+    plugin.start({});
+    try {
+      await settle();
+      assert.equal(saved.length, 0);
+      assert.equal(logged.mock.calls.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the moved settings when they cannot be stored, and tries again on the next start', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    let fail = true;
+    const { plugin, routes, saved } = host((done) => done(fail ? new Error('disk full') : null));
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /could not be stored \(disk full\); this is tried again on the next start\./);
+      const body = await status(routes);
+      assert.equal(body.model, 'qwen3:4b');
+      assert.equal(body.configuredNumCtx, 4096);
+
+      // The server starts it again with what is on disk: still flat.
+      fail = false;
+      plugin.stop();
+      plugin.start(flat());
+      await settle();
+      assert.equal(saved.length, 2);
+      assert.deepEqual(saved[1], migrated());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing when the plugin stops before the move gets its turn', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = host();
+    plugin.start(flat());
+    plugin.stop();
+    await settle();
+    assert.equal(saved.length, 0);
+  });
+
+  it('makes the move on the restart options when it restarts while the move is being stored', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    let restarted = false;
+    let plugin;
+    const restartOptions = { ...flat(), model: 'restarted' };
+    const made = host((done) => {
+      if (!restarted) {
+        restarted = true;
+        plugin.stop();
+        plugin.start(restartOptions);
+      }
+      done(null);
+    });
+    plugin = made.plugin;
+    plugin.start(flat());
+    try {
+      await settle();
+      // The first copy, then the restart's options moved: disk ends with what the plugin runs.
+      assert.equal(made.saved.length, 2);
+      assert.deepEqual(made.saved[1], { ...migrated(), aiModel: { ...migrated().aiModel, model: 'restarted' } });
+      assert.equal((await status(made.routes)).model, 'restarted');
     } finally {
       plugin.stop();
     }
