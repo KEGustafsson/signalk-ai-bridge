@@ -14,11 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     # A hung test would otherwise burn the 360-minute default.
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24', '26']
+    name: quality (Node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -33,11 +38,16 @@ jobs:
     # quietly becomes load-bearing fails here rather than in the next score.
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24', '26']
+    name: packaged-tests (Node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
       - run: npm ci
       - run: npm run build
       - run: npm pack --ignore-scripts

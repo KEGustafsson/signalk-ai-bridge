@@ -54,7 +54,7 @@ Two workflows run on pull requests and pushes:
   load it — package metadata, entry point, `schema()`, the start/stop/restart
   lifecycle, deprecated and internal API usage, `npm pack` contents and an
   `--ignore-scripts` App Store install — across Linux x64/arm64, macOS and
-  Windows on Node 22 and 24, plus a live `signalk-server` install. It runs on
+  Windows on Node 24 and 26, plus a live `signalk-server` install. It runs on
   every pushed branch and tag as well as on pull requests: GitHub starts a
   push run for the newest commit of each push, which is the commit a release
   is normally published from.

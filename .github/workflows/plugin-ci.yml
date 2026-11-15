@@ -5,7 +5,7 @@
 # load it: package.json metadata, entry point, schema(), start/stop/restart
 # lifecycle, deprecated/internal API usage, npm pack contents, an
 # --ignore-scripts App Store install, and the plugin's own test suite — across
-# Linux x64/arm64, macOS, Windows (Node 22 and 24), and a live signalk-server
+# Linux x64/arm64, macOS, Windows (Node 24 and 26), and a live signalk-server
 # install.
 #
 # The Signal K plugin registry also reads the build/test commands declared here
@@ -39,7 +39,7 @@ jobs:
       # configuration.
       build-command: npm run build
       test-command: npm run test
-      node-versions: '["22", "24"]'
+      node-versions: '["24", "26"]'
       # Install the packed plugin into a real signalk-server and assert it
       # loads and starts.
       enable-signalk-integration: true

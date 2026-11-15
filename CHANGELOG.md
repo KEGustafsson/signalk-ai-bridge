@@ -126,6 +126,9 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Changed
 
+- CI tests on Node 24 and 26 (the reusable Signal K plugin CI and this
+  repository's own `ci` jobs); Node 22 is no longer in the matrix.
+
 - **Watchkeeper is its own plugin.** The background watch of every path,
   developed for this release, moved to
   [signalk-watchkeeper](https://github.com/KEGustafsson/signalk-watchkeeper)
