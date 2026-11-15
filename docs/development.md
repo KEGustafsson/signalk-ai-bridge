@@ -46,7 +46,7 @@ npm run build
 
 ## Continuous Integration
 
-Two workflows run on every push and pull request:
+Two workflows run on pull requests and pushes:
 
 - **`signalk-plugin-ci`** calls the canonical
   [`SignalK/signalk-server` reusable plugin CI workflow](https://github.com/SignalK/signalk-server/blob/master/.github/workflows/plugin-ci.yml).
@@ -57,7 +57,7 @@ Two workflows run on every push and pull request:
   Windows on Node 22 and 24, plus a live `signalk-server` install. It runs on
   every pushed branch and tag as well as on pull requests, so whichever commit
   a release is published from has a run for the registry to find.
-- **`ci`** runs the repository's own smoke test, type check, unit tests and a
+- **`ci`** (pull requests and pushes to `main`) runs the repository's own smoke test, type check, unit tests and a
   production `npm audit`, and then packs the plugin, installs the tarball with
   production dependencies only and runs the suite again from there — which is
   how the plugin registry runs it.
@@ -68,18 +68,23 @@ when it scores the plugin, so they are asserted by `npm run lint`.
 
 ### Publishing
 
-The registry scores the **published package**, not this repository, so two
+The registry scores the **published package**, not this repository, so three
 things about a release matter beyond the code in it:
 
-- **Publish from a git checkout of `main`.** `npm publish` records the commit
-  it published from as `gitHead`, and the registry needs that together with the
+- **Publish from a git checkout of a pushed commit** (by convention, `main`
+  after the release is merged). `npm publish` records the commit it published
+  from as `gitHead`, and the registry needs that together with the
   `repository` field to find this plugin's `signalk-plugin-ci` run for the
-  release. Publishing from an unpacked tarball or a tree without `.git` leaves
+  release; plugin-ci runs on every pushed branch and tag, so any pushed
+  commit has one. Publishing from an unpacked tarball or a tree without `.git` leaves
   `gitHead` unset, and the score takes a 10-point `no-plugin-ci` penalty for a
   workflow that did in fact run.
-- **Make the release `latest`.** The registry scores only the version npm's
-  `latest` dist-tag points at, so a release meant to be scored is published
-  without `--tag next` (or moved to `latest` with `npm dist-tag add`).
+- **Make the release `latest`.** The registry tests the version npm's
+  `latest` dist-tag points at, and its page shows the newest stable release
+  (a pre-release only when there is none). Publish with `--tag latest` - npm
+  11 refuses a pre-release such as `0.2.0-beta.1` without an explicit `--tag`
+  - or move it afterwards with
+  `npm dist-tag add signalk-ai-bridge@<version> latest`.
 - **Keep the suite in the tarball.** The registry runs `npm test` inside the
   installed plugin. `npm run lint` asserts that everything it reads —
   `scripts/run-tests.mjs`, `test/`, `src/` and the two `tsconfig` files — is
