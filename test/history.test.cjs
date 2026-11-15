@@ -1660,6 +1660,23 @@ describe('reading a History API response', () => {
     assert.equal(outcome, 'too-large');
   });
 
+  it('does not wait for an error body that never arrives', async () => {
+    const stalled = () =>
+      new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 });
+    let timer;
+    const outcome = await Promise.race([
+      listHistoryPaths({ config: { settings: {} } }, historyConfig({ historyServerUrl: 'http://boat.example:3000', historyTimeoutMs: 60000 }), {
+        fetchImpl: async () => stalled()
+      }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 5000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.notEqual(outcome, 'hung', 'the listing answered');
+    assert.match(outcome.message, /HTTP 500/);
+  });
+
   it('keeps only the bytes within the error-body limit, however large the first chunk', async () => {
     const { readTextBounded } = require('../lib/history-service.cjs');
     const kept = [];

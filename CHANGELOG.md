@@ -103,6 +103,10 @@ this project uses [semantic versioning](https://semver.org/).
   - From CodeRabbit's review of the removal: a body whose declared length is
     over the limit is refused without waiting on its cancel, and a move is
     not made twice when the plugin restarts from the options it stored.
+  - An error reply's body is waited for at most 2 s, for the History API and
+    for TensorRT-LLM: the request's own timer stops once a non-2xx status
+    arrives, so a 500 whose body never came held the history read, and the
+    question behind it, for good.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use

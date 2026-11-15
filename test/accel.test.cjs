@@ -191,6 +191,25 @@ describe('TensorRT-LLM backend', () => {
     assert.equal(result.createdAt, new Date(1776000000 * 1000).toISOString());
   });
 
+  it('does not wait for an error body that never arrives', async () => {
+    let timer;
+    const outcome = await Promise.race([
+      queryAiModel({ prompt: 'Status?' }, config, {
+        fetchImpl: async () =>
+          new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 })
+      }).then(
+        () => 'answered',
+        (error) => error
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 5000);
+      })
+    ]);
+    clearTimeout(timer);
+    assert.notEqual(outcome, 'hung', 'the request settled');
+    assert.ok(outcome instanceof Error);
+  });
+
   it('sends a bearer token when an API key is configured', async () => {
     let authorization;
 
