@@ -703,6 +703,16 @@ module.exports = function createPlugin(app, dependencies = {}) {
   /** One history entry as the shown list has it: its spec, '' when dropped (blank, wildcard). */
   const normalizeHistoryEntry = (item) => normalizeHistoryConfig({ historyPaths: [item] }).historyPaths[0] || '';
 
+  /** Both selections as they now are; liveSelected includes the defaults, as the live picker starts from it. */
+  const currentLists = () => {
+    const config = getConfig();
+    return {
+      aiDataPaths: config.aiDataPaths,
+      liveSelected: normalizeAiDataPaths(config),
+      history: describeHistory(config)
+    };
+  };
+
   /**
    * POST /paths/move { kind: 'live' | 'history', path, delta }: move one path
    * in the stored selection, applied to the selection as stored when its turn
@@ -752,7 +762,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       await updatePluginOptions((current) => {
         const shown = shownEntries(current[key], normalizeOne, Number.POSITIVE_INFINITY).map((entry) => entry.key);
         const at = shown.indexOf(path);
-        if (at >= 0 && at < limit && neighbours.some((neighbour) => shown.indexOf(neighbour) === at - delta)) {
+        // shown[-1] is undefined, so a neighbour no longer in the list never
+        // matches a path that is first.
+        if (at >= 0 && at < limit && neighbours.includes(shown[at - delta])) {
           outcome = 'moved';
           return current;
         }
@@ -767,14 +779,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
         neighbours.push(result.neighbour);
         return { ...current, [key]: result.list };
       });
-      const config = getConfig();
-      // liveSelected is the live selection in use, the defaults included, as
-      // the live picker starts from it.
-      const lists = {
-        aiDataPaths: config.aiDataPaths,
-        liveSelected: normalizeAiDataPaths(config),
-        history: describeHistory(config)
-      };
+      const lists = currentLists();
       if (outcome === 'no-stored-list' || outcome === 'not-found') {
         res.status(statusForCode('conflict')).json({
           error: {
@@ -790,6 +795,15 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }
       res.status(200).json(lists);
     } catch (error) {
+      if (errorCode(error) === 'conflict') {
+        // "Kept restarting while saving": the lists as they now are, like
+        // every other conflict, so the panel can refresh.
+        res.status(statusForCode('conflict')).json({
+          error: { code: 'conflict', message: errorMessage(error, 'Could not move the path.') },
+          ...currentLists()
+        });
+        return;
+      }
       sendError(res, error, 500, 'Could not move the path.');
     }
   };

@@ -391,6 +391,7 @@ describe('path priority order', () => {
       assert.equal(reply.statusCode, 409);
       assert.equal(reply.body.error.code, 'conflict');
       assert.match(reply.body.error.message, /kept restarting/);
+      assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'b.two'], 'the lists come with it, so the panel can refresh');
     } finally {
       plugin.stop();
     }
@@ -545,6 +546,34 @@ describe('path priority order', () => {
       assert.match(reply.body.error.message, /no longer in the saved selection/);
       assert.ok(!reply.body.history.paths.includes(moving));
       assert.deepEqual(saves[saves.length - 1].historyPaths, ['new.front', ...moved], 'nothing moved again');
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('redoes a move of the first path when the restart lost its neighbour', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'a.one', delta: 1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(saves[0].aiDataPaths, ['b.two', 'a.one', 'c.three']);
+      // The restart no longer has b.two, the path a.one was swapped with.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'c.three'] });
+      finish();
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.aiDataPaths, ['c.three', 'a.one'], 'moved, as a fresh move of the first path would be');
     } finally {
       plugin.stop();
     }
