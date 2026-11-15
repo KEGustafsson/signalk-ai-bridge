@@ -102,6 +102,18 @@ describe('createTimedFetch', () => {
     });
   });
 
+  it('times out an error body even when fetch ignores the abort', async () => {
+    const timedFetch = createTimedFetch(
+      async () => new Response(new ReadableStream({ pull() { return new Promise(() => {}); } }), { status: 500 }),
+      0
+    );
+    await withEventLoopAlive(async () => {
+      const response = await timedFetch('http://localhost:11434/api/chat');
+      // A timeout, not an empty body passed off as the whole reply.
+      await assert.rejects(response.text(), (error) => error.code === 'timeout');
+    });
+  });
+
   it('reports a timeout rather than a bare abort', async () => {
     const timedFetch = createTimedFetch(
       (_input, init) =>
