@@ -812,3 +812,18 @@ describe('review of 5f24be6: a settled sender that changes to bursts, and edge d
   });
 });
 
+describe('review of 659cde9: a learned outage cycle still sees the sensor die', () => {
+  it('reports the death of a sensor whose outage rhythm was learned', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(37);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    t = run(engine, t, t + 3 * HOUR, 5 * SECOND, () => []);
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'three hours of silence after its cycle is a dropout');
+  });
+});
+

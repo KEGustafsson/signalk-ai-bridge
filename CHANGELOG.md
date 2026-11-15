@@ -315,7 +315,16 @@ this project uses [semantic versioning](https://semver.org/).
     really changed is not reported for ever, while 20 equal outages of a
     failing sensor still are; a duplicated edge row is replayed once;
     "Which" lists only paths a qualifier names; empty quotes are told from
-    the gap between two quoted values.
+    the gap between two quoted values. The review of that: a numbered
+    instance is no longer preferred to a named one when the request gives
+    no number; a state path is taken only if it answers every word and is
+    the thing itself (no blower for "the engine is running", no switch
+    for "the shore power voltage is off"), with the choice asked among
+    paths with states when neither fits; a `.state` leaf has states
+    whatever its units; empty quotes before punctuation are refused; a
+    word no path answers to is fine when the subject is clear without it
+    and the qualifier agrees; a learned outage cycle still reports the
+    sensor dying (a silence twice its longest outage).
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

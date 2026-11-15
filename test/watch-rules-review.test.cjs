@@ -614,3 +614,47 @@ describe('review of 5f24be6: numbers, kind words, duplicate meanings and states'
   });
 });
 
+describe('review of 659cde9: numbered and named instances, states, empty quotes', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : { role: 'watching', ...item }));
+
+  it('does not prefer a numbered instance to a named one when no number was given', () => {
+    const boat = at(['electrical.batteries.0.voltage', 'electrical.batteries.house.voltage', 'propulsion.0.revolutions', 'propulsion.port.revolutions']);
+    assert.equal(parseRule('battery below 12 V', boat).ok, false, 'which battery?');
+    assert.equal(parseRule('rpm above 3000', boat).ok, false, 'which engine?');
+    const venus = at([{ path: 'electrical.batteries.279.voltage', displayName: 'Starter' }, 'electrical.batteries.house.voltage']);
+    assert.equal(parseRule('battery below 12 V', venus).ok, false);
+    // A display name that only repeats the path says nothing about which.
+    const tanks = at([{ path: 'tanks.freshWater.0.currentLevel', displayName: 'Bow water tank' }, { path: 'tanks.fuel.0.currentLevel', displayName: 'Port fuel' }]);
+    assert.equal(parseRule('holding tank above 80 %', tanks).ok, false);
+  });
+
+  it('does not take a switch named after a thing for the thing, nor for a named measurement', () => {
+    const sail = at(['propulsion.main.state', 'electrical.switches.mainEngineBlower.state', 'electrical.batteries.engine.voltage', 'propulsion.main.temperature']);
+    for (const text of ['the engine is running', 'the engine is not running', 'coolant above 95 °C while the engine is running']) {
+      const result = parseRule(text, sail);
+      const used = result.rule && [result.rule.path, result.rule.when && result.rule.when.path];
+      assert.ok(!used || !used.includes('electrical.switches.mainEngineBlower.state'), `${text}: ${JSON.stringify(used)}`);
+    }
+    const words = at(['electrical.ac.shorePower.voltage', { path: 'electrical.shorePower.state', valueType: 'boolean' }, 'environment.inside.engineRoom.temperature', { path: 'electrical.switches.engineRoomBilgePump.state', valueType: 'boolean' }]);
+    assert.match(parseRule('the shore power voltage is off', words).reason, /is a measurement/);
+    assert.match(parseRule('the engine room temperature is "high"', words).reason, /is a measurement/);
+    assert.equal(parseRule('the shore power is on', words).rule.path, 'electrical.shorePower.state');
+    // Neither answers every word: asked among the switches, not refused as a measurement.
+    const banks = at([{ path: 'electrical.switches.bank.0.3.state', displayName: 'Engine room blower' }, 'environment.inside.engineRoom.temperature']);
+    const fan = parseRule('the engine room fan is off', banks);
+    assert.equal(fan.ok, false);
+    assert.doesNotMatch(fan.reason, /is a measurement/);
+    assert.equal(fan.alternatives[0].path, 'electrical.switches.bank.0.3.state');
+  });
+
+  it('refuses empty quotes before punctuation, and accepts a subject a qualifier agrees with', () => {
+    const mode = at([{ path: 'electrical.inverters.main.mode', valueType: 'string' }]);
+    for (const text of ['inverter mode changes to "":', 'inverter mode changes to ""…', "the inverter mode switches to ''…", 'the inverter mode=""']) {
+      assert.match(parseRule(text, mode).reason || '', /empty quoted value/, text);
+    }
+    const minimal = at(['electrical.batteries.house.voltage', 'propulsion.main.revolutions']);
+    assert.equal(parseRule('main battery below 12 V on the house bank', minimal).rule.path, 'electrical.batteries.house.voltage');
+    assert.match(parseRule('alert when above 3000 rpm on the port engine', at(['propulsion.main.revolutions'])).reason, /No path on this vessel matches "on the port engine"|port/);
+  });
+});
+
