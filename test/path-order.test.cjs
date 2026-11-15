@@ -483,6 +483,39 @@ describe('path priority order', () => {
     }
   });
 
+  it('does not move a history path twice when a restart pushes its neighbour past the cap', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    const full = Array.from({ length: MAX_HISTORY_PATHS }, (_, index) => `p.${index}`);
+    const last = full[full.length - 1];
+    const before = full[full.length - 2];
+    plugin.start({ warmupOnStart: false, historyPaths: full });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'history', path: last, delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      const moved = [...full.slice(0, -2), last, before];
+      assert.deepEqual(saves[0].historyPaths, moved);
+      // Restarted from the moved list with a path added at the front: the
+      // neighbour now sits past the cap.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, historyPaths: ['new.front', ...moved] });
+      finish();
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(saves[saves.length - 1].historyPaths, ['new.front', ...moved]);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('does not move a path twice when two restarts arrive out of order', async () => {
     const host = createHost();
     const pending = [];

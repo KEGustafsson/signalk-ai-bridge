@@ -674,7 +674,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
    * cap, spacing) stays where and as it was, so a move changes the order and
    * nothing else.
    *
-   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved', list, neighbour }.
+   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved' },
+   * with `list` (the new raw list) and `neighbour` (the path swapped with)
+   * for 'moved' only.
    */
   const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
     const shown = shownEntries(raw, normalizeOne, limit);
@@ -739,12 +741,14 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // The paths this move swapped `path` with. A restart from options one
       // of its attempts wrote already has the move - `path` sits right
       // before (moved up) or after (moved down) that neighbour - and redoing
-      // it there would move the path twice. Judged on the list as shown, so
-      // a restart whose list was tidied, or gained or lost other paths, or
-      // came from an earlier attempt, still counts as moved.
+      // it there would move the path twice. Judged on the shown entries
+      // without the cap, so a restart whose list was tidied, gained paths
+      // (pushing the neighbour past the cap) or came from an earlier attempt
+      // still counts as moved, as long as `path` and that neighbour are
+      // still next to each other.
       const neighbours = [];
       await updatePluginOptions((current) => {
-        const shown = shownEntries(current[key], normalizeOne, limit).map((entry) => entry.key);
+        const shown = shownEntries(current[key], normalizeOne, Number.POSITIVE_INFINITY).map((entry) => entry.key);
         const at = shown.indexOf(path);
         if (at >= 0 && neighbours.some((neighbour) => shown.indexOf(neighbour) === at - delta)) {
           outcome = 'moved';
