@@ -131,4 +131,4 @@ which links to the history settings.
 
 ## Licence
 
-Apache-2.0. See [`LICENSE`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/LICENSE).
+European Union Public Licence v. 1.2 (EUPL-1.2). See [`LICENSE`](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/LICENSE).

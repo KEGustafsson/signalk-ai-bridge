@@ -126,6 +126,10 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Changed
 
+- **The licence is now the European Union Public Licence v. 1.2
+  (EUPL-1.2)**, instead of Apache-2.0: `LICENSE` and the `license` field in
+  `package.json`.
+
 - CI tests on Node 24 and 26 (the reusable Signal K plugin CI and this
   repository's own `ci` jobs); Node 22 is no longer in the matrix.
 
