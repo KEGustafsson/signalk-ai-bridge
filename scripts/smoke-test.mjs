@@ -70,6 +70,10 @@ assert.match(pluginSource, /gpuAutoTune/);
   assert.deepEqual(Object.keys(schema.properties), ['enabled', 'aiModel', 'answers', 'history', 'advanced']);
   assert.equal(plugin.uiSchema().aiModel.apiKey['ui:widget'], 'password');
   assert.equal(plugin.uiSchema().history.historyApiKey['ui:widget'], 'password');
+  // The form's one docs link must name a page that exists.
+  const docsLink = schema.description.match(/blob\/main\/(docs\/[\w.-]+\.md)/);
+  assert.ok(docsLink, 'schema() description must link to a page under docs/');
+  assert.ok(fs.existsSync(docsLink[1]), `schema() links to ${docsLink[1]}, which does not exist`);
 }
 
 // The registry and app store both read package.json metadata directly, so a

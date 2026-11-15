@@ -346,7 +346,8 @@ describe('the settings form', () => {
     assert.equal(schema.description.split(DOCS_URL).length, 2, 'the docs are linked once');
     assert.match(schema.properties.answers.description, /Safe to leave/);
     assert.match(schema.properties.advanced.description, /Leave these unless you know your GPU/);
-    assert.equal(fs.existsSync(path.join(__dirname, '..', 'docs', path.basename(DOCS_URL))), true);
+    // That the linked page exists is checked by scripts/smoke-test.mjs: the
+    // packaged plugin, where this suite also runs, ships without docs/.
   });
 
   it('holds every setting it held before, in its section, with a title, a short description and the same default', () => {
