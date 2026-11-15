@@ -12,6 +12,7 @@ const { createWatchEngine, normalizeWatchConfig } = require('../lib/watch/engine
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
 const T0 = Date.parse('2026-06-01T08:00:00Z');
 
 const VESSEL = [
@@ -779,6 +780,30 @@ describe('CodeRabbit review of b103610..014985f, and the review of 014985f: rule
       engine.tick(t);
       assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `at ${(t - T0) / SECOND} s`);
     }
+  });
+
+  it('does not report a change made in a mute that began and ended between two ticks, and reports one after', () => {
+    const engine = newEngine();
+    const pump = 'electrical.switches.bilgePump.state';
+    let t = T0;
+    engine.ingest(pump, false, t);
+    engine.setRules([{ id: 'r-pump', path: pump, op: 'changes', source: 'manual' }]);
+    engine.tick(t);
+    // Between the ticks at 0 s and 5 s: muted, on, unmuted.
+    engine.mute(pump, t + HOUR, t + 1 * SECOND);
+    engine.ingest(pump, true, t + 2 * SECOND);
+    engine.unmute(pump, t + 3 * SECOND);
+    for (t += 5 * SECOND; t <= T0 + 60 * SECOND; t += 5 * SECOND) {
+      engine.ingest(pump, true, t);
+      engine.tick(t);
+      assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 0, `at ${(t - T0) / SECOND} s`);
+    }
+    // A change after the unmute is reported.
+    for (const end = t + 30 * SECOND; t <= end; t += 5 * SECOND) {
+      engine.ingest(pump, false, t);
+      engine.tick(t);
+    }
+    assert.equal(engine.status(t).activeFindings.filter((item) => item.detector === 'rule').length, 1);
   });
 
   it('keeps a rule input however many other leaves arrived first', () => {
