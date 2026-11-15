@@ -64,7 +64,7 @@ const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
 assert.ok(pkg.keywords.includes('signalk-node-server-plugin'), 'Missing signalk-node-server-plugin keyword');
 assert.ok(typeof pkg.repository?.url === 'string', 'package.json needs a repository URL');
 assert.ok(typeof pkg.engines?.node === 'string', 'package.json needs engines.node');
-assert.equal(pkg.license, 'Apache-2.0', 'package.json license must be the SPDX id Apache-2.0, matching LICENSE');
+assert.equal(pkg.license, 'EUPL-1.2', 'package.json license must be the SPDX id EUPL-1.2, matching LICENSE');
 assert.ok(
   Array.isArray(pkg.signalk?.screenshots) && pkg.signalk.screenshots.length > 0,
   'package.json needs at least one signalk.screenshots entry'
