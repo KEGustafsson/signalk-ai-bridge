@@ -448,6 +448,36 @@ describe('path priority order', () => {
       await moving;
       assert.equal(reply.statusCode, 200);
       assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      assert.deepEqual(saves[saves.length - 1].aiDataPaths, ['a.one', 'c.three', 'b.two'], 'disk holds what the plugin runs');
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('does not move a path twice when the restart has the move and another path', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, historyPaths: ['a.one', 'navigation.*', 'b.two', 'c.three'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'history', path: 'c.three', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(saves[0].historyPaths, ['a.one', 'navigation.*', 'c.three', 'b.two']);
+      // Restarted from the moved list with one more path added elsewhere.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, historyPaths: ['a.one', 'navigation.*', 'c.three', 'b.two', 'd.four'] });
+      finish();
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.history.paths, ['a.one', 'c.three', 'b.two', 'd.four']);
+      assert.deepEqual(saves[saves.length - 1].historyPaths, ['a.one', 'navigation.*', 'c.three', 'b.two', 'd.four']);
     } finally {
       plugin.stop();
     }
@@ -485,6 +515,7 @@ describe('path priority order', () => {
       await moving;
       assert.equal(reply.statusCode, 200);
       assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      assert.deepEqual(saves[saves.length - 1].aiDataPaths, first.aiDataPaths, 'disk holds what the plugin runs');
     } finally {
       plugin.stop();
     }

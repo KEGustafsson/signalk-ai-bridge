@@ -646,35 +646,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
   };
 
   /**
-   * Move one entry of a stored path list by one place, in the raw stored list.
-   *
-   * `normalizeOne` gives an entry's normalised form (or '' for an entry the
-   * normalised list drops), and `limit` how many distinct entries the
-   * normalised list keeps. The list the panel shows - first occurrences of
-   * each normalised form, up to `limit` - is mapped back to the raw entries
-   * that produced it, and the move swaps the two raw entries for `path` and
-   * its neighbour in that shown order. Everything else stored (wildcards the
-   * history list ignores, blanks, repeats, entries past the cap, spacing)
-   * stays where and as it was, so a move changes the order and nothing else.
-   *
-   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved', list }.
+   * A stored path list as the panel shows it: the first occurrence of each
+   * normalised form (`normalizeOne` gives '' for an entry the shown list
+   * drops), at most `limit` of them, each with its index in the raw list.
    */
-  /** A stored list as the panel shows it: normalized keys, first occurrences, at most `limit`. */
-  const shownKeys = (raw, normalizeOne, limit) => {
-    const keys = [];
-    const seen = new Set();
-    for (const item of Array.isArray(raw) ? raw : []) {
-      if (keys.length >= limit) break;
-      const key = normalizeOne(item);
-      if (key && !seen.has(key)) {
-        seen.add(key);
-        keys.push(key);
-      }
-    }
-    return keys;
-  };
-
-  const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
+  const shownEntries = (raw, normalizeOne, limit) => {
     const stored = Array.isArray(raw) ? raw : [];
     const shown = [];
     const seen = new Set();
@@ -685,6 +661,23 @@ module.exports = function createPlugin(app, dependencies = {}) {
         shown.push({ key, index });
       }
     }
+    return shown;
+  };
+
+  /**
+   * Move one entry of a stored path list by one place, in the raw stored list.
+   *
+   * The list the panel shows (`shownEntries`) is mapped back to the raw
+   * entries that produced it, and the move swaps the two raw entries for
+   * `path` and its neighbour in that shown order. Everything else stored
+   * (wildcards the history list ignores, blanks, repeats, entries past the
+   * cap, spacing) stays where and as it was, so a move changes the order and
+   * nothing else.
+   *
+   * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved', list, neighbour }.
+   */
+  const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
+    const shown = shownEntries(raw, normalizeOne, limit);
     if (shown.length === 0) {
       return { outcome: 'no-stored-list' };
     }
@@ -696,11 +689,11 @@ module.exports = function createPlugin(app, dependencies = {}) {
     if (target < 0 || target >= shown.length) {
       return { outcome: 'unchanged' };
     }
-    const list = [...stored];
+    const list = [...raw];
     const from = shown[position].index;
     const to = shown[target].index;
     [list[from], list[to]] = [list[to], list[from]];
-    return { outcome: 'moved', list };
+    return { outcome: 'moved', list, neighbour: shown[target].key };
   };
 
   /** One live entry as the shown list has it: trimmed, '' when blank. */
@@ -740,24 +733,24 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
       let outcome = 'unchanged';
-      // The lists this move stored, as the panel shows them. A restart from
-      // options one of its attempts wrote already has the move: redoing it
-      // there would move the path twice. Compared as shown (trimmed, first
-      // occurrences, capped), so a rewrite that only tidied the list counts.
-      const produced = [];
+      const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
       const normalizeOne = kind === 'live' ? normalizeLiveEntry : normalizeHistoryEntry;
       const limit = kind === 'live' ? Number.POSITIVE_INFINITY : MAX_HISTORY_PATHS;
+      // The paths this move swapped `path` with. A restart from options one
+      // of its attempts wrote already has the move - `path` sits right
+      // before (moved up) or after (moved down) that neighbour - and redoing
+      // it there would move the path twice. Judged on the list as shown, so
+      // a restart whose list was tidied, or gained or lost other paths, or
+      // came from an earlier attempt, still counts as moved.
+      const neighbours = [];
       await updatePluginOptions((current) => {
-        const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
-        const shown = shownKeys(current[key], normalizeOne, limit);
-        if (shown.length > 0 && produced.some((list) => list.length === shown.length && list.every((item, index) => item === shown[index]))) {
+        const shown = shownEntries(current[key], normalizeOne, limit).map((entry) => entry.key);
+        const at = shown.indexOf(path);
+        if (at >= 0 && neighbours.some((neighbour) => shown.indexOf(neighbour) === at - delta)) {
           outcome = 'moved';
           return current;
         }
-        const result =
-          kind === 'live'
-            ? moveInStoredList(current.aiDataPaths, normalizeLiveEntry, Number.POSITIVE_INFINITY, path, delta)
-            : moveInStoredList(current.historyPaths, normalizeHistoryEntry, MAX_HISTORY_PATHS, path, delta);
+        const result = moveInStoredList(current[key], normalizeOne, limit, path, delta);
         // History reusing the live paths, or the default live selection, has
         // no stored list to reorder (and reordering would freeze it into one).
         outcome = result.outcome;
@@ -765,7 +758,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
           // The same object back when nothing moves, so nothing is written.
           return current;
         }
-        produced.push(shownKeys(result.list, normalizeOne, limit));
+        neighbours.push(result.neighbour);
         return { ...current, [key]: result.list };
       });
       const config = getConfig();
