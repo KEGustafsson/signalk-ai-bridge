@@ -645,6 +645,43 @@ describe('path priority order', () => {
     }
   });
 
+  it('does not say the change was written when the last write put the restart\'s options back', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    let plugin;
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) {
+        finish = done;
+        return;
+      }
+      // The write-back of the restart's options: the plugin is disabled meanwhile.
+      plugin.stop();
+      done();
+    };
+    const created = routesFor(host);
+    plugin = created.plugin;
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const reply = recorder();
+      const moving = created.routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      // Restarted without b.two: the redo has nothing to move and puts these options back.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one'] });
+      finish();
+      await moving;
+      assert.equal(saves.length, 2);
+      assert.deepEqual(saves[1].aiDataPaths, ['a.one']);
+      assert.equal(reply.statusCode, 503);
+      assert.doesNotMatch(reply.body.error.message, /change was written/);
+      assert.match(reply.body.error.message, /the ones it restarted with/);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('takes delta only as the number 1 or -1', async () => {
     const host = createHost();
     let writes = 0;

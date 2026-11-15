@@ -525,28 +525,43 @@ module.exports = function createPlugin(app, dependencies = {}) {
       // those and saved again, so neither memory nor disk keeps an older copy
       // - and a save queued while the plugin was stopped (pluginOptions is {}
       // then) writes nothing at all instead of storing just its own change.
-      let wrote = false;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        if (!running) {
-          const error = new Error(
-            wrote
-              ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
+      // What the last write stored: this change ('change'), the restart's
+      // own options put back because the redo had nothing to do ('restart'),
+      // or nothing yet.
+      let stored;
+      const stopped = () => {
+        const error = new Error(
+          stored === 'change'
+            ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
+            : stored === 'restart'
+              ? 'The plugin stopped; the stored settings are the ones it restarted with, without this change.'
               : 'The plugin is stopped; nothing was saved.'
-          );
-          error.code = 'disabled';
-          error.statusCode = 503;
+        );
+        error.code = 'disabled';
+        error.statusCode = 503;
+        return error;
+      };
+      // Three attempts, then a fourth pass only to report: stopped, or kept
+      // restarting.
+      for (let attempt = 0; ; attempt += 1) {
+        if (!running) throw stopped();
+        if (attempt === 3) {
+          const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
+          error.code = 'conflict';
+          error.statusCode = 409;
           throw error;
         }
         const generation = lifecycleGeneration;
         const updated = change(pluginOptions);
         if (updated === pluginOptions) {
-          // Redone after a restart and nothing to change now - but the first
-          // attempt already stored a copy made from the older options: put
-          // the restart's options back on disk.
-          if (wrote) {
+          // Redone after a restart and nothing to change now - but an
+          // earlier attempt already stored a copy made from the older
+          // options: put the restart's options back on disk.
+          if (stored) {
             await new Promise((resolve, reject) => {
               app.savePluginOptions(pluginOptions, (error) => (error ? reject(error) : resolve()));
             });
+            stored = 'restart';
             // Restarted again while that was written: start over on the
             // newest options, so disk ends with what the plugin runs.
             if (generation !== lifecycleGeneration) continue;
@@ -562,26 +577,12 @@ module.exports = function createPlugin(app, dependencies = {}) {
         await new Promise((resolve, reject) => {
           app.savePluginOptions(updated, (error) => (error ? reject(error) : resolve()));
         });
-        wrote = true;
+        stored = 'change';
         if (generation === lifecycleGeneration) {
           pluginOptions = updated;
           return updated;
         }
       }
-      if (!running) {
-        // Stopped after the last attempt's write: say so, as the loop does
-        // when it finds the plugin stopped, not that it kept restarting.
-        const error = new Error(
-          'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
-        );
-        error.code = 'disabled';
-        error.statusCode = 503;
-        throw error;
-      }
-      const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
-      error.code = 'conflict';
-      error.statusCode = 409;
-      throw error;
     });
     // A failed save must not wedge the queue for the next one.
     optionsWriteQueue = run.catch(() => {});
@@ -805,7 +806,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }
       res.status(200).json(lists);
     } catch (error) {
-      if (errorCode(error) === 'conflict' && running) {
+      if (errorCode(error) === 'conflict') {
         // "Kept restarting while saving": the lists as they now are, like
         // every other conflict, so the panel can refresh.
         res.status(statusForCode('conflict')).json({
