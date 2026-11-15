@@ -383,6 +383,24 @@ module.exports = function createPlugin(app, dependencies = {}) {
     return true;
   };
 
+  // A save the plugin stopped right after: the change is stored, so the
+  // reply says so (and that it need not be made again) instead of the
+  // generic "stopped", and sends no stopped plugin's lists.
+  const rejectIfStoppedAfterSave = (res, saved) => {
+    if (running) {
+      return false;
+    }
+    res.status(503).json({
+      error: {
+        code: 'disabled',
+        message: saved
+          ? 'The change was saved, but the plugin stopped before it could reply; reload once it runs again instead of making the change again.'
+          : 'AI Bridge is stopped.'
+      }
+    });
+    return true;
+  };
+
   /** GET /ai/status: configuration, backend availability and GPU residency. */
   const statusHandler = async (req, res) => {
     if (rejectIfStopped(res)) {
@@ -647,7 +665,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }));
       // Stopped between the save and this reply: a stopped plugin's empty
       // options are not the selection, so they are not sent as one.
-      if (rejectIfStopped(res)) return;
+      if (rejectIfStoppedAfterSave(res, true)) return;
 
       const config = getConfig();
       res.status(200).json({
@@ -795,7 +813,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       });
       // Stopped between the save and this reply: no lists from a stopped
       // plugin for the panel to take as the selection.
-      if (rejectIfStopped(res)) return;
+      if (rejectIfStoppedAfterSave(res, outcome === 'moved')) return;
       const lists = currentLists();
       if (outcome === 'no-stored-list' || outcome === 'not-found') {
         res.status(statusForCode('conflict')).json({

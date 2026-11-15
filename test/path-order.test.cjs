@@ -706,6 +706,8 @@ describe('path priority order', () => {
       await created.routes[route]({ body }, reply);
       assert.equal(reply.statusCode, 503, `${route} after ${depth}`);
       assert.equal(reply.body.aiDataPaths, undefined, `${route} after ${depth}`);
+      // The change is stored: the reply says so, so it is not made again.
+      assert.match(reply.body.error.message, /change was saved/, `${route} after ${depth}`);
       plugin.stop();
     }
   });

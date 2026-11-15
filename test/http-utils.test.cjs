@@ -137,6 +137,26 @@ describe('createTimedFetch', () => {
     assert.equal(listeners, 0);
   });
 
+  it('stops watching the request\'s abort once a body has ended', async () => {
+    let listeners = 0;
+    const timedFetch = createTimedFetch(async (_input, init) => {
+      const add = init.signal.addEventListener.bind(init.signal);
+      const remove = init.signal.removeEventListener.bind(init.signal);
+      init.signal.addEventListener = (type, fn, options) => {
+        if (type === 'abort') listeners += 1;
+        return add(type, fn, options);
+      };
+      init.signal.removeEventListener = (type, fn, options) => {
+        if (type === 'abort') listeners -= 1;
+        return remove(type, fn, options);
+      };
+      return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }, 1000);
+    const response = await timedFetch('http://localhost:11434/api/tags');
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal(listeners, 0);
+  });
+
   it('does not keep a reaction per chunk of a long body', async () => {
     // Collected before each measurement, so only what the read still holds
     // is counted.
