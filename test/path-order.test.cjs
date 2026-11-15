@@ -306,9 +306,10 @@ describe('path priority order', () => {
     const host = createHost();
     const saves = [];
     let inFlight = 0;
+    let maxInFlight = 0;
     host.savePluginOptions = (options, done) => {
       inFlight += 1;
-      assert.equal(inFlight, 1, 'one save at a time');
+      maxInFlight = Math.max(maxInFlight, inFlight);
       saves.push(options);
       setTimeout(() => {
         inFlight -= 1;
@@ -324,6 +325,7 @@ describe('path priority order', () => {
         routes['POST /paths/selection']({ body: { historyPaths: ['h.one', 'h.two', 'h.three'] } }, replies[1]),
         routes['POST /paths/move']({ body: { kind: 'history', path: 'h.two', delta: -1 } }, replies[2])
       ]);
+      assert.equal(maxInFlight, 1, 'one save at a time');
       assert.deepEqual(
         replies.map((reply) => reply.statusCode),
         [200, 200, 200]
@@ -345,8 +347,9 @@ describe('path priority order', () => {
     const host = createHost();
     const saves = [];
     host.savePluginOptions = (options, done) => {
-      saves.push(options);
-      setTimeout(() => done(saves.length === 1 ? new Error('disk full') : null), 5);
+      // Which save fails is decided when it is made, not when it finishes.
+      const nth = saves.push(options);
+      setTimeout(() => done(nth === 1 ? new Error('disk full') : null), 5);
     };
     const { plugin, routes } = routesFor(host);
     plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
