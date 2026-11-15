@@ -928,31 +928,6 @@ describe('which ports are this server', () => {
     assert.match(history.message, /not called: this Signal K server's port is not known \(its configured port \(70000\)/);
   });
 
-  it('does not replay against an unknown port', async () => {
-    const { createWatchService } = require('../lib/watch-service.cjs');
-    await withSignalkEnv({ LISTEN_FDS: '1' }, async () => {
-      const host = {
-        selfId: 'vessels.self',
-        config: { settings: {} },
-        setPluginStatus() {},
-        handleMessage() {},
-        getSelfPath() {}
-      };
-      const service = createWatchService(host, {
-        now: () => Date.parse('2026-06-02T08:00:00Z'),
-        fetchImpl: () => assert.fail('no request expected')
-      });
-      const result = await service.replay(
-        { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
-        { historyTimeoutMs: 5000 }
-      );
-      assert.equal(result.ok, false);
-      assert.match(result.message, /not called: this Signal K server's port is not known/);
-    });
-  });
-
-  // With TLS on, the https port is the main listener; the http port carries
-  // only the server's redirect, and is not where the plugin calls.
   it('calls the https port under TLS', async () => {
     const app = { config: { settings: { ssl: true, port: 3000 } } };
     assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:3443');
@@ -1075,20 +1050,6 @@ describe('a History API that cannot be reached', () => {
     assert.match(result.message, /unreachable \(fetch failed: ERR_TLS_CERT_ALTNAME_INVALID, the server's TLS certificate is not trusted/);
   });
 
-  it('names the cause in a watch replay', async () => {
-    const { createWatchService } = require('../lib/watch-service.cjs');
-    const host = { selfId: 'vessels.self', setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
-    const service = createWatchService(host, {
-      now: () => Date.parse('2026-06-02T08:00:00Z'),
-      fetchImpl: failingFetch('SELF_SIGNED_CERT_IN_CHAIN', 'self-signed certificate in certificate chain')
-    });
-    const result = await service.replay(
-      { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
-      { historyTimeoutMs: 5000 }
-    );
-    assert.equal(result.ok, false);
-    assert.match(result.message, /could not be read \(fetch failed: SELF_SIGNED_CERT_IN_CHAIN, the server's TLS certificate is not trusted/);
-  });
 });
 
 describe('a configured History API key that is rejected', () => {
@@ -1144,17 +1105,6 @@ describe('a configured History API key that is rejected', () => {
     assert.match(unkeyed.message, /needs its own credential in "History API key"/);
   });
 
-  it('says so in a watch replay', async () => {
-    const { createWatchService } = require('../lib/watch-service.cjs');
-    const host = { selfId: 'vessels.self', setPluginStatus() {}, handleMessage() {}, getSelfPath() {} };
-    const service = createWatchService(host, { now: () => Date.parse('2026-06-02T08:00:00Z'), fetchImpl: rejecting(401, '') });
-    const result = await service.replay(
-      { duration: 'PT1H', paths: ['propulsion.main.temperature'] },
-      { historyServerUrl: 'https://other-boat.example', historyApiKey: 'expired-token', historyTimeoutMs: 5000 }
-    );
-    assert.equal(result.ok, false);
-    assert.match(result.message, /HTTP 401 for 1 paths; the configured "History API key" was sent and rejected/);
-  });
 });
 
 describe('listHistoryPaths', () => {

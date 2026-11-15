@@ -1,10 +1,8 @@
 # Plugin settings
 
 The Ask AI and GPU settings in the plugin's configuration page, and what each one
-does. Two groups are described with their features instead:
-
-- the History API settings, in [Vessel history](history.md#settings)
-- the Watchkeeper settings, in the [Watchkeeper reference](watchkeeper.md#settings)
+does. The History API settings are described with the feature, in
+[Vessel history](history.md#settings).
 
 - `baseUrl`
   Ollama server URL. Default: `http://localhost:11434`
@@ -92,6 +90,3 @@ does. Two groups are described with their features instead:
 - `apiKey`
   Optional bearer token for a TensorRT-LLM or NIM backend
 
-- `watchEnabled`
-  Turn on Watchkeeper, the background watch of every path. Its own settings are
-  listed under [Watchkeeper settings](watchkeeper.md#settings)

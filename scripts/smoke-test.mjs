@@ -17,21 +17,8 @@ const requiredFiles = [
   'lib/kv-cache.cjs',
   'lib/http-utils.cjs',
   'lib/tensorrt-service.cjs',
-  'lib/watch-service.cjs',
-  'lib/watch/engine.cjs',
-  'lib/watch/path-monitor.cjs',
-  'lib/watch/gnss.cjs',
-  'lib/watch/narrate.cjs',
-  'lib/watch/format.cjs',
-  'lib/watch/stats.cjs',
-  'lib/watch/sources.cjs',
-  'lib/watch/rules.cjs',
-  'lib/watch/rule-parser.cjs',
-  'lib/watch/rule-assist.cjs',
-  'src/WatchPanel.tsx',
   'index.cjs',
   'README.md',
-  'docs/watchkeeper.md',
   'docs/jetson.md',
   'docs/how-it-works.md',
   'docs/history.md',
@@ -69,8 +56,6 @@ assert.match(pluginSource, /router\.post\('\/ai\/query'/);
 assert.match(pluginSource, /numCtx/);
 assert.match(pluginSource, /keepAlive/);
 assert.match(pluginSource, /gpuAutoTune/);
-assert.match(pluginSource, /router\.get\('\/watch\/status'/);
-assert.match(pluginSource, /watchEnabled/);
 
 // The registry and app store both read package.json metadata directly, so a
 // missing field here is a silent score loss rather than a build failure.

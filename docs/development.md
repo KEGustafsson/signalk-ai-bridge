@@ -25,11 +25,6 @@ Second shell:
 SIGNALK_AI_BRIDGE_DEV_TARGET=http://127.0.0.1:3100 npm run dev
 ```
 
-Add `--watch-demo` to the preview host to see the Watchkeeper card working: it
-pre-rolls 45 minutes of a normal passage so the watch has a baseline, then the
-alternator stops charging, the engine runs hot, a sensor drops off the bus and
-the GNSS fix drifts away from dead reckoning. Findings appear within a minute.
-
 Useful checks:
 
 ```bash

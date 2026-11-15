@@ -42,8 +42,6 @@ const {
   resolveHistoryPaths,
   resolveWindow
 } = require('./lib/history-service.cjs');
-const { createWatchService } = require('./lib/watch-service.cjs');
-const { MAX_RULES, hasValidId, normalizeRules } = require('./lib/watch/rules.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -64,9 +62,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
   // stopped (or restarted with new options) cannot overwrite the live status.
   let lifecycleGeneration = 0;
   const bridgeService = createBridgeService(app, dependencies);
-  // Watchkeeper runs beside the AI pipeline, not through it: no model is
-  // called, so it keeps watching with the inference host down.
-  const watchService = createWatchService(app, { ...dependencies, pluginId: 'signalk-ai-bridge' });
 
   function normalizeServerConfig(options = {}) {
     // Deduplicated keeping first occurrences: the stored order is the priority
@@ -291,99 +286,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
         default: DEFAULT_HISTORY_TIMEOUT_MS,
         minimum: 0,
         maximum: 120000
-      },
-      watchEnabled: {
-        type: 'boolean',
-        title: 'Watch all Signal K paths (Watchkeeper)',
-        description:
-          'Learn how every self-vessel path normally behaves and raise a Signal K notification when one departs from ' +
-          'it: a sustained jump or ramp, a sensor that stops updating or freezes, a state never seen before, a pump ' +
-          'cycling more than usual, a tank or battery trending toward its limit, or a GNSS fix that dead reckoning and ' +
-          'the other receivers do not corroborate. Uses no language model - it runs on the CPU in microseconds per ' +
-          'update and keeps working with the inference host down. Experimental: not a substitute for real alarms.',
-        default: false
-      },
-      watchSensitivity: {
-        type: 'string',
-        title: 'Watch sensitivity',
-        description:
-          'How far from normal a value must move before it is reported. Start at normal; use the panel\'s replay to see what a setting would have raised over the last day before changing it.',
-        enum: ['low', 'normal', 'high'],
-        default: 'normal'
-      },
-      watchLearningMinutes: {
-        type: 'integer',
-        title: 'Watch learning period (minutes)',
-        description:
-          'How long a newly seen path is observed before it can raise anything. The learned baseline is saved, so this is paid once, not after every restart.',
-        default: 30,
-        minimum: 1,
-        maximum: 1440
-      },
-      watchNotifications: {
-        type: 'boolean',
-        title: 'Publish watch findings as Signal K notifications',
-        description:
-          'Under notifications.aiBridge.watch.*, at warn or alert - never alarm or emergency, which belong to real alarm sources.',
-        default: true
-      },
-      watchSound: {
-        type: 'boolean',
-        title: 'Ask for sound on watch alerts',
-        description: 'Adds "sound" to the notification method for alert-level findings. Warnings are always visual only.',
-        default: false
-      },
-      watchDefaultExclusions: {
-        type: 'boolean',
-        title: 'Skip paths that change with the helm, wind and seabed',
-        description:
-          'Heading, course, speed, attitude, wind, depth, steering and similar paths change quickly by their nature, so the watch skips them by default. Position and fix quality are still read, by the GNSS integrity check.',
-        default: true
-      },
-      watchExcludePaths: {
-        type: 'array',
-        title: 'Also skip these paths',
-        description:
-          'Signal K paths or patterns: a path covers everything beneath it, * matches within one segment, ** across segments (for example environment.inside, propulsion.*.exhaustTemperature, **.signalStrength).',
-        items: { type: 'string' },
-        default: []
-      },
-      watchCounterPaths: {
-        type: 'array',
-        title: 'Counters under other names',
-        description:
-          'Paths that only count up - engine hours, energy, pulses - which the watch does not judge as levels or stuck sensors. ' +
-          'Standard names (runTime, fuel.used, lifetimeDischarge, energy..., log, ...Today and the like) are recognised already; ' +
-          'list a plugin\'s own counters here. A pattern (as above) covers the paths beneath it, except measurements such as ' +
-          'a voltage or a level; list a path exactly to make it a counter regardless.',
-        items: { type: 'string' },
-        default: []
-      },
-      watchRuleAssist: {
-        type: 'string',
-        title: 'Interpreting watch rules',
-        description:
-          'Watch rules written in plain words ("tell me if the coolant goes above 95 for 2 minutes") are read by a parser first, ' +
-          'with no model. Only a request the parser cannot read is passed to a model, which picks from a short list of real ' +
-          'paths with its answer held to a fixed format, and every result is read back for you to confirm. main uses the ' +
-          'model above (already loaded, so no extra memory); helper uses a separate small model; off never asks a model.',
-        enum: ['main', 'helper', 'off'],
-        default: 'main'
-      },
-      watchHelperModel: {
-        type: 'string',
-        title: 'Helper model for watch rules',
-        description:
-          'Used when "Interpreting watch rules" is helper: a small Ollama model such as qwen3:0.6b or gemma3:1b. It is unloaded two minutes after use so it does not hold GPU memory.',
-        default: ''
-      },
-      watchMaxPaths: {
-        type: 'integer',
-        title: 'Most paths to watch',
-        description: 'A bound on memory and CPU. Paths beyond it are counted in the panel but not watched.',
-        default: 1500,
-        minimum: 10,
-        maximum: 10000
       }
     }
   });
@@ -603,7 +505,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
 
   // Every write to the stored options goes through this one queue. Each
   // handler used to copy pluginOptions, await the save, then assign its copy
-  // back - so two overlapping saves (a path selection and a watch rule, say)
+  // back - so two overlapping saves (a live and a history path selection, say)
   // both started from the same options and the later one silently undid the
   // earlier, while both reported success.
   let optionsWriteQueue = Promise.resolve();
@@ -1058,308 +960,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
-  /** GET /watch/status: what the watch has learned and what it has found. */
-  const watchStatusHandler = async (req, res) => {
-    if (rejectIfStopped(res)) {
-      return;
-    }
-    try {
-      res.status(200).json(watchService.status());
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /** GET /watch/series?path=…: the learned series behind a finding, for the panel's sparkline. */
-  const watchSeriesHandler = async (req, res) => {
-    if (rejectIfStopped(res)) {
-      return;
-    }
-    try {
-      // Express parses the query string; a bare Node request (the preview
-      // host, some test harnesses) only has the URL.
-      let path = req && req.query && typeof req.query.path === 'string' ? req.query.path : '';
-      if (!path && req && typeof req.url === 'string') {
-        path = new URL(req.url, 'http://localhost').searchParams.get('path') || '';
-      }
-      const series = watchService.series(path);
-      if (!series) {
-        res.status(404).json({ error: { code: 'not-found', message: `The watch has no series for ${path}.` } });
-        return;
-      }
-      res.status(200).json(series);
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /**
-   * GET /watch/inventory: every path the watch has found on this vessel, what
-   * it does with each, and which checks this vessel's data supports.
-   */
-  const watchInventoryHandler = async (req, res) => {
-    if (rejectIfStopped(res)) {
-      return;
-    }
-    try {
-      res.status(200).json(watchService.inventory());
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /** GET /watch/unusual: the paths furthest from their own normal right now, alarming or not. */
-  const watchUnusualHandler = async (req, res) => {
-    if (rejectIfStopped(res)) {
-      return;
-    }
-    try {
-      res.status(200).json(watchService.unusual());
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /** GET /watch/report?hours=24: what the watch saw, as facts and plain lines. */
-  const watchReportHandler = async (req, res) => {
-    if (rejectIfStopped(res)) {
-      return;
-    }
-    try {
-      let hours = req && req.query ? req.query.hours : undefined;
-      if (hours === undefined && req && typeof req.url === 'string') {
-        hours = new URL(req.url, 'http://localhost').searchParams.get('hours') || undefined;
-      }
-      res.status(200).json(watchService.report(Number(hours) || 24));
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  const rejectUnlessWriter = (req, res, action) => {
-    if (isSelectionWriteAllowed(req)) {
-      return false;
-    }
-    res.status(401).json({
-      error: { code: 'unauthorized', message: `${action} requires a Signal K login with write access.` }
-    });
-    return true;
-  };
-
-  /** POST /watch/mute { path, minutes } and /watch/unmute { path }. */
-  const watchMuteHandler = (unmute) => async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Muting a watched path')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      const mutes = unmute
-        ? watchService.unmute(body && body.path)
-        : watchService.mute(body && body.path, body && body.minutes);
-      res.status(200).json({ mutes });
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /**
-   * POST /watch/feedback { path, useful }: "not useful" (false) makes the path
-   * need a bigger departure before it is reported again; true undoes one
-   * dismissal; "reset" forgets them all.
-   */
-  const watchFeedbackHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Giving watch feedback')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      res.status(200).json(watchService.feedback(body && body.path, body && body.useful));
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /**
-   * POST /watch/replay { duration? }: run a fresh watch over recorded history
-   * and report what it would have raised. Read-only, but it is the heaviest
-   * thing this plugin does short of inference, so it is a writer's action.
-   */
-  const watchReplayHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Replaying history through the watch')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      const result = await watchService.replay(body || {}, getConfig(), { authHeaders: authHeadersFromRequest(req) });
-      res.status(200).json(result);
-    } catch (error) {
-      if (errorCode(error) === 'busy') {
-        res.status(409).json({ error: { code: 'busy', message: errorMessage(error, 'Busy.') } });
-        return;
-      }
-      sendError(res, error, 500, 'Unknown replay failure.');
-    }
-  };
-
-  /** POST /watch/rules/compile { text, path? }: read a request back as a rule, without storing it. */
-  const watchRuleCompileHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Writing a watch rule')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      res.status(200).json(await watchService.compileRule(body || {}, getConfig()));
-    } catch (error) {
-      sendError(res, error, 500, 'Unknown watch failure.');
-    }
-  };
-
-  /**
-   * Change the stored watch rules. Stored as plugin options, like the path
-   * selections, so a restart and a config backup carry them. `change` gets
-   * the rules as stored when its turn in the write queue comes, so edits from
-   * two panels, or two quick clicks, apply to each other's result instead of
-   * one overwriting the other from a stale list.
-   */
-  const changeWatchRules = async (change) => {
-    let rules;
-    let generation;
-    await updatePluginOptions((current) => {
-      generation = lifecycleGeneration;
-      const before = normalizeRules(current.watchRules);
-      rules = normalizeRules(change(before));
-      // Nothing changed (a refused add, an unknown id): write nothing, so a
-      // no-op neither rewrites the settings nor fails on a host that cannot
-      // store them.
-      if (JSON.stringify(rules) === JSON.stringify(before)) {
-        return current;
-      }
-      return { ...current, watchRules: rules };
-    });
-    // Restarted meanwhile: the new start already loaded the stored rules.
-    return generation === lifecycleGeneration ? watchService.setRules(rules) : rules;
-  };
-
-  /** POST /watch/rules/add { rule }: add one rule (or replace the one with its id). */
-  const watchRuleAddHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      const [rule] = normalizeRules([body && body.rule]);
-      if (!rule) {
-        res.status(400).json({ error: { code: 'validation-failed', message: 'Send one valid rule as "rule".' } });
-        return;
-      }
-      // A rule already stored as it is (re-added unchanged) is not judged
-      // again: it was accepted once, and refusing it now would lock it in.
-      const unchanged = normalizeRules(pluginOptions.watchRules).some(
-        (stored) => stored.id === rule.id && JSON.stringify(stored) === JSON.stringify(rule)
-      );
-      const problem = unchanged ? undefined : watchService.checkRule(rule);
-      if (problem) {
-        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
-        return;
-      }
-      let full = false;
-      // A rule that came without an id is a new rule: if its derived id is
-      // already taken by a different stored rule, it is numbered as a copy
-      // rather than replacing that one.
-      const fresh = !hasValidId(body.rule);
-      // What a rule says, without when it was made or what it is called.
-      const content = ({ id, createdAt, ...rest }) => JSON.stringify(rest);
-      const base = rule.id;
-      const rules = await changeWatchRules((current) => {
-        // Numbered afresh on each attempt (a save redone after a restart
-        // starts again from the derived id).
-        if (fresh) {
-          rule.id = base;
-          for (let copy = 2; current.some((item) => item.id === rule.id && content(item) !== content(rule)); copy += 1) {
-            rule.id = `${base.slice(0, 36)}-${copy}`;
-          }
-        }
-        const others = current.filter((item) => item.id !== rule.id);
-        // At the cap, the new rule is the one truncation would drop: refuse
-        // instead of reporting success for a rule that was never stored.
-        if (others.length >= MAX_RULES) {
-          full = true;
-          return current;
-        }
-        return [...others, rule];
-      });
-      if (full) {
-        res.status(statusForCode('conflict')).json({
-          error: { code: 'conflict', message: `There are already ${MAX_RULES} watches; remove one first.` }
-        });
-        return;
-      }
-      res.status(200).json({ rules });
-    } catch (error) {
-      sendError(res, error, 500, 'Could not save the watch rules.');
-    }
-  };
-
-  /** POST /watch/rules/remove { id }: remove one rule by id. */
-  const watchRuleRemoveHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      const id = body && typeof body.id === 'string' ? body.id : '';
-      if (!id) {
-        res.status(400).json({ error: { code: 'validation-failed', message: 'Send the id of the rule to remove.' } });
-        return;
-      }
-      let found = false;
-      const rules = await changeWatchRules((current) => {
-        // Once found, found: a redo after a restart sees the list it wrote.
-        found = found || current.some((item) => item.id === id);
-        return current.filter((item) => item.id !== id);
-      });
-      // An id that is not stored (a panel open across an upgrade that changed
-      // derived ids, say) is not reported as removed.
-      if (!found) {
-        res.status(404).json({ error: { code: 'not-found', message: 'No watch with that id is stored; reload the list.' }, rules });
-        return;
-      }
-      res.status(200).json({ rules });
-    } catch (error) {
-      sendError(res, error, 500, 'Could not save the watch rules.');
-    }
-  };
-
-  /** POST /watch/rules/save { rules }: replace the whole list, for tools that manage it as a unit. */
-  const watchRuleSaveHandler = async (req, res) => {
-    if (rejectIfStopped(res) || rejectUnlessWriter(req, res, 'Changing watch rules')) {
-      return;
-    }
-    try {
-      const body = await readJsonBody(req);
-      if (!body || !Array.isArray(body.rules)) {
-        res.status(400).json({ error: { code: 'validation-failed', message: 'Send rules as an array.' } });
-        return;
-      }
-      // Only rules that are new or changed are judged: one stored before the
-      // check existed, or whose path is quiet now, must not lock a tool out
-      // of saving the rest of the list.
-      const stored = new Map(normalizeRules(pluginOptions.watchRules).map((rule) => [rule.id, JSON.stringify(rule)]));
-      const problem = normalizeRules(body.rules)
-        .filter((rule) => stored.get(rule.id) !== JSON.stringify(rule))
-        .map((rule) => watchService.checkRule(rule))
-        .find(Boolean);
-      if (problem) {
-        res.status(400).json({ error: { code: 'validation-failed', message: problem } });
-        return;
-      }
-      const rules = await changeWatchRules(() => body.rules);
-      res.status(200).json({ rules });
-    } catch (error) {
-      sendError(res, error, 500, 'Could not save the watch rules.');
-    }
-  };
-
   // Without this the admin UI renders apiKey as an ordinary text input, so the
   // token is on screen in cleartext and echoed back on every config page load.
   const uiSchema = () => ({
@@ -1378,7 +978,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
       pluginOptions = options;
       running = true;
       bridgeService.reset();
-      watchService.start(options);
       resetRuntimeState();
       lifecycleGeneration += 1;
       const generation = lifecycleGeneration;
@@ -1448,19 +1047,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
       router.get('/signalk/paths', selfPathsHandler);
       router.post('/paths/selection', saveSelectionHandler);
       router.post('/paths/move', movePathHandler);
-      router.get('/watch/status', watchStatusHandler);
-      router.get('/watch/series', watchSeriesHandler);
-      router.get('/watch/inventory', watchInventoryHandler);
-      router.get('/watch/unusual', watchUnusualHandler);
-      router.post('/watch/rules/compile', watchRuleCompileHandler);
-      router.post('/watch/rules/save', watchRuleSaveHandler);
-      router.post('/watch/rules/add', watchRuleAddHandler);
-      router.post('/watch/rules/remove', watchRuleRemoveHandler);
-      router.get('/watch/report', watchReportHandler);
-      router.post('/watch/feedback', watchFeedbackHandler);
-      router.post('/watch/mute', watchMuteHandler(false));
-      router.post('/watch/unmute', watchMuteHandler(true));
-      router.post('/watch/replay', watchReplayHandler);
       routesRegistered = true;
     },
     stop: () => {
@@ -1469,7 +1055,6 @@ module.exports = function createPlugin(app, dependencies = {}) {
         app.setPluginStatus('AI Bridge stopped.');
       }
       bridgeService.reset();
-      watchService.stop();
       resetRuntimeState();
       pluginOptions = {};
       running = false;

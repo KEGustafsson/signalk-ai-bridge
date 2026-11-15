@@ -3,13 +3,12 @@
 [![signalk-plugin-ci](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/plugin-ci.yml/badge.svg)](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/plugin-ci.yml)
 [![ci](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/KEGustafsson/signalk-ai-bridge/actions/workflows/ci.yml)
 
-A Signal K plugin that adds two things to the Signal K web UI:
+A Signal K plugin that adds **Ask AI** to the Signal K web UI: send selected
+vessel data to a local language model (Ollama or TensorRT-LLM) and read its
+answer in the browser.
 
-- **Ask AI**: send selected vessel data to a local language model (Ollama or
-  TensorRT-LLM) and read its answer in the browser.
-- **Watchkeeper** (optional): watch *every* Signal K path in the background, learn
-  what is normal for this vessel, and raise a Signal K notification when something
-  departs from it. It is statistics, not AI, so it needs no model and no GPU.
+The background watch of every path, Watchkeeper, is its own plugin:
+[signalk-watchkeeper](https://github.com/KEGustafsson/signalk-watchkeeper).
 
 > **⚠️ Ask AI needs two separate parts.**
 >
@@ -19,8 +18,7 @@ A Signal K plugin that adds two things to the Signal K web UI:
 >    network. It runs the model and is **not** part of the App Store install.
 >
 > With only the plugin there is nothing to answer; with only the container nothing
-> reaches Signal K. **Watchkeeper is the exception**: it runs inside the plugin, so
-> the plugin alone is enough for it.
+> reaches Signal K.
 
 ## Experimental
 
@@ -30,23 +28,10 @@ decision-maker or a replacement for the alarms already on the boat.
 
 ## What you can do
 
-**Ask AI**
-
 - ask about the vessel in plain language, with the Signal K paths you choose
 - include recent history from the Signal K History API, for trend questions
 - watch the answer stream in, and see exactly what was sent to the model
 - see whether the model runs on the GPU, and how fast it generates
-
-**Watchkeeper**
-
-- values far from their learned normal, sensors that stop or freeze, states never
-  seen before, pumps cycling more than usual
-- tanks and batteries trending toward empty, values heading for their zones
-- GNSS positions that dead reckoning, a second receiver or the fix's own quality
-  do not corroborate (jamming and spoofing)
-- redundant sensors that disagree, or a source that fails over to another
-- your own limits in plain words: *"tell me if the coolant goes above 95 for 2
-  minutes"*
 
 ## Quick start
 
@@ -56,8 +41,6 @@ decision-maker or a replacement for the alarms already on the boat.
 3. Open the plugin's web app, press **Browse available paths** and save the paths
    the model should see.
 4. Write a question and press **Ask AI**.
-5. Optional: turn on **Watch all Signal K paths (Watchkeeper)** in the plugin
-   configuration. It learns for 30 minutes, then watches on its own.
 
 ## Running the model with Docker Compose
 
@@ -99,9 +82,6 @@ OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d      # t
 
 ## The panel
 
-- **Watchkeeper**: active incidents with trend lines, **Mute 1 h** and **Not
-  useful**, your own plain-language watches, **Watch report**, **Most unusual
-  now**, **What is watched?** and a 24-hour replay.
 - **Signal K**: login state and vessel ID.
 - **Inference server**: URL, model, availability and timeout, with a setup link
   when the server cannot be reached.
@@ -119,44 +99,8 @@ OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d      # t
 - **AI Response** and **Ask AI History**: the answer, earlier questions, and the
   exact request sent for each.
 
-On a server with security enabled, saving selections, watches and mutes needs a
+On a server with security enabled, saving selections needs a
 login with write access.
-
-## Watchkeeper
-
-Every check is a small statistical computation on the CPU, a few microseconds
-per update, and every message is a template filled with measured values. It keeps
-working with the inference server down. The model is used only when you ask:
-
-- **Ask AI about this** on an incident, and **Ask AI for a logbook entry** on the
-  watch report, put a question in the Ask AI box for you to read and send.
-- A plain-language watch the built-in parser cannot read can be passed to a
-  model (`watchRuleAssist`), which picks from a short list of real paths with its
-  answer held to a fixed format.
-
-What makes it work on any boat:
-
-- **Nothing is configured per vessel.** Every published path is picked up and
-  classified from its own values and metadata. **What is watched?** shows what
-  was found and which checks this boat's data supports.
-- **Operating states.** Engine starts, charger modes and `navigation.state` are
-  recognised, so expected changes re-learn instead of alerting. Each path keeps a
-  baseline per state, so a restarted engine is judged against how it normally
-  runs.
-- **Findings become incidents**, earliest sign first, and are published as Signal
-  K notifications under `notifications.aiBridge.watch.*` at `warn` or `alert`
-  (never `alarm` or `emergency`). KIP, Freeboard, WilhelmSK and any other
-  notification consumer show them with no setup.
-- **It learns from you.** **Not useful** makes a path need a bigger change before
-  its level, source-disagreement or dropout checks report again; **Restore**
-  undoes it. Other findings, such as a stuck sensor, are not affected: mute
-  those.
-- **Tune before trusting it.** **Replay last 24 h** runs a fresh watch over
-  recorded history and shows what it would have raised.
-
-The full reference covers every check and threshold, the rule format, the HTTP
-API and tuning:
-[docs/watchkeeper.md](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/watchkeeper.md).
 
 ## Key settings
 
@@ -169,22 +113,19 @@ API and tuning:
 | `numCtx` | Context window. Sizes GPU memory use and how much vessel data fits. 8192 suits an 8 GB board. |
 | `gpuAutoTune` | Shrink the context window on start until the whole model fits on the GPU. |
 | `historyEnabled` | Also send recent history from the Signal K History API. |
-| `watchEnabled` | Turn on Watchkeeper. |
-| `watchSensitivity` | `low`, `normal` or `high`. |
 
 All settings are described in
 [docs/settings.md](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/settings.md),
-which links to the history and Watchkeeper settings.
+which links to the history settings.
 
 ## Documentation
 
 | | |
 | --- | --- |
-| [Watchkeeper reference](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/watchkeeper.md) | Every check, the rules, the HTTP API, tuning and limitations |
 | [GPU, Jetson and choosing a model](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/jetson.md) | Model sizes per board, keeping the model on the GPU, power modes, TensorRT-LLM, testing on a Jetson |
 | [How Ask AI builds its request](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/how-it-works.md) | Streaming, the prompt budget, units, model names |
 | [Vessel history](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/history.md) | Sending History API data with a question |
-| [Plugin settings](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/settings.md) | Ask AI and GPU settings, with links to the history and Watchkeeper ones |
+| [Plugin settings](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/settings.md) | Ask AI and GPU settings, with a link to the history ones |
 | [Development](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/docs/development.md) | Building, previewing without a boat, tests, CI and publishing |
 | [Changelog](https://github.com/KEGustafsson/signalk-ai-bridge/blob/main/CHANGELOG.md) | What changed, and why |
 

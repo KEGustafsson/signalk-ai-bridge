@@ -4,7 +4,6 @@ import type { AskVesselAiResult, ToolResult } from './contracts.js';
 import type { AppPanelProps } from './panelTypes.js';
 import type { AcceleratorStatus, AiChatMessage, AiHistoryFetchStatus, AiHistoryStatus } from './types.js';
 import { pickerFromBrowse, retickedFromChange, statusKeepingNewerLists, withSelectionLists, withUnlistedSelection } from './pathSelection.js';
-import WatchPanel from './WatchPanel.js';
 
 interface AiInput {
   readonly prompt: string;
@@ -92,7 +91,7 @@ function getHistoryPathsEndpoint(props: AppPanelProps): string {
   return '/plugins/signalk-ai-bridge/history/paths';
 }
 
-/** `/watch/status` and friends, relative to wherever the plugin is mounted. */
+/** A plugin route (`/paths/move`), relative to wherever the plugin is mounted. */
 function getPluginEndpoint(props: AppPanelProps, route: string): string {
   if (typeof props.bridgeEndpoint === 'string' && props.bridgeEndpoint.length > 0) {
     return props.bridgeEndpoint.replace(/\/bridge\/execute$/, route);
@@ -845,21 +844,6 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, [applySavedStatus, backendStatus, historyPathsState, pickedPaths, props]);
 
-  const watchEndpoint = React.useCallback(
-    (route: string) => getPluginEndpoint(props, route),
-    [props.bridgeEndpoint]
-  );
-
-  // Fills the prompt box only. The operator reads and sends it: an incident is
-  // never handed to the model on the plugin's own initiative.
-  const onAskAboutIncident = React.useCallback((question: string) => {
-    setAiInput({ prompt: question });
-    const box = typeof document === 'undefined' ? null : document.querySelector('textarea[aria-label="AI prompt"]');
-    if (box && typeof (box as HTMLTextAreaElement).scrollIntoView === 'function') {
-      (box as HTMLTextAreaElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
-      (box as HTMLTextAreaElement).focus();
-    }
-  }, []);
 
   // Reordering is a save on the server, one move at a time, applied to the
   // selection as stored - never a whole list from this panel, which another
@@ -977,12 +961,6 @@ export default function AppPanel(props: AppPanelProps) {
       <p>
         Embedded Admin UI panel for sending selected Signal K data to a local AI backend and reviewing the exact AI request.
       </p>
-      <WatchPanel
-        fetchImpl={props.bridgeFetch}
-        endpoint={watchEndpoint}
-        onAskAboutIncident={onAskAboutIncident}
-        canAskAi={canAskAi(backendStatus)}
-      />
       <div
         style={{
           display: 'grid',

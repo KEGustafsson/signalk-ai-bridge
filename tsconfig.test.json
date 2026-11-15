@@ -33,8 +33,6 @@
     "src/pathAccess.ts",
     "src/pathAccess.test.ts",
     "src/pathSelection.ts",
-    "src/pathSelection.test.ts",
-    "src/watchText.ts",
-    "src/watchText.test.ts"
+    "src/pathSelection.test.ts"
   ]
 }

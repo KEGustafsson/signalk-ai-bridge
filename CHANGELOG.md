@@ -9,34 +9,6 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Added
 
-- **Watchkeeper: a background watch of every Signal K path, with no language
-  model.** Off by default (`watchEnabled`). It subscribes to every self-vessel
-  path, learns each one's normal behaviour, and raises Signal K notifications
-  under `notifications.aiBridge.watch.*` for:
-  - sustained steps and ramps away from the baseline;
-  - sensors that stop updating or freeze;
-  - discrete values never seen before;
-  - pumps cycling unusually often;
-  - tanks, batteries and zoned values trending toward their limits;
-  - GNSS positions that dead reckoning, a second receiver or the fix's own
-    quality do not corroborate.
-
-  Findings are grouped into incidents with the earliest sign first. Text comes
-  from templates, so every number in it is a measured one. When an engine
-  starts or a charger changes mode, the affected paths re-learn instead of
-  alerting. The learned baseline survives restarts. Detection costs microseconds
-  per update on the CPU and keeps running with the inference host down. The
-  model is consulted only when the operator asks: "Ask AI about this" fills
-  the prompt box without sending anything, and a plain-language watch rule the
-  parser cannot read goes to a model only if `watchRuleAssist` allows it.
-- **A Watchkeeper card in the panel**, showing active incidents with trend
-  lines, a one-hour mute per path, recent incidents, and a 24-hour replay of
-  the History API through a fresh watch to show what a sensitivity setting
-  would have raised.
-- New routes: `GET /watch/status`, `GET /watch/series`, `POST /watch/mute`,
-  `POST /watch/unmute` and `POST /watch/replay`. Mute and replay need a login
-  with write access when security is enabled.
-- `scripts/preview-host.mjs --watch-demo` plays a scenario through the watch.
 - **Path selections can be put in priority order.** The `AI Path Selection`
   and `History Context` cards list the saved paths with ↑/↓ controls, saved on
   each move. The prompt budget gives earlier entries the first claim on the
@@ -64,14 +36,13 @@ this project uses [semantic versioning](https://semver.org/).
   are re-ticked from the stored selection, so Save cannot put back a path
   another browser removed; a late status read keeps only the newer order, and
   one that lands after a later read is ignored, so it cannot bring back an
-  older model or history counters; a watch change that changes nothing (a
-  refused 51st watch, an unknown id) writes nothing, and the full-list answer
-  uses code `conflict`, like a stale move; a save still in flight when the
+  older model or history counters; a stale full-list answer uses code
+  `conflict`, like a stale move; a save still in flight when the
   plugin restarts no longer puts the older options back in memory.
   And from the review of those: a save in flight across a restart is made
   again on the restart's options, so disk matches memory, and a save queued
   while the plugin stops writes nothing instead of storing only its own
-  change; a rule without an id keeps one id, so it can be removed; and the
+  change; and the
   pickers take only what another browser changed (on every move reply, the
   default live selection included), keeping unsaved ticks. Then: a redone
   change with nothing left to do puts the restart's options back on disk; a
@@ -80,27 +51,10 @@ this project uses [semantic versioning](https://semver.org/).
   list), not with what was ticked. A re-save after a second restart starts
   over on the newest options, and a numbered copy is numbered afresh when
   its save is redone.
-- **Review fixes for Watchkeeper** (from the CodeRabbit review of the pull
-  request):
-  - Overlapping saves of path selections and watch rules no longer undo each
-    other: every options write goes through one queue. The panel adds and
-    removes one rule at a time (`/watch/rules/add`, `/watch/rules/remove`),
-    instead of saving its whole, possibly stale, list.
-  - A notification the server refuses is retried instead of being recorded
-    as sent.
-  - GNSS: a receiver that stops sending fixes is reported (`gnss.lost`), and
-    a boat that slows and stops is no longer reported as a frozen fix.
-  - A single big step is no longer taken for the sensor's resolution, which
-    let a tank's 60-point drop hide behind its own noise floor.
-  - A value that sat still and then jumped up is no longer classed as a
-    counter.
-  - A switch cycling faster than the old evidence list held is counted
-    exactly.
-  - Redundant sources learn their usual gap per pair.
-  - The rule parser keeps the target in "switches on" and "changes to fault",
-    and refuses a second "while" instead of dropping it.
-  - The panel says when its status could not be refreshed, instead of
-    showing the last snapshot as a current all-clear.
+- **History API fixes** (from the reviews of the pull request):
+  - Overlapping saves of the live and history path selections no longer
+    undo each other: every write to the plugin's options goes through one
+    queue, and a save waiting in it while the plugin stops writes nothing.
   - **Security:** the operator's session is forwarded to the History API only
     when it is this Signal K server: a loopback host on this server's own port.
     A `historyServerUrl` of `localhost` at another port used to receive the
@@ -142,340 +96,30 @@ this project uses [semantic versioning](https://semver.org/).
     one - is refused too, and a setting of only spaces no longer hides
     `SIGNALK_AI_BRIDGE_HISTORY_URL`), and the settings text no longer suggests a
     `historyServerUrl` for a certificate localhost cannot verify.
-  - Minor review points: feedback now also applies to disagreeing sources on
-    skipped paths; the watch report says the fix was "cross-checked" only when
-    dead reckoning or a second receiver was checking it; signed angles (roll,
-    pitch, rudder) keep their sign; null coordinates are not read as 0° 0°;
-    a "changes" rule keeps up with its value while its guard is false; a
-    restart in the same process restores the final in-memory snapshot, and
-    saves of the state file are serialised; replay includes the paths your
-    rules read; a stale compile result can no longer appear beside new text;
-    and the docs on prompt budget, history wildcards and the preview host
-    were corrected.
-  - Follow-ups: a counter needs a counter's name (a voltage climbing on
-    every update is not one); the hourly cycling count never reaches past the
-    hour; a gap in the position feed ends a frozen-fix candidate; a full pair
-    table makes room for the current primary; a request with two "while"
-    conditions is not passed to the model; and the panel's stale-status
-    warning shows even when the last status said the watch was off.
-  - Independent review of those commits: real counters under other names
-    (`fuel.used`, `lifetimeDischarge`) are counters again; the
-    frozen-fix check adapts to a receiver's fix rate instead of needing a fix
-    every 5 s; an unreadable extra phrase ("if possible") is no longer a
-    terminal refusal; true wind angle keeps its sign; a "changes" rule no
-    longer forgets a change made while its guard was stale; the report's GNSS
-    line is judged on its own window; and replay puts rule inputs first so the
-    80-path cap reaches them last.
-  - Independent review of 9366cdb: a baseline saved before per-pair source
-    statistics no longer crashes the watch on the next secondary sample (and
-    one bad value can no longer take a whole delta down); an outage no longer
-    stretches the GNSS fix interval so the next one goes unreported; a single
-    out-and-back glitch no longer sets the sensor resolution, which is also
-    capped; "becomes warm" on a temperature is refused instead of stored as a
-    watch that cannot fire; adding a 51st watch returns 409 instead of
-    reporting success for a dropped rule; and a stale speed log ends a
-    frozen-fix candidate.
-  - Independent reviews of 3a14b76 and bddf473: a counter under a name the
-    watch does not know is no longer guessed from hours of climbing, which a
-    voltage without units can also do; it is listed in the new
-    `watchCounterPaths` setting instead (exactly, or by a pattern that still
-    leaves the measurements under it judged; a listed counter is never taken
-    for a discrete value). A measurement (by name or unit, `…Volume`
-    included) is never a counter, while named counters in a plugin's own
-    units (h, Ah, kWh) are; named counters survive
-    a reset to zero and the name list no longer catches `totalPower` or
-    `energyStored`; a "changes" rule reports a change once, though its guard
-    goes quiet and returns; on/off on a measurement is refused, also when a
-    model wrote the rule, while `…ReferenceType` and other state leaves keep
-    their words; a readable and an unreadable "while" condition are both
-    named; the report's GNSS cross-check survives a restart; a receiver that
-    really slows down is learned instead of being reported lost after every
-    fix; coarse pressure and tank senders keep their resolution, and a
-    glitch out and back is recognised as one step.
-  - Independent review of 3fe0e2f: a tank on an eighths sender no longer
-    loses every drop, full to empty included, to its learned resolution; a
-    "changes" rule marks a change reported only once its finding exists, so
-    a guard going stale just after a change no longer loses it; a few
-    irregular GNSS dropouts no longer stretch the usual fix interval (a new
-    rate needs five long gaps of about one size, and lost is five missed
-    fixes, the same as an outage); the
-    report no longer says "no warnings" for a receiver not heard from since
-    a restart; hand-written watches (`/watch/rules/add` and `/save`) get the
-    same measurement check as compiled ones; and the parser takes on/off on
-    a path whose data is a flag, whatever its name. From the review of that:
-    a stored rule (or one on a flag quiet after a restart) is not judged
-    again, so a list can still be saved; a "changes" rule's hold waits while
-    its guard is quiet; a state code under a counter pattern keeps its
-    new-state check, an exact counter entry wins over a pattern, and
-    changing an exact listing decides the path's kind again. From the
-    review of those: a slow counter under a pattern is a counter again (no
-    new state on each increment), unless named as a state code; a changed
-    listing decides the kind from new samples, not one, and baselines saved
-    under the older listing rules are decided again; a quiet numeric path
-    that only looked discrete (0 rpm) still refuses on/off; id-less rules
-    differing only in duration get different ids, and an id-less add never
-    replaces a different stored rule; a slower GNSS rate needs eight long
-    gaps in a row. And from the review of that: two rules given the same id
-    are kept apart (the later one is numbered), whatever their order; whole
-    `state`/`mode` leaves and `…Code`, `…Phase`, `…Fault`, `…Error`,
-    `…Alarm` names under a pattern keep their new-state check, while
-    `…InState`/`…SinceStatus` are counts; a listing change keeps known
-    states and re-learns before reporting, and a reworded pattern changes
-    nothing; removing an id that is not stored answers 404. Then: a
-    re-decision no longer re-learns the baseline (only new states wait), so
-    a measurement that changes listing is still judged; state names with a
-    digit or capital before the suffix (`relay1State`, `inverterACMode`) and
-    `…Name`/`…Source`/`…Reference`/`…Method`/`…Label` are state codes, and
-    `…InAlarm`/`…SinceError` are counts; what a listing did is saved, so
-    paths forced by the previous rule are decided again once; a remove that
-    a restart interrupts still answers 200. And from the review of that:
-    only a time or count of a state (`timeInState`, `secondsSinceLastError`)
-    is a count, so flags such as `engineInAlarm` keep their new-state check;
-    a path decided again that turns out discrete learns its switching rate
-    afresh (no false `cycling`) and learns quietly from when its kind is
-    known, not from the restart; a measurement that was continuous stays
-    continuous when its listing changes, so whole-number readings are still
-    judged for shifts; the panel says a remove found no watch under that id
-    (and reads the list again) instead of claiming it was already removed.
-    Upgrade note: the derived id of a stored rule that had none changes once
-    (it now covers duration and source); a panel left open across the
-    upgrade may find no watch under an old id - the list is read again.
-  - CodeRabbit full review: watch rules. A `changes` rule sees a value that
-    went on and back off between two ticks (changes are counted as the data
-    arrives), and one with a duration of 10 minutes or more can fire (the
-    change is held for the duration plus 1 minute). A rule removed and added
-    again starts its duration afresh. `>=` and `<=` are inclusive end to end
-    (new `atLeast` / `atMost` operators; stored rules are unchanged).
-    "Running", "started" and "stopped" published as words match the parsed
-    on and off. The parser refuses a unit it cannot convert ("30 cm"), words
-    left over after the comparison, and two comparisons joined by "and"
-    instead of dropping one, and words left after a state or a change
-    ("switches on during rough weather") too; punctuation no longer turns
-    "switches on, please" into "changes". The model fallback bounds the read of an error
-    reply, reports a JSON answer that is not an object, and converts numbers
-    for `equals` / `notEquals` from the shown unit too. From the review of
-    that: "but only if/when" is a guard again; urgency words and trailers
-    such as "immediately", "now", "send a notification", "for 2 minutes or
-    more" are fine after the comparison; "starts and stops" is a change;
-    two things joined by "and" get the hint to say "while" (not refused for
-    good); words such as "on the house bank" narrow the subject, kept only if
-    the path answers to them; `mb`, `º` and "°celsius" are read; a change
-    made while a path is muted is not reported when the mute ends; and an
-    error reply that offers only `text()` keeps its detail. And from the
-    review of the leftover check on states: "changes state", "switches
-    on/off", "starts, then stops" are changes; "thanks", "thank you",
-    "starts up", "at all" are fine after a state; a quoted state keeps its
-    punctuation. History API responses with a byte-order mark are read, as
-    `response.json()` reads them. A path decided again twice before its kind
-    is known keeps the kind it had (and its switching history); more time
-    words count a state (`elapsedInState`, `msSinceError`,
-    `relay1SecondsInState`), but not "ms" inside a word (`systemsInAlarm`).
-    The review of those: words after the comparison only narrow among the
-    paths that fit the subject ("coolant above 95 °C in the engine room" is
-    not the engine-room air), and must add something to it ("the anchor
-    light is off at anchor" is refused); an engine room is not an engine;
-    "starts and stops" keeps its op with a qualifier; apostrophes are not
-    quotes; quoted words in a subject are words, and empty quotes are no
-    value; the "while" hint survives filler such as "alert immediately";
-    "below 12 on the house bank" reads the qualifier; ArrayBuffer chunks are
-    read; more lowercase count names (`runtimeInState`); the assist keeps the
-    HTTP status when `text()` throws. And the review of that: a request
-    with no subject before the comparison takes the qualifier as its
-    subject; which paths fit the subject is decided by its words (meanings
-    counted on the path, not the role, depth or display name), so freezers,
-    relearning sensors and twin engines named differently are picked
-    again; two words a path writes as one ("engine room") match it; a
-    repeated qualifier with on/of/for/from is fine, and a qualifier that
-    names none of the subject's paths is refused by name; blank quotes are
-    refused with a reason. A repeating burst-and-outage cycle (a pair of
-    readings every five minutes) is learned as the sender's rhythm after
-    eight outages of about one size; a muted path counts toward a silent
-    feed only if it went quiet with the others; replay merges requests'
-    rows that are a few seconds apart (one tick a row), gathers values only
-    for rows kept, and reports a reply with no rows as no data; any
-    ArrayBuffer or view chunk is read. The review of that: two words
-    written as one match only a token they start (no "engine rpm" on a
-    battery named engine); digits are words ("battery 2") and quoted
-    qualifiers are read; a repeated qualifier needs a word such as bank or
-    side ("on anchor" is refused), "from" works, a path picked from the
-    alternatives no longer drops a qualifier, and a subject that matches
-    nothing says so; two quoted values side by side are not "empty". A
-    repeating outage cycle is learned only on a path that has never
-    settled, so a settled sensor that fails periodically keeps every
-    outage reported (and its death); dead muted paths leave the feed's
-    count entirely; a request's rows never share one moment in replay.
-    The review of that: a path's number segment no longer settles a tie
-    its display name contradicts ("battery 2" beside "Battery 3" at index
-    2 asks which); kind words and "boat"/"vessel" in a subject are fine,
-    and a word no path answers to is named in the refusal; a meaning
-    listed twice is counted once; a kind word in a qualifier that ties two
-    paths is tried without ("on the starter bank" beside `houseBank`); a
-    state is looked for among paths with states first; a settled path
-    learns a burst rhythm after 24 same-size outages, so a sender that
-    really changed is not reported for ever, while 20 equal outages of a
-    failing sensor still are; a duplicated edge row is replayed once;
-    "Which" lists only paths a qualifier names; empty quotes are told from
-    the gap between two quoted values. The review of that: a numbered
-    instance is no longer preferred to a named one when the request gives
-    no number; a state path is taken only if it answers every word and is
-    the thing itself (no blower for "the engine is running", no switch
-    for "the shore power voltage is off"), with the choice asked among
-    paths with states when neither fits; a `.state` leaf has states
-    whatever its units; empty quotes before punctuation are refused; a
-    word no path answers to is fine when the subject is clear without it
-    and the qualifier agrees; a learned outage cycle still reports the
-    sensor dying (a silence twice its longest outage). The review of
-    that: only a qualifying word (main, new, second...) is left to an
-    agreeing qualifier, so "freezer temperature in the cabin" is refused
-    again; switch/breaker/relay/fuse are answered by any path with states;
-    a display name scores only for words its path does not answer; a room
-    within the boat is not the cabin; a `.state` leaf takes on/off
-    whatever its units, and a flag refuses other words; a learned cycle
-    is cleared by a settled regular stretch, applies only while the path
-    is otherwise irregular, keeps its longest outage, is lengthened by a
-    dismissal and is left out of the feed's regular paths; a single
-    matching path with states is taken instead of asked about. From the
-    review of that and CodeRabbit's review of the commits since b103610:
-    a state path whose name has words the request leaves over that are
-    not modifiers or switch words is not the thing (no engine blower for
-    "the engine is running", no fridge fan for "the fridge is on"); a
-    quoted on/off on a flag is on/off, and any other word on a flag is
-    refused for model-written and hand-written rules too; the cabin and
-    saloon are "inside" again, only rooms that are not lived in are not; a
-    learned cycle's limit applies whatever the mean gap (burst senders),
-    and only gaps short enough for a regular path clear it, so a slow
-    cycle's death is still reported; a cycle path whose dropout is active
-    counts toward a silent feed; a "changes" rule ignores changes in a
-    mute's last seconds; an edit that moves a rule to another path or
-    operator starts it afresh; a rule's input is kept whatever the cap on
-    watched leaves; a History API URL with a query or fragment after an
-    API path is refused; History API error bodies are read at most 4 kB;
-    replay says how many of the asked paths had data and names requests
-    that could not be read; the panel keeps a newer status when an older
-    read fails. And from CodeRabbit's review of 21f6d5f and the review of
-    that: a retired rule's input stored past the cap goes with its rule;
-    a "changes" rule honours a mute that began and ended between two
-    ticks, and never restores an earlier mute's value; an edited rule's
-    pending duration starts again on its new path (and, from the next
-    review, its open finding closes); an error body keeps
-    only bytes within its limit and does not wait on its cancel; a part,
-    place or number of a thing is the thing (`bilgePump` for "the bilge",
-    `anchorLightMasthead`, `bilgePump1`), only a separate device (blower,
-    fan, fuel pump...) is not, and when the plain reading is such a device
-    the thing itself is taken or offered first; a numbered inside room
-    whose display name is a cabin or saloon is inside; saves that called a
-    slow cycling path settled are healed; replay counts a path asked twice
-    once and names up to three failed requests. And from the review of
-    842b674..56822ed: a numbered device (`engineBlower1`) is no more the
-    thing than the device; only words after the thing's own word say what
-    a path is, so `batteryCharger` is "the charger" and `engineStartRelay`
-    or `fridgeDoor` is not "the engine" or "the fridge" (beyond the thing
-    itself, at most one part or place word); a numbered inside room named
-    after an unlived thing ("Galley fridge") is not a cabin; a "changes"
-    rule added or edited after a mute does not report the mute's changes;
-    an edited rule's open finding closes and the new path waits its full
-    duration; a restart does not give a path that merely slowed down a
-    cycle limit; a History API body over 16 MB does not wait on its
-    cancel; replay names each distinct failure once, with how many
-    requests gave it.
-    A quoted state is read whole ("fault, low", "low, while charging"), and
-    replay keeps only the columns it asked for, each once (a declared column
-    without a path is skipped, not taken by position).
-  - CodeRabbit full review (detection and replay): replay enforces its row
-    limit on what the History API returns (rows closer than the requested
-    resolution, outside the window or past the limit are left out, and the
-    result reports `truncated` and `rowsDropped`), and ticks through gaps in
-    the returned history, so a dropout or silent feed spanning a gap is
-    reported; muting `feed` now mutes the data-feed finding; an outage no
-    longer stretches a path's learned update interval so its next outage
-    goes unreported (a slower rate needs eight long gaps of about one size,
-    as for GNSS); two sources are judged by their difference's departure
-    from their signed usual offset, so one moving from a volt above the
-    other to a volt below it disagrees (pairs saved before this learn their
-    offset again); History API responses (replay, Ask AI history, the path
-    list) are read at most 16 MB far, so a huge body is refused before it is
-    held in the server's memory; and the persistence test waits for the saves to finish
-    (`whenSaved()`) instead of a fixed delay. From the reviews of that:
-    long gaps one right after another count in a path's interval (an outage
-    after regular samples does not), so a sender that reports on change is
-    not reported at every quiet gap (64 dropouts over three nights became
-    13) while a flaky sensor still has every outage reported; replay keeps
-    rows with jitter (only rows closer than three quarters of the resolution
-    are extra), keeps clipped edge buckets, reads rows newest-first too,
-    limits each response on its own (requests whose rows are stamped at
-    different times keep them all), skips rows with no value, refuses a
-    response that declares none of the asked paths, checks dropouts at a
-    week's 61 s rows for paths with a value in nearly every row, and reports
-    gaps where nothing was recorded (`historyGaps`, as possible recorder
-    downtime); a silent feed is decided over all paths and reported unless
-    only muted paths went quiet.
+  - History API responses with a byte-order mark are read, as
+    `response.json()` reads them. Responses are read at most 16 MB far, so a
+    huge body is refused before it is held in the server's memory, and the
+    read does not wait on a cancel that never settles. Error bodies are read
+    at most 4 kB, keeping only the bytes within that limit. A History API
+    URL with a query or fragment after an API path is refused.
+  - The panel keeps a newer status when an older read fails.
 - **A shorter README, with the depth moved to `docs/`.** The README had grown
   to 1,100 lines, and it is also the plugin's App Store page, so a new user
   scrolled past 350 lines of Jetson memory tuning before reaching how to use
-  the panel. It is now a 190-line landing page: what the plugin does, the two
-  parts it needs (and that Watchkeeper needs only the plugin), quick start,
-  compose files, the panel, Watchkeeper, the key settings and a documentation
-  index. The detailed sections moved unchanged to `docs/jetson.md`,
-  `docs/how-it-works.md`, `docs/history.md`, `docs/settings.md` and
-  `docs/development.md`, with their cross-links updated.
-- **Watchkeeper documentation.** `docs/watchkeeper.md` is the reference: the
-  pipeline, every check with its thresholds, GNSS integrity, redundant
-  sources, operating states, the rule format and parser, where the model is
-  and is not used, the HTTP API, settings, persistence, tuning, measured
-  performance and known limitations. The README introduces Watchkeeper at the
-  top, notes that it needs no AI container, and gains its settings, routes and
-  a table of how little AI it uses.
-- **Watchkeeper discovers what each vessel publishes, and reports what it
-  found.** `GET /watch/inventory` and the panel's "What is watched?" list every
-  path discovered and what the watch does with each: watched, learning, or
-  skipped and by which rule. They also show which checks this vessel's data
-  supports, and what a missing check would need.
-- **The watch learns from dismissals, and writes a report.** "Not useful" on a
-  finding, or muting a path while it fires, makes that path need a 25 % bigger
-  departure before it is reported again, up to double. This applies to the
-  level, source-disagreement and dropout checks; a stuck-sensor or other
-  finding can recur as before. This decays with a
-  14-day half-life, is listed in the panel and can be undone with "Restore".
-  `GET /watch/report` and the panel's "Watch report" sum up the last day in
-  plain template lines: incidents, what is still active, the longest and the
-  repeated findings, sensor trouble, GNSS, your watches, operating changes.
-  "Ask AI for a logbook entry" passes them to the model as an operator-sent
-  question. New routes: `GET /watch/report` and `POST /watch/feedback`.
-- **Watch rules in plain words, with as little language model as possible.**
-  "Tell me if the coolant goes above 95 for 2 minutes" becomes a rule. A
-  deterministic parser reads thresholds, units, durations, urgency and "while"
-  conditions, and picks the path from what the vessel publishes. It asks which
-  path you mean when two fit. Only a request it cannot read goes to a model
-  (`watchRuleAssist`: the main model already loaded, a separate helper model
-  such as `qwen3:0.6b`, or never). The model chooses from at most 25 real paths,
-  with its answer held to a JSON schema. Every rule is read back in plain words
-  with its current value and recent record before it is stored, and runs
-  deterministically with no model at watch time. New routes:
-  `POST /watch/rules/compile` and `POST /watch/rules/save`.
-- **A baseline per operating state.** Each path keeps the baseline it learned
-  in each operating state: engine running or stopped, charger mode,
-  `navigation.state`. Once a transition settles, the path is judged against
-  what it normally does in that state. Before, every engine start re-learned
-  from the warm-up, so an engine that settled 10 °C hotter than usual became
-  the new normal without a word. Resting states re-learn instead, because a
-  cooling engine is not at a steady state.
-- **"Most unusual now".** `GET /watch/unusual` and a panel button rank every
-  path by its distance from its own normal for the current operating state,
-  below any threshold included, plus discrete paths in rarely seen states.
-  The list can be put to the model as a question.
-- **Fewer false "stuck sensor" findings.** A value of exactly zero (an engine
-  at 0 rpm) is a machine that is off, and a path re-learning after an
-  operating change is expected to behave differently.
-- **Redundant sources are compared instead of mixed.** When several sources
-  publish one path, only the primary one feeds the baseline. Interleaving two
-  sensors with a calibration offset made them look like noise, or like a step
-  each time the stream switched. The watch reports when sources drift apart
-  beyond their usual gap, which includes paths it otherwise skips, such as two
-  disagreeing compasses. It also reports when the primary goes quiet and
-  another source takes over.
+  the panel. It is now a short landing page: what the plugin does, the two
+  parts it needs, quick start, compose files, the panel, the key settings and
+  a documentation index. The detailed sections moved unchanged to
+  `docs/jetson.md`, `docs/how-it-works.md`, `docs/history.md`,
+  `docs/settings.md` and `docs/development.md`, with their cross-links
+  updated.
 
 ### Changed
 
+- **Watchkeeper is its own plugin.** The background watch of every path,
+  developed on this branch, moved to
+  [signalk-watchkeeper](https://github.com/KEGustafsson/signalk-watchkeeper)
+  before release: Ask AI and the watch have different needs, and the watch
+  needs no model at all.
 - **A question no longer pays for a timestamp on every leaf.** Each value in
   the snapshot carried its ISO timestamp as a sibling key, which told the model
   nothing about a value refreshed a second ago and cost more characters than the

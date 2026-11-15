@@ -314,16 +314,3 @@ still fails with `Unexpected token 'v', "vite v6.4."...`.)
 
 `POST /plugins/signalk-ai-bridge/ai/retune` re-measures the fit if you free
 memory later without restarting the plugin.
-
-If you enable Watchkeeper on the board as well:
-
-6. Watch the Signal K process's CPU with `top` for a few minutes after the
-   learning period. The watch should add well under a few percent of one core.
-   Each update costs a few microseconds and each five-second check a few
-   milliseconds per thousand paths, measured on an x86 dev machine, so expect
-   the Jetson's Cortex cores to be a few times slower.
-7. Open **What is watched?** and check that the capabilities match the boat:
-   dead reckoning needs a heading and a speed log, and the receiver comparison
-   needs two GNSS sources.
-8. Press **Replay last 24 h** once a history provider has a day of data, to see
-   how many incidents the current sensitivity would have raised.
