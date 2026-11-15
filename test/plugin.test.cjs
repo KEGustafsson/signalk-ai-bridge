@@ -330,7 +330,7 @@ describe('signalk-ai-bridge plugin', () => {
         }
       );
 
-      plugin.start({ warmupOnStart: false });
+      plugin.start({ aiModel: { warmupOnStart: false } });
       const routes = {};
       plugin.registerWithRouter({
         get(path, handler) {
@@ -349,9 +349,12 @@ describe('signalk-ai-bridge plugin', () => {
 
       assert.ok(!('aiDataPaths' in properties));
       assert.ok(!('historyPaths' in properties));
-      // The rest of the history settings stay in the form.
-      assert.ok('historyEnabled' in properties);
-      assert.ok('historyDuration' in properties);
+      // The rest of the history settings stay in the form, in their section.
+      assert.ok('historyEnabled' in properties.history.properties);
+      const [, on] = properties.history.dependencies.historyEnabled.oneOf;
+      assert.ok('historyDuration' in on.properties);
+      assert.ok(!JSON.stringify(plugin.schema()).includes('"aiDataPaths"'));
+      assert.ok(!JSON.stringify(plugin.schema()).includes('"historyPaths"'));
     });
 
     it('stores a selection and applies it to the running plugin', async () => {
@@ -1099,9 +1102,411 @@ describe('lifecycle gating', () => {
     assert.match(host.errors[0], /could not reach the model/i);
   });
 
-  it('exposes a password widget for the API key', () => {
+  it('exposes a password widget for both API keys', () => {
     const plugin = createPlugin(makeHost().app, {});
     assert.equal(typeof plugin.uiSchema, 'function');
-    assert.equal(plugin.uiSchema().apiKey['ui:widget'], 'password');
+    assert.equal(plugin.uiSchema().aiModel.apiKey['ui:widget'], 'password');
+    assert.equal(plugin.uiSchema().history.historyApiKey['ui:widget'], 'password');
+  });
+});
+
+describe('settings stored in sections', () => {
+  /** Options as the admin page stores them, every section filled in, with the panel's selections. */
+  const sectioned = () => ({
+    enabled: true,
+    aiModel: {
+      backend: 'ollama',
+      baseUrl: 'http://gpu.local:11434',
+      model: 'gemma4:e2b',
+      keepAlive: '1h',
+      warmupOnStart: false
+    },
+    answers: { systemPrompt: 'Be brief.', temperature: 0.3, topP: 0.9, maxTokens: 1024, requestTimeoutMs: 180000 },
+    history: {
+      historyEnabled: true,
+      historyDuration: 'PT2H',
+      historyResolution: '',
+      historySamples: 20,
+      historyServerUrl: '',
+      historyApiKey: '',
+      historyProvider: 'signalk-parquet',
+      historyTimeoutMs: 6000
+    },
+    advanced: { numCtx: 4096, numGpu: -1, gpuAutoTune: false, numBatch: 256, numThread: 0 },
+    aiDataPaths: ['a.one', 'b.two', 'c.three'],
+    historyPaths: ['h.one', 'h.two']
+  });
+
+  function startWith(options, appOverrides = {}) {
+    const saved = [];
+    const statuses = [];
+    const fetched = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: (text) => statuses.push(text),
+      savePluginOptions: (stored, done) => {
+        saved.push(JSON.parse(JSON.stringify(stored)));
+        done(null);
+      },
+      ...appOverrides
+    };
+    const plugin = createPlugin(app, {
+      fetchImpl: async (url) => {
+        fetched.push(String(url));
+        return new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+    });
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    plugin.start(options);
+    return { plugin, routes, saved, statuses, fetched };
+  }
+
+  it('keeps every section as it was when a selection is saved or a path moved, and adds no flat keys', async () => {
+    const options = sectioned();
+    const { plugin, routes, saved } = startWith(options);
+    try {
+      const selection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['a.one', 'b.two', 'c.three', 'd.four'] } }, selection);
+      assert.equal(selection.statusCode, 200);
+      const historySelection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { historyPaths: ['h.one', 'h.two', 'h.three'] } }, historySelection);
+      assert.equal(historySelection.statusCode, 200);
+      const live = createResponseRecorder();
+      await routes['POST /paths/move']({ headers: {}, body: { kind: 'live', path: 'd.four', delta: -1 } }, live);
+      assert.equal(live.statusCode, 200);
+      const history = createResponseRecorder();
+      await routes['POST /paths/move']({ headers: {}, body: { kind: 'history', path: 'h.three', delta: -1 } }, history);
+      assert.equal(history.statusCode, 200);
+
+      assert.equal(saved.length, 4);
+      const sections = sectioned();
+      delete sections.aiDataPaths;
+      delete sections.historyPaths;
+      for (const stored of saved) {
+        const { aiDataPaths, historyPaths, ...rest } = stored;
+        assert.deepEqual(rest, sections);
+        assert.ok(Array.isArray(aiDataPaths));
+        assert.ok(Array.isArray(historyPaths));
+        assert.deepEqual(Object.keys(stored).sort(), ['advanced', 'aiDataPaths', 'aiModel', 'answers', 'enabled', 'history', 'historyPaths']);
+      }
+      assert.deepEqual(saved[0].aiDataPaths, ['a.one', 'b.two', 'c.three', 'd.four']);
+      assert.deepEqual(saved[1].historyPaths, ['h.one', 'h.two', 'h.three']);
+      assert.deepEqual(saved[2].aiDataPaths, ['a.one', 'b.two', 'd.four', 'c.three']);
+      assert.deepEqual(saved[3].historyPaths, ['h.one', 'h.three', 'h.two']);
+      // The options it was started with are not changed in place.
+      assert.deepEqual(options, sectioned());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the settings its sections hold', async () => {
+    const { plugin, routes, statuses, fetched } = startWith(sectioned());
+    try {
+      assert.match(statuses.at(-1), /gemma4:e2b via http:\/\/gpu\.local:11434/);
+      const status = createResponseRecorder();
+      await routes['GET /ai/status']({}, status);
+      assert.equal(status.statusCode, 200);
+      assert.equal(status.body.model, 'gemma4:e2b');
+      assert.equal(status.body.baseUrl, 'http://gpu.local:11434');
+      assert.equal(status.body.requestTimeoutMs, 180000);
+      assert.equal(status.body.maxTokens, 1024);
+      assert.equal(status.body.configuredNumCtx, 4096);
+      assert.equal(status.body.numBatch, 256);
+      assert.equal(status.body.keepAlive, '1h');
+      assert.equal(status.body.gpuAutoTune, false);
+      assert.deepEqual(status.body.aiDataPaths, ['a.one', 'b.two', 'c.three']);
+      assert.equal(status.body.history.enabled, true);
+      assert.equal(status.body.history.samples, 20);
+      assert.equal(status.body.history.durationSeconds, 7200);
+      assert.equal(status.body.history.provider, 'signalk-parquet');
+      assert.deepEqual(status.body.history.paths, ['h.one', 'h.two']);
+      assert.ok(fetched.every((url) => url.startsWith('http://gpu.local:11434/')), fetched.join(', '));
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('says which switch to turn on when it is off', () => {
+    const { plugin, statuses } = startWith({ ...sectioned(), enabled: false });
+    try {
+      assert.match(statuses.at(-1), /switch on "Turn on AI Bridge"/);
+    } finally {
+      plugin.stop();
+    }
+  });
+});
+
+describe('settings saved flat by an earlier version', () => {
+  /** Flat options, as every version before the sections stored them. */
+  const flat = () => ({
+    enabled: true,
+    baseUrl: 'http://gpu.local:11434',
+    model: 'qwen3:4b',
+    warmupOnStart: false,
+    maxTokens: 1024,
+    historyEnabled: true,
+    historySamples: 20,
+    numCtx: 4096,
+    aiDataPaths: ['a.one', 'b.two'],
+    historyPaths: ['h.one']
+  });
+  const migrated = () => ({
+    enabled: true,
+    aiDataPaths: ['a.one', 'b.two'],
+    historyPaths: ['h.one'],
+    aiModel: { baseUrl: 'http://gpu.local:11434', model: 'qwen3:4b', warmupOnStart: false },
+    answers: { maxTokens: 1024 },
+    history: { historyEnabled: true, historySamples: 20 },
+    advanced: { numCtx: 4096 }
+  });
+
+  /** Let the options write queue run what start() put on it. */
+  const settle = async () => {
+    for (let i = 0; i < 10; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  function host(save) {
+    const saved = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: () => {},
+      savePluginOptions: (stored, done) => {
+        saved.push(JSON.parse(JSON.stringify(stored)));
+        (save || ((callback) => callback(null)))(done);
+      }
+    };
+    const plugin = createPlugin(app, {
+      fetchImpl: async () => new Response(JSON.stringify({ models: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    });
+    const routes = {};
+    plugin.registerWithRouter({
+      get: (path, handler) => {
+        routes[`GET ${path}`] = handler;
+      },
+      post: (path, handler) => {
+        routes[`POST ${path}`] = handler;
+      }
+    });
+    return { plugin, routes, saved };
+  }
+
+  const status = async (routes) => {
+    const response = createResponseRecorder();
+    await routes['GET /ai/status']({}, response);
+    return response.body;
+  };
+
+  it('moves them into their sections on start and stores that once, so the form shows them', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved } = host();
+    const options = flat();
+    plugin.start(options);
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      assert.deepEqual(saved[0], migrated());
+      // The options it was started with are not changed in place.
+      assert.deepEqual(options, flat());
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /^signalk-ai-bridge: moved settings saved by an earlier version into their sections: baseUrl, model, warmupOnStart, maxTokens, historyEnabled, historySamples, numCtx\.$/);
+      // Running on the same values as before.
+      const body = await status(routes);
+      assert.equal(body.model, 'qwen3:4b');
+      assert.equal(body.configuredNumCtx, 4096);
+      assert.equal(body.history.samples, 20);
+      // A later save keeps the sections and brings back no flat key.
+      const selection = createResponseRecorder();
+      await routes['POST /paths/selection']({ headers: {}, body: { aiDataPaths: ['c.three'] } }, selection);
+      assert.equal(selection.statusCode, 200);
+      assert.deepEqual(saved[1], { ...migrated(), aiDataPaths: ['c.three'] });
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('keeps a value already in its section over the flat one', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, routes, saved } = host();
+    plugin.start({ model: 'old-flat', numCtx: 2048, aiModel: { model: 'from-the-form' } });
+    try {
+      await settle();
+      assert.deepEqual(saved, [{ aiModel: { model: 'from-the-form' }, advanced: { numCtx: 2048 } }]);
+      assert.match(logged.mock.calls[0].arguments[0], /numCtx; for model the value already in its section was kept\.$/);
+      assert.equal((await status(routes)).model, 'from-the-form');
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing, and says nothing, when nothing is flat', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = host();
+    plugin.start(migrated());
+    plugin.stop();
+    plugin.start({});
+    try {
+      await settle();
+      assert.equal(saved.length, 0);
+      assert.equal(logged.mock.calls.length, 0);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs on the moved settings when they cannot be stored, and tries again on the next start', async (t) => {
+    const logged = t.mock.method(console, 'log', () => {});
+    let fail = true;
+    const { plugin, routes, saved } = host((done) => done(fail ? new Error('disk full') : null));
+    plugin.start(flat());
+    try {
+      await settle();
+      assert.equal(saved.length, 1);
+      const lines = logged.mock.calls.map((call) => call.arguments.join(' '));
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /could not be stored \(disk full\); this is tried again on the next start\./);
+      const body = await status(routes);
+      assert.equal(body.model, 'qwen3:4b');
+      assert.equal(body.configuredNumCtx, 4096);
+
+      // The server starts it again with what is on disk: still flat.
+      fail = false;
+      plugin.stop();
+      plugin.start(flat());
+      await settle();
+      assert.equal(saved.length, 2);
+      assert.deepEqual(saved[1], migrated());
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('stores nothing when the plugin stops before the move gets its turn', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    const { plugin, saved } = host();
+    plugin.start(flat());
+    plugin.stop();
+    await settle();
+    assert.equal(saved.length, 0);
+  });
+
+  it('makes the move on the restart options when it restarts while the move is being stored', async (t) => {
+    t.mock.method(console, 'log', () => {});
+    let restarted = false;
+    let plugin;
+    const restartOptions = { ...flat(), model: 'restarted' };
+    const made = host((done) => {
+      if (!restarted) {
+        restarted = true;
+        plugin.stop();
+        plugin.start(restartOptions);
+      }
+      done(null);
+    });
+    plugin = made.plugin;
+    plugin.start(flat());
+    try {
+      await settle();
+      // The first copy, then the restart's options moved: disk ends with what the plugin runs.
+      assert.equal(made.saved.length, 2);
+      assert.deepEqual(made.saved[1], { ...migrated(), aiModel: { ...migrated().aiModel, model: 'restarted' } });
+      assert.equal((await status(made.routes)).model, 'restarted');
+    } finally {
+      plugin.stop();
+    }
+  });
+});
+
+describe('the settings form for settings saved flat by an earlier version', () => {
+  const { settingsSchema } = require('../lib/settings.cjs');
+  const flat = () => ({
+    enabled: false,
+    baseUrl: 'http://gpu.local:11434',
+    model: 'qwen3:4b',
+    warmupOnStart: false,
+    maxTokens: 1024,
+    historyEnabled: true,
+    historySamples: 20,
+    numCtx: 4096,
+    aiDataPaths: ['a.one']
+  });
+
+  /** A plugin that is never started, as Signal K keeps one that is off. */
+  function offPlugin(readPluginOptions) {
+    const saves = [];
+    const app = {
+      selfId: 'urn:mrn:signalk:uuid:test-self',
+      getSelfPath: () => undefined,
+      setPluginStatus: () => {},
+      savePluginOptions: (stored, done) => {
+        saves.push(stored);
+        done(null);
+      }
+    };
+    if (readPluginOptions !== undefined) app.readPluginOptions = readPluginOptions;
+    return { plugin: createPlugin(app, {}), saves };
+  }
+
+  it('shows the stored values while the plugin is off, before any start has moved them', () => {
+    const { plugin, saves } = offPlugin(() => ({ enabled: false, configuration: flat() }));
+    const { properties } = plugin.schema();
+    assert.equal(properties.aiModel.properties.baseUrl.default, 'http://gpu.local:11434');
+    assert.equal(properties.aiModel.properties.model.default, 'qwen3:4b');
+    assert.equal(properties.aiModel.properties.warmupOnStart.default, false);
+    assert.equal(properties.answers.properties.maxTokens.default, 1024);
+    assert.equal(properties.history.properties.historyEnabled.default, true);
+    const [, on] = properties.history.dependencies.historyEnabled.oneOf;
+    assert.equal(on.properties.historySamples.default, 20);
+    assert.equal(properties.advanced.properties.numCtx.default, 4096);
+    // Everything not stored flat keeps its usual default.
+    const usual = settingsSchema().properties;
+    assert.equal(properties.aiModel.properties.keepAlive.default, usual.aiModel.properties.keepAlive.default);
+    assert.equal(properties.advanced.properties.numBatch.default, usual.advanced.properties.numBatch.default);
+    // Asking for the form writes nothing.
+    assert.deepEqual(saves, []);
+    assert.deepEqual(JSON.parse(JSON.stringify(plugin.schema())), plugin.schema());
+  });
+
+  it('reads the stored options each time the form is asked for', () => {
+    let configuration = flat();
+    const { plugin } = offPlugin(() => ({ enabled: false, configuration }));
+    assert.equal(plugin.schema().properties.aiModel.properties.model.default, 'qwen3:4b');
+    // Saved from the form: in the sections now, so the form is the usual one.
+    configuration = { aiModel: { model: 'qwen3:4b' } };
+    assert.deepEqual(plugin.schema(), settingsSchema());
+  });
+
+  it('is the usual form when the stored options are in sections, empty or cannot be read', () => {
+    const usual = settingsSchema();
+    const hosts = {
+      'in sections': () => ({ enabled: true, configuration: { aiModel: { model: 'qwen3:4b' }, advanced: { numCtx: 4096 } } }),
+      'nothing stored': () => ({}),
+      'empty configuration': () => ({ enabled: false, configuration: {} }),
+      'returns nothing': () => undefined,
+      'returns null': () => null,
+      'returns a string': () => 'options',
+      'configuration not an object': () => ({ configuration: 'flat' }),
+      throws: () => {
+        throw new Error('EACCES');
+      },
+      'not a function': 'readPluginOptions'
+    };
+    for (const [name, readPluginOptions] of Object.entries(hosts)) {
+      const { plugin } = offPlugin(readPluginOptions);
+      assert.deepEqual(plugin.schema(), usual, name);
+    }
+    // A host without readPluginOptions at all.
+    assert.deepEqual(offPlugin().plugin.schema(), usual);
   });
 });

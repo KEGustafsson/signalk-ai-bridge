@@ -40,7 +40,7 @@ explicit Volta branch that uses the tensor cores this generation introduced. Oll
 with the settings in that file is the fastest thing this board can run — there is
 nothing further to move it to.
 
-If you point `backend` at `tensorrt-llm` on a pre-Ampere board anyway, the GPU
+If you set **Model server type** (`backend`) to TensorRT-LLM on a pre-Ampere board anyway, the GPU
 Acceleration card now says the GPU is too old rather than reporting the server
 unreachable, which is the difference between "not started yet" and "cannot start".
 
@@ -120,8 +120,9 @@ The panel shows the tuned result, for example:
 > GPU layers: All (forced)
 > Auto-tuned: Context window reduced to 4096 tokens so every layer fits in GPU memory.
 
-Turn this off with `gpuAutoTune` if you would rather pin the settings yourself.
-Setting `numGpu` explicitly always wins over the tuner, including `0`, which is
+Turn off **Fit the model on the GPU automatically** (`gpuAutoTune`, under
+**Advanced – GPU and memory**) if you would rather pin the settings yourself.
+Setting **GPU layers** (`numGpu`) explicitly always wins over the tuner, including `0`, which is
 useful for a CPU-vs-GPU comparison.
 
 ## Is it actually accelerated?
@@ -130,12 +131,12 @@ The `GPU Acceleration` card answers this directly. It reads Ollama's `/api/ps`
 and reports one of:
 
 - **GPU accelerated** — the whole model is resident in GPU memory.
-- **Partly on CPU** — some layers spilled; lower `numCtx` or use a smaller or
+- **Partly on CPU** — some layers spilled; lower **Context window** (`numCtx`) or use a smaller or
   more heavily quantized model.
 - **CPU only** — no layers on the GPU; the container is missing the NVIDIA
   runtime or the GPU device reservation.
 - **Model not loaded** — nothing resident yet; ask a question or leave
-  `warmupOnStart` enabled.
+  **Load the model when the plugin starts** (`warmupOnStart`) on.
 
 Each AI response also reports `Generation speed` in tokens/second, which is the
 quickest independent confirmation.
@@ -173,7 +174,7 @@ Roughly in order of what they buy on an Orin Nano Super:
    Ollama reports no configuration, so this is inferred from the resident
    footprint rather than read.
 2. `sudo nvpmodel -m <MAXN id> && sudo jetson_clocks` — the panel names the id.
-3. Leave `gpuAutoTune` on, so full offload is driven rather than hoped for.
+3. Leave **Fit the model on the GPU automatically** (`gpuAutoTune`) on, so full offload is driven rather than hoped for.
 4. `scripts/build-trtllm-engine.sh` — an INT4-AWQ TensorRT-LLM engine compiled
    for SM 8.7. This is the ceiling: a plan built for this exact device, with the
    Ampere Tensor cores doing four-bit matmuls.
@@ -212,16 +213,20 @@ token generation is memory-bandwidth bound, that is the whole of the difference.
 
 ## Suggested plugin settings on 8 GB
 
+In the plugin settings, the GPU settings are under **Advanced – GPU and
+memory**, the longest answer and the wait under **Answers**, and the other two
+under **AI model**.
+
 | Setting | Value | Why |
 | --- | --- | --- |
-| `numCtx` | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
-| `maxTokens` | `1024` | Output budget only. Capped at half of `numCtx` anyway, and a vessel answer rarely runs past a few hundred tokens. |
-| `gpuAutoTune` | `true` | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
-| `numGpu` | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
-| `numBatch` | `512` on Orin, `256` on Xavier NX | Prompt-eval throughput on the Jetson iGPU. Measured: 512 fails with `CUBLAS_STATUS_ALLOC_FAILED` on a Xavier NX at `numCtx` 8192. |
-| `keepAlive` | `30m` | Avoids re-reading several GB from storage on the next question. |
-| `warmupOnStart` | `true` | Loads the model when the plugin starts, not when the operator asks. |
-| `requestTimeoutMs` | `180000` | Room for a cold load plus a full answer; `0` leaves a wedged backend nothing to stop it. |
+| Context window (`numCtx`) | `8192` | Keeps weights plus KV cache inside unified memory. Raise to `16384` only if the card still reports GPU accelerated. |
+| Longest answer (`maxTokens`) | `1024` | Output budget only. Capped at half of `numCtx` anyway, and a vessel answer rarely runs past a few hundred tokens. |
+| Fit the model on the GPU automatically (`gpuAutoTune`) | on | Force full offload and shrink the context until it fits, instead of accepting the backend's estimate. |
+| GPU layers (`numGpu`) | `-1` | `-1` lets the tuner drive. An explicit value overrides it: `999` forces full offload, `0` pins to CPU for comparison. |
+| Batch size (`numBatch`) | `512` on Orin, `256` on Xavier NX | Prompt-eval throughput on the Jetson iGPU. Measured: 512 fails with `CUBLAS_STATUS_ALLOC_FAILED` on a Xavier NX at `numCtx` 8192. |
+| Keep the model loaded for (`keepAlive`) | `30m` | Avoids re-reading several GB from storage on the next question. |
+| Load the model when the plugin starts (`warmupOnStart`) | on | Loads the model when the plugin starts, not when the operator asks. |
+| Wait for an answer (`requestTimeoutMs`) | `180000` | Room for a cold load plus a full answer; `0` leaves a wedged backend nothing to stop it. |
 
 ## TensorRT-LLM
 
@@ -229,13 +234,15 @@ token generation is memory-bandwidth bound, that is the whole of the difference.
 is 7.2, so there is no engine to build or serve there. On Xavier, Ollama is the
 whole story.
 
-Set `backend` to `tensorrt-llm` and point `baseUrl` at an OpenAI-compatible
-NVIDIA server (`trtllm-serve` or a NIM container); `model` is the id reported by
-`GET /v1/models`, and `apiKey` is sent as a bearer token when set.
+In the **AI model** section, set **Model server type** (`backend`) to
+**TensorRT-LLM or NIM** and point **Model server address** (`baseUrl`) at an
+OpenAI-compatible NVIDIA server (`trtllm-serve` or a NIM container); **Model
+name** (`model`) is the id reported by `GET /v1/models`, and **API key**
+(`apiKey`), shown for this server type, is sent as a bearer token when set.
 
 TensorRT-LLM compiles a CUDA engine ahead of time for this GPU's SM version
 (8.7 on Orin) with a fixed maximum sequence length, so there is no runtime
-CPU/GPU split to get wrong — but `numCtx` must stay at or below the engine's
+CPU/GPU split to get wrong — but the context window (`numCtx`) must stay at or below the engine's
 `--max_seq_len`, because exceeding it is a request error rather than a silent
 fallback.
 

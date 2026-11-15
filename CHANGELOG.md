@@ -126,6 +126,47 @@ this project uses [semantic versioning](https://semver.org/).
 
 ### Changed
 
+- **The plugin settings are grouped into sections**, written for a boat
+  owner rather than a developer. The form opens with a short note on what AI
+  Bridge does and that it needs a model server (Ollama by default, not
+  included and installed separately), then one switch, **Turn on AI Bridge**,
+  and four sections, each a nested object in the plugin's options:
+  **AI model** (`aiModel`: server type, address, model name, API key, keep
+  loaded, load on start), **Answers** (`answers`: instructions, temperature,
+  top-p, longest answer, wait), **History in answers – optional** (`history`)
+  and **Advanced – GPU and memory** (`advanced`: context window, GPU layers,
+  automatic fitting, batch size, CPU threads). Field titles and descriptions
+  are short and plain, blank-means-default fields show what blank means, and
+  the technical detail moved to `docs/settings.md`, linked once from the form,
+  which now also lists the environment variables. Every default and every
+  stored value is unchanged; the server type reads Ollama / TensorRT-LLM or
+  NIM (NVIDIA), stored as `ollama` and `tensorrt-llm` as before.
+  The API key is shown only for a TensorRT-LLM or NIM server, and the history
+  settings only once **Include recent history** is on.
+  `lib/settings.cjs` holds the form and `readSettings()`, which turns the
+  sectioned options into the flat settings the plugin already read. Options
+  stored flat are still read, a key set nowhere still falls back to its
+  default or `SIGNALK_AI_BRIDGE_*` variable, and saving a path selection or
+  moving a path keeps every section as it is.
+  Settings saved by an earlier version are moved into the sections on the
+  first start (`migrateSettings()`), and shown in the form from the start
+  even while the plugin is off, so the form shows the stored values instead
+  of defaults that its first save would have put over them. A value
+  already in a section wins, the flat keys are removed, and the result is
+  stored once through the options write queue. The server log gets one line
+  naming the moved settings. Nothing is stored when nothing is flat or the
+  plugin is stopped, and a failed save is tried again on the next start.
+  A plugin that is off is never started, so until then `schema()` reads the
+  stored options (`app.readPluginOptions()`) and gives each field whose
+  setting is still flat that value as its default: the form shows it, and
+  a save stores it in its section rather than the default over it. A
+  stored value the field does not take keeps the field's usual default,
+  with a note in its description. Loading the form writes nothing, and a
+  server without `readPluginOptions()`, or one that fails, gets the usual
+  form.
+  Messages that name a setting use its new name and section ("Advanced →
+  Context window (tokens)", "History server address", "Turn on AI Bridge").
+
 - **The licence is now the European Union Public Licence v. 1.2
   (EUPL-1.2)**, instead of Apache-2.0: `LICENSE` and the `license` field in
   `package.json`.

@@ -113,7 +113,7 @@ describe('GPU residency reporting', () => {
     ]);
 
     assert.equal(status.state, 'partial');
-    assert.match(status.message, /num_ctx/);
+    assert.match(status.message, /"Advanced → Context window \(tokens\)"/);
   });
 
   it('reports a CPU-only load', async () => {

@@ -1,21 +1,6 @@
 'use strict';
 
 const {
-  DEFAULT_AI_BASE_URL,
-  DEFAULT_AI_MODEL,
-  DEFAULT_KEEP_ALIVE,
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_NUM_BATCH,
-  DEFAULT_NUM_CTX,
-  DEFAULT_NUM_GPU,
-  DEFAULT_NUM_THREAD,
-  DEFAULT_SYSTEM_PROMPT,
-  MAX_NUM_BATCH,
-  MAX_NUM_CTX,
-  MAX_NUM_GPU,
-  MAX_NUM_THREAD,
-  MIN_NUM_BATCH,
-  MIN_NUM_CTX,
   getAccelerationReport,
   getAiAvailability,
   resolveOffload,
@@ -29,12 +14,7 @@ const {
 } = require('./lib/ai-service.cjs');
 const { createBridgeService, listSelfPaths, normalizeAiDataPaths } = require('./lib/bridge-service.cjs');
 const {
-  DEFAULT_HISTORY_DURATION,
-  DEFAULT_HISTORY_SAMPLES,
-  DEFAULT_HISTORY_TIMEOUT_MS,
   MAX_HISTORY_PATHS,
-  MAX_HISTORY_SAMPLES,
-  MIN_HISTORY_SAMPLES,
   authHeadersFromRequest,
   listHistoryPaths,
   normalizeHistoryConfig,
@@ -42,6 +22,7 @@ const {
   resolveHistoryPaths,
   resolveWindow
 } = require('./lib/history-service.cjs');
+const { SETTING_LABELS, migrateSettings, readSettings, settingsSchema, settingsUiSchema } = require('./lib/settings.cjs');
 
 // A selection is prompt material: every path is prompt-eval work on the GPU,
 // and the context budget drops what does not fit anyway. Wildcards mean a
@@ -49,6 +30,10 @@ const {
 const MAX_SELECTED_AI_PATHS = 100;
 
 module.exports = function createPlugin(app, dependencies = {}) {
+  // The options as Signal K stored them - in sections, or flat from before the
+  // sections - and as every save writes them back: a save changes its own keys
+  // (the top-level path selections) and keeps the rest as it is. Read them
+  // through readSettings(), as getConfig() does.
   let pluginOptions = {};
   let routesRegistered = false;
   // Express has no public API for unmounting a subrouter, and signalk-server
@@ -76,219 +61,34 @@ module.exports = function createPlugin(app, dependencies = {}) {
     };
   }
 
-  const getConfig = () => ({
-    ...normalizeAiConfig(pluginOptions),
-    ...normalizeServerConfig(pluginOptions),
-    ...normalizeHistoryConfig(pluginOptions)
-  });
+  const getConfig = () => {
+    const settings = readSettings(pluginOptions);
+    return {
+      ...normalizeAiConfig(settings),
+      ...normalizeServerConfig(settings),
+      ...normalizeHistoryConfig(settings)
+    };
+  };
 
-  const schema = () => ({
-    type: 'object',
-    properties: {
-      enabled: {
-        type: 'boolean',
-        title: 'Enable AI pipeline',
-        default: true
-      },
-      baseUrl: {
-        type: 'string',
-        title: 'Inference host',
-        description:
-          'Ollama or TensorRT-LLM host URL. Leave blank to use AI_MODEL_URL or the default local Ollama server.',
-        default: DEFAULT_AI_BASE_URL
-      },
-      model: {
-        type: 'string',
-        title: 'AI model',
-        description: 'Model name to send in chat requests (an Ollama tag, or a TensorRT-LLM served model id).',
-        default: DEFAULT_AI_MODEL
-      },
-      systemPrompt: {
-        type: 'string',
-        title: 'System prompt',
-        description:
-          'Passed as a native Ollama system message before the operator request. The default is tuned against ' +
-          'measured failures, so prefer adding to it over replacing it — and do not ask for unit conversions: ' +
-          'angles, temperatures and speeds are already converted to degrees, Celsius and knots before the model ' +
-          'sees them, and asking again gets them converted twice.',
-        default: DEFAULT_SYSTEM_PROMPT
-      },
-      requestTimeoutMs: {
-        type: 'integer',
-        title: 'Request timeout (ms)',
-        description:
-          'How long to wait for Ollama before failing. Allow for a cold model load plus the answer — on a Xavier NX ' +
-          'that is roughly 47 seconds to load and 20 more before the first token. Set to 0 to disable the timeout, ' +
-          'which leaves nothing to stop a wedged backend.',
-        default: 120000,
-        minimum: 0,
-        maximum: 300000
-      },
-      temperature: {
-        type: 'number',
-        title: 'Temperature',
-        default: 0.2,
-        minimum: 0,
-        maximum: 2
-      },
-      topP: {
-        type: 'number',
-        title: 'Top-p',
-        default: 0.95,
-        minimum: 0,
-        maximum: 1
-      },
-      maxTokens: {
-        type: 'integer',
-        title: 'Max output tokens',
-        description:
-          'Upper bound on generated tokens (num_predict). It does not size the KV cache — use "GPU context window" ' +
-          'for that — but it is capped at half the context window, because the prompt and the answer share it and ' +
-          'the backend resolves a conflict by truncating the prompt. Raise the context window for longer answers.',
-        default: DEFAULT_MAX_TOKENS,
-        minimum: 64,
-        maximum: MAX_NUM_CTX
-      },
-      numCtx: {
-        type: 'integer',
-        title: 'GPU context window (num_ctx)',
-        description:
-          'Tokens of context the model keeps in memory. llama.cpp reserves the KV cache from this value up front, ' +
-          'so it is the setting that decides whether the model stays resident on the GPU, and it also sets how much ' +
-          'vessel data the plugin will send: paths beyond what fits are dropped from the end of your selection, and ' +
-          'the prompt says how many. On a Jetson Orin Nano Super (8 GB unified memory) keep this at or below 16384 ' +
-          'for a 4B-class model.',
-        default: DEFAULT_NUM_CTX,
-        minimum: MIN_NUM_CTX,
-        maximum: MAX_NUM_CTX
-      },
-      numGpu: {
-        type: 'integer',
-        title: 'GPU layers (num_gpu)',
-        description:
-          'Layers to offload to CUDA. -1 lets Ollama estimate the split, 0 forces CPU-only execution, and a high value such as 999 forces full GPU offload.',
-        default: DEFAULT_NUM_GPU,
-        minimum: -1,
-        maximum: MAX_NUM_GPU
-      },
-      gpuAutoTune: {
-        type: 'boolean',
-        title: 'Maximize GPU offload automatically',
-        description:
-          'On start, force every layer onto the GPU and shrink the context window until the whole model is resident, instead of accepting whatever CPU/GPU split the backend estimates. Falls back to the backend estimate when the model cannot fit at all.',
-        default: true
-      },
-      numBatch: {
-        type: 'integer',
-        title: 'Prompt batch size (num_batch)',
-        description:
-          'Tokens evaluated per GPU batch. Larger batches raise prompt-eval throughput at the cost of memory, and ' +
-          'this is usually the first setting to lower after a CUDA out-of-memory error. 512 suits an Orin; a ' +
-          'Xavier NX (8 GB, Volta) needs 256 at a context window of 8192.',
-        default: DEFAULT_NUM_BATCH,
-        minimum: MIN_NUM_BATCH,
-        maximum: MAX_NUM_BATCH
-      },
-      numThread: {
-        type: 'integer',
-        title: 'CPU threads (num_thread)',
-        description:
-          'Threads used for whatever is not offloaded to the GPU. 0 lets the runtime choose; the Orin Nano Super has 6 Cortex-A78AE cores.',
-        default: DEFAULT_NUM_THREAD,
-        minimum: 0,
-        maximum: MAX_NUM_THREAD
-      },
-      keepAlive: {
-        type: 'string',
-        title: 'Keep model loaded (keep_alive)',
-        description:
-          'How long the model stays resident in GPU memory between requests, for example 30m, 1h, or -1 to never unload. Reloading a model from Jetson storage costs several seconds on the next question.',
-        default: DEFAULT_KEEP_ALIVE
-      },
-      warmupOnStart: {
-        type: 'boolean',
-        title: 'Preload model on start',
-        description:
-          'Load the model into GPU memory when the plugin starts so the first operator question does not pay the cold-load cost.',
-        default: true
-      },
-      backend: {
-        type: 'string',
-        title: 'Inference backend',
-        description:
-          'ollama talks to an Ollama server (llama.cpp CUDA backend). tensorrt-llm talks to any OpenAI-compatible NVIDIA server such as trtllm-serve or a NIM container, where the CUDA engine is compiled ahead of time for this GPU.',
-        enum: ['ollama', 'tensorrt-llm'],
-        default: 'ollama'
-      },
-      apiKey: {
-        type: 'string',
-        title: 'API key (TensorRT-LLM / NIM only)',
-        description:
-          'Optional bearer token sent to an OpenAI-compatible backend. Leave blank for a local Ollama or unauthenticated trtllm-serve.',
-        default: ''
-      },
-      historyEnabled: {
-        type: 'boolean',
-        title: 'Include history from the Signal K History API',
-        description:
-          'Also send recent history for the selected paths, read from the server\'s History API (/signalk/v2/api/history). Requires a history provider plugin such as signalk-to-influxdb2 or signalk-parquet; without one the plugin says the history was unavailable and answers from live data alone. Choose the paths in the plugin\'s web app, under History Context.',
-        default: false
-      },
-      historyDuration: {
-        type: 'string',
-        title: 'History window',
-        description:
-          'How far back to look, as an ISO 8601 duration (PT15M, PT1H, P1D), a shorthand (30m, 2h), or a plain number of seconds. Capped at 31 days.',
-        default: DEFAULT_HISTORY_DURATION
-      },
-      historyResolution: {
-        type: 'string',
-        title: 'History resolution',
-        description:
-          'Size of each aggregation window, for example 1m or 300. Leave blank to derive it from the window and the sample budget, which is what keeps the request proportional to what actually fits in the prompt.',
-        default: ''
-      },
-      historySamples: {
-        type: 'integer',
-        title: 'History samples per path',
-        description:
-          'How many points per path reach the model. Points are picked evenly across the window and always include its first and last, with min, max, first, last and average sent alongside. Two is the minimum: a single point is not a series, and the live snapshot already carries the newest value.',
-        default: DEFAULT_HISTORY_SAMPLES,
-        minimum: MIN_HISTORY_SAMPLES,
-        maximum: MAX_HISTORY_SAMPLES
-      },
-      historyApiKey: {
-        type: 'string',
-        title: 'History API key (servers other than this one)',
-        description:
-          'Bearer token for a history server that is not this Signal K server: another host, or another service on this machine at a different port. The operator\'s own session is forwarded only to this server (a loopback address on the port it listens on) — a cookie minted here is replayable against another Signal K instance, so anything else is never sent it and needs a credential issued for itself. Leave blank for this server\'s own history, or for an unauthenticated one.',
-        default: ''
-      },
-      historyProvider: {
-        type: 'string',
-        title: 'History provider (optional)',
-        description:
-          'Plugin id of a specific history provider, for example signalk-parquet. Leave blank to use the server default.',
-        default: ''
-      },
-      historyServerUrl: {
-        type: 'string',
-        title: 'Signal K server URL (optional)',
-        description:
-          'Where to reach the History API. Leave blank to call this server on localhost. Set it for history served by another Signal K instance (with its own History API key). With TLS on, leave it blank and start Signal K with NODE_EXTRA_CA_CERTS set to ssl-cert.pem in its configuration directory, so its own certificate verifies on localhost.',
-        default: ''
-      },
-      historyTimeoutMs: {
-        type: 'integer',
-        title: 'History request timeout (ms)',
-        description:
-          'How long to wait for the History API before answering from live data alone. Kept short on purpose: this runs before the model sees the question. Set to 0 to disable the timeout.',
-        default: DEFAULT_HISTORY_TIMEOUT_MS,
-        minimum: 0,
-        maximum: 120000
-      }
+  /**
+   * The settings form; lib/settings.cjs holds it, with readSettings(), which
+   * turns what the form stores into the flat settings the code below reads.
+   *
+   * The admin page asks for the form on every load of the plugin's settings,
+   * also while the plugin is off, so the form is made from the options the
+   * server has stored: settings an earlier version stored flat are shown
+   * from the start, not only once start() has moved them. Only read here,
+   * never written. A server that cannot give the stored options, or fails
+   * to, gets the form as always.
+   */
+  const schema = () => {
+    try {
+      const stored = typeof app.readPluginOptions === 'function' ? app.readPluginOptions() : undefined;
+      return settingsSchema(stored && typeof stored === 'object' ? stored.configuration : undefined);
+    } catch {
+      return settingsSchema();
     }
-  });
+  };
 
   /**
    * History configuration as it will actually be used, plus how the last read
@@ -610,6 +410,68 @@ module.exports = function createPlugin(app, dependencies = {}) {
     // A failed save must not wedge the queue for the next one.
     optionsWriteQueue = run.catch(() => {});
     return run;
+  };
+
+  // One line for the server log. Signal K shows a plugin's standard output in
+  // its log; app.debug is shown only with debugging turned on for the plugin.
+  const logInfo = (message) => {
+    console.log(`signalk-ai-bridge: ${message}`);
+  };
+
+  /**
+   * Move settings an earlier version stored flat into their sections, and
+   * store the result once, through the options write queue - so the admin
+   * page's form shows the values the plugin runs on, instead of defaults that
+   * its first save would put over them.
+   *
+   * The queue does the guarding: nothing is written while the plugin is
+   * stopped, and a restart while the save is in flight makes the move again
+   * on the options it restarted with. With nothing flat left (the usual
+   * case, and every start after the first) nothing is queued or written.
+   * Should the save fail, the plugin runs on the moved settings in memory -
+   * the same settings, since readSettings() reads flat keys too - and the
+   * next start tries again.
+   */
+  const migrateStoredSettings = (options, generation) => {
+    if (migrateSettings(options).options === options) {
+      return Promise.resolve();
+    }
+    let last = { moved: [], kept: [], changed: false };
+    const describe = () =>
+      last.moved.join(', ') + (last.kept.length > 0 ? `; for ${last.kept.join(', ')} the value already in its section was kept` : '');
+    return updatePluginOptions((current) => {
+      const migration = migrateSettings(current);
+      last = { ...migration, changed: migration.options !== current };
+      return migration.options;
+    }).then(
+      () => {
+        if (last.changed) {
+          logInfo(`moved settings saved by an earlier version into their sections: ${describe()}.`);
+        }
+      },
+      (error) => {
+        // Stopped or restarted meanwhile: the options it runs on now are
+        // another start's, which makes its own move.
+        if (!running || generation !== lifecycleGeneration || errorCode(error) === 'disabled') {
+          return;
+        }
+        const migration = migrateSettings(pluginOptions);
+        if (migration.options === pluginOptions) {
+          return;
+        }
+        pluginOptions = migration.options;
+        last = { ...migration, changed: true };
+        // A server that cannot store plugin settings at all (an embedding
+        // host, not signalk-server) would be told the same on every start.
+        if (error && error.statusCode === 501) {
+          return;
+        }
+        logInfo(
+          `settings saved by an earlier version are used from their sections for now (${describe()}), ` +
+            `but could not be stored (${errorMessage(error, 'unknown error')}); this is tried again on the next start.`
+        );
+      }
+    );
   };
 
   /** A path list from the panel: strings, trimmed, deduplicated, bounded. */
@@ -1046,13 +908,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
     }
   };
 
-  // Without this the admin UI renders apiKey as an ordinary text input, so the
-  // token is on screen in cleartext and echoed back on every config page load.
-  const uiSchema = () => ({
-    apiKey: { 'ui:widget': 'password' },
-    historyApiKey: { 'ui:widget': 'password' },
-    systemPrompt: { 'ui:widget': 'textarea' }
-  });
+  // Masks both API keys: an ordinary text input would show a token in
+  // cleartext and echo it back on every config page load.
+  const uiSchema = () => settingsUiSchema();
 
   return {
     id: 'signalk-ai-bridge',
@@ -1067,12 +925,13 @@ module.exports = function createPlugin(app, dependencies = {}) {
       resetRuntimeState();
       lifecycleGeneration += 1;
       const generation = lifecycleGeneration;
+      migrateStoredSettings(options, generation);
       const config = getConfig();
       if (typeof app.setPluginStatus === 'function') {
         app.setPluginStatus(
           config.enabled
             ? `AI Bridge ready: ${config.model} via ${config.baseUrl}`
-            : 'AI Bridge webapp assets available. AI pipeline disabled.'
+            : `AI Bridge is off; switch on "${SETTING_LABELS.enabled}" in its settings to answer questions.`
         );
       }
 

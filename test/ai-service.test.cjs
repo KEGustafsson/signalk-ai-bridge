@@ -389,7 +389,7 @@ describe('thinking models', () => {
           }
         }
       ),
-      /output budget on reasoning.*Max output tokens/s
+      /output budget on reasoning.*Answers → Longest answer \(tokens\)/s
     );
   });
 
@@ -538,8 +538,8 @@ describe('out-of-memory retry', () => {
         // what to lower from.
         assert.match(error.message, /context window 1024/);
         assert.match(error.message, /batch size 256/);
-        assert.match(error.message, /num_ctx/);
-        assert.match(error.message, /num_batch/);
+        assert.match(error.message, /"Advanced → Context window \(tokens\)"/);
+        assert.match(error.message, /"Advanced → Batch size"/);
         return true;
       }
     );
