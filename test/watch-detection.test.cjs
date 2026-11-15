@@ -705,3 +705,64 @@ describe('review of 0004c3f: muted dead sensors, merged requests, no data', () =
   });
 });
 
+describe('review of 016d644: settled sensors, dead muted paths and merged rows', () => {
+  it('reports every outage of a settled sensor that fails periodically, and its death', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(29);
+    const sample = () => [[path, 12.8 + 0.02 * rand()]];
+    let t = run(engine, T0, T0 + 40 * MINUTE, 30 * SECOND, sample);
+    let reported = 0;
+    for (let cycle = 0; cycle < 20; cycle += 1) {
+      t = run(engine, t, t + 10 * MINUTE, SECOND, () => []);
+      if (detectors(engine).includes(`dropout:${path}`)) reported += 1;
+      t = run(engine, t, t + 60 * SECOND, 30 * SECOND, sample);
+    }
+    assert.equal(reported, 20, `${reported} of 20 equal outages reported`);
+    t = run(engine, t, t + 30 * MINUTE, SECOND, () => []);
+    assert.ok(detectors(engine).includes(`dropout:${path}`), 'and its death is reported');
+  });
+
+  it('reports a feed that died beside sensors muted because they are dead', () => {
+    const engine = newEngine();
+    const dead = Array.from({ length: 10 }, (_, index) => `environment.dead${index}.temperature`);
+    const live = Array.from({ length: 6 }, (_, index) => `environment.live${index}.temperature`);
+    let t = run(engine, T0, T0 + 30 * MINUTE, SECOND, () => [...dead, ...live].map((name) => [name, 290.15]));
+    for (const name of dead) engine.mute(name, t + 4 * HOUR, t);
+    t = run(engine, t, t + HOUR, SECOND, () => live.map((name) => [name, 290.15]));
+    t = run(engine, t, t + 3 * MINUTE, SECOND, () => []);
+    assert.deepEqual(detectors(engine), ['feed:feed']);
+  });
+
+  it('never gives a path two values at one time when merging requests', async () => {
+    const end = Date.parse('2026-06-02T08:00:00Z');
+    const start = end - 6 * HOUR;
+    const paths = Array.from({ length: 20 }, (_, index) => `environment.sensor${index}.temperature`);
+    let request = 0;
+    const fetchImpl = async (url) => {
+      if (url.includes('/history/paths')) return new Response(JSON.stringify(paths), { status: 200 });
+      const asked = new URL(url).searchParams.get('paths').split(',').map((item) => item.split(':')[0]);
+      const second = request++ === 1;
+      const times = [];
+      // The second request's rows come in pairs, 4 s either side of every other row of the first.
+      for (let at = start; at <= end; at += second ? 20 * SECOND : 10 * SECOND) {
+        if (second) times.push(at - 4 * SECOND, at + 4 * SECOND);
+        else times.push(at);
+      }
+      const data = times.filter((at) => at >= start && at <= end).map((at) => [new Date(at).toISOString(), ...asked.map(() => 290.15 + ((at / 10000) % 3) * 0.05)]);
+      return new Response(JSON.stringify({ values: asked.map((path) => ({ path })), data }), { status: 200 });
+    };
+    const service = createWatchService(createHost(), { now: () => end, fetchImpl });
+    service.start({ watchEnabled: true });
+    try {
+      const result = await service.replay({ duration: 'PT6H' }, { historyTimeoutMs: 5000 });
+      assert.equal(result.ok, true);
+      // Each of the pair keeps its own moment: more rows than the first request's alone.
+      assert.ok(result.rows > 6 * 360 + 1, `${result.rows} rows`);
+      assert.deepEqual(result.byDetector, {});
+    } finally {
+      service.stop();
+    }
+  });
+});
+

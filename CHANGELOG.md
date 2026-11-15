@@ -281,9 +281,10 @@ this project uses [semantic versioning](https://semver.org/).
     read; more lowercase count names (`runtimeInState`); the assist keeps the
     HTTP status when `text()` throws. And the review of that: a request
     with no subject before the comparison takes the qualifier as its
-    subject; which paths fit the subject is decided by its words alone (not
-    the role, depth or display name), so freezers, relearning sensors,
-    named banks and twin engines named differently are picked again; two
+    subject; which paths fit the subject is decided by its words (meanings
+    counted on the path, not the role, depth or display name), so freezers,
+    relearning sensors, named banks and twin engines named differently are
+    picked again; two
     words a path writes as one ("engine room") match it; a repeated
     qualifier with on/of/for/from is fine, a path picked from the
     alternatives is not refused for its qualifier, and a qualifier that
@@ -294,7 +295,17 @@ this project uses [semantic versioning](https://semver.org/).
     feed only if it went quiet with the others; replay merges requests'
     rows that are a few seconds apart (one tick a row), gathers values only
     for rows kept, and reports a reply with no rows as no data; any
-    ArrayBuffer or view chunk is read.
+    ArrayBuffer or view chunk is read. The review of that: two words
+    written as one match only a token they start (no "engine rpm" on a
+    battery named engine); digits are words ("battery 2") and quoted
+    qualifiers are read; a repeated qualifier needs a word such as bank or
+    side ("on anchor" is refused), "from" works, a path picked from the
+    alternatives no longer drops a qualifier, and a subject that matches
+    nothing says so; two quoted values side by side are not "empty". A
+    repeating outage cycle is learned only on a path that has never
+    settled, so a settled sensor that fails periodically keeps every
+    outage reported (and its death); dead muted paths leave the feed's
+    count entirely; a request's rows never share one moment in replay.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

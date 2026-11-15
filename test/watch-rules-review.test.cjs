@@ -493,12 +493,15 @@ describe('review of 0004c3f: choosing among paths with a qualifier', () => {
     const boat = at(['electrical.batteries.house.voltage', 'electrical.batteries.starter.voltage']);
     const repeated = parseRule('the house battery below 12 V on the house bank', boat);
     assert.equal(repeated.ok, true, repeated.reason);
+    // A path picked from the alternatives does not drop a condition.
     const forced = parseRule('the battery below 12 V at the dock', boat, { forcePath: 'electrical.batteries.house.voltage' });
-    assert.equal(forced.ok, true, forced.reason);
+    assert.equal(forced.ok, false);
+    assert.match(forced.reason, /Could not read "at the dock"/);
     // A qualifier that names nothing among the subject's paths is named in the refusal.
     const night = parseRule('battery below 12 V at night', boat);
     assert.equal(night.ok, false);
     assert.match(night.reason, /Could not read "at night": it names none of the paths/);
+    assert.deepEqual(night.alternatives, [], 'nothing to pick that would drop "at night"');
   });
 
   it('refuses empty and blank quotes with a reason', () => {
@@ -507,6 +510,44 @@ describe('review of 0004c3f: choosing among paths with a qualifier', () => {
       assert.equal(result.ok, false, text);
       assert.match(result.reason, /empty quoted value/, text);
     }
+  });
+});
+
+describe('review of 016d644: joined words, numbers, quoted qualifiers and repeats', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : item));
+
+  it('does not let two words written as one match a path that has only the first', () => {
+    const boat = at(['propulsion.main.revolutions', 'electrical.batteries.engine.voltage', 'propulsion.main.temperature']);
+    assert.equal(parseRule('engine rpm above 3000', boat).rule.path, 'propulsion.main.revolutions');
+    const blower = at(['propulsion.main.revolutions', 'electrical.switches.engineBlower.state']);
+    assert.equal(parseRule('engine rpm above 3000', blower).rule.path, 'propulsion.main.revolutions');
+    const noLog = parseRule('speed through water above 8 kn', at(['navigation.speedOverGround', 'environment.wind.speedApparent']));
+    assert.equal(noLog.ok, false, 'no speed through water on this boat');
+  });
+
+  it('keeps numbers as words, and reads a quoted qualifier', () => {
+    const boat = at(['electrical.batteries.1.voltage', 'electrical.batteries.2.voltage', 'propulsion.port.revolutions', 'propulsion.starboard.revolutions', 'electrical.batteries.starter.voltage', 'electrical.batteries.house.voltage', 'electrical.switches.bilgePump.state']);
+    assert.equal(parseRule('battery 2 below 12 V', boat).rule.path, 'electrical.batteries.2.voltage');
+    assert.equal(parseRule('rpm above 3000 on the "starboard"', boat).rule.path, 'propulsion.starboard.revolutions');
+    assert.equal(parseRule('battery below 12 V on the "starter"', boat).rule.path, 'electrical.batteries.starter.voltage');
+    const room = parseRule('the bilge pump is on in the "engine room"', boat);
+    assert.equal(room.ok, false, 'the quoted place is not dropped');
+  });
+
+  it('refuses a repeat that is a condition, and names a subject that matches nothing', () => {
+    const boat = at(['electrical.switches.anchorLight.state', 'electrical.ac.shore.power', 'propulsion.port.revolutions', 'electrical.batteries.house.voltage']);
+    for (const text of ['the anchor light is off on anchor', 'the anchor light is off on the anchor', 'shore power below 100 W on shore power']) {
+      assert.equal(parseRule(text, boat).ok, false, text);
+    }
+    assert.equal(parseRule('battery below 12 V from the house bank', boat).rule.path, 'electrical.batteries.house.voltage');
+    const revs = parseRule('speed above 3000 on the port engine', boat);
+    assert.equal(revs.ok, false);
+    assert.match(revs.reason, /No path on this vessel matches/);
+  });
+
+  it('does not take two quoted values side by side for an empty one', () => {
+    const result = parseRule('the inverter mode is "invert" "charge"', at([{ path: 'electrical.inverters.main.mode', valueType: 'string' }]));
+    assert.doesNotMatch(result.reason || '', /empty quoted value/);
   });
 });
 
