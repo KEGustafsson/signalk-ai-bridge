@@ -534,7 +534,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
           stored === 'change'
             ? 'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
             : stored === 'restart'
-              ? 'The plugin stopped; the stored settings are the ones it restarted with, without this change.'
+              ? 'The plugin stopped; the stored settings are the ones it restarted with (which may or may not hold this change).'
               : 'The plugin is stopped; nothing was saved.'
         );
         error.code = 'disabled';
@@ -806,7 +806,9 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }
       res.status(200).json(lists);
     } catch (error) {
-      if (errorCode(error) === 'conflict') {
+      // `running` again here: a stop between the queue's answer and this
+      // catch must not send a stopped plugin's empty lists.
+      if (errorCode(error) === 'conflict' && running) {
         // "Kept restarting while saving": the lists as they now are, like
         // every other conflict, so the panel can refresh.
         res.status(statusForCode('conflict')).json({

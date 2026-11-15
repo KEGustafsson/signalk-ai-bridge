@@ -104,8 +104,8 @@ this project uses [semantic versioning](https://semver.org/).
     over the limit is refused without waiting on its cancel, and a move is
     not made twice when the plugin restarts from the options it stored.
   - A save the plugin was stopped during answers 503 saying what is stored:
-    the change, or the options the plugin restarted with, when its last
-    write put those back; it no longer answers "kept restarting" (409), and
+    the change, or, when its last write put the restart's options back, that
+    those are what is stored; it no longer answers "kept restarting" (409), and
     a move no longer sends a stopped plugin's empty lists for the panel to
     take as the selection.
   - An error reply's body is waited for at most 2 s, for the History API and
