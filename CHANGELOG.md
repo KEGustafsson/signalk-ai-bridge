@@ -324,7 +324,17 @@ this project uses [semantic versioning](https://semver.org/).
     whatever its units; empty quotes before punctuation are refused; a
     word no path answers to is fine when the subject is clear without it
     and the qualifier agrees; a learned outage cycle still reports the
-    sensor dying (a silence twice its longest outage).
+    sensor dying (a silence twice its longest outage). The review of
+    that: only a qualifying word (main, new, second...) is left to an
+    agreeing qualifier, so "freezer temperature in the cabin" is refused
+    again; switch/breaker/relay/fuse are answered by any path with states;
+    a display name scores only for words its path does not answer; a room
+    within the boat is not the cabin; a `.state` leaf takes on/off
+    whatever its units, and a flag refuses other words; a learned cycle
+    is cleared by a settled regular stretch, applies only while the path
+    is otherwise irregular, keeps its longest outage, is lengthened by a
+    dismissal and is left out of the feed's regular paths; a single
+    matching path with states is taken instead of asked about.
     A quoted state is read whole ("fault, low", "low, while charging"), and
     replay keeps only the columns it asked for, each once (a declared column
     without a path is skipped, not taken by position).

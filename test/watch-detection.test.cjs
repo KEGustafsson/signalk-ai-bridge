@@ -827,3 +827,41 @@ describe('review of 659cde9: a learned outage cycle still sees the sensor die', 
   });
 });
 
+describe('review of cc73c01: a learned cycle once the path is regular again', () => {
+  const learnCycleThenRegular = (engine, path, rand) => {
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    return run(engine, t, t + 2 * HOUR, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+  };
+
+  it('reports a repaired sensor dying within its normal limit, even after a restart', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    let t = learnCycleThenRegular(engine, path, noise(41));
+    const restarted = newEngine();
+    restarted.importState(JSON.parse(JSON.stringify(engine.exportState(t))), t);
+    run(restarted, t, t + 5 * MINUTE, SECOND, () => [[path, 12.8]]);
+    t += 5 * MINUTE;
+    t = run(restarted, t, t + MINUTE, SECOND, () => []);
+    assert.ok(detectors(restarted).includes(`dropout:${path}`), 'a minute of silence of a 1 s sensor is a dropout again');
+  });
+
+  it('lets a dismissal lengthen a cycle limit too', () => {
+    const engine = newEngine();
+    const path = 'electrical.batteries.house.voltage';
+    const rand = noise(43);
+    let t = run(engine, T0, T0 + 40 * MINUTE, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    for (let cycle = 0; cycle < 30; cycle += 1) {
+      t = run(engine, t, t + 5 * MINUTE, SECOND, () => []);
+      t = run(engine, t, t + 2 * SECOND, SECOND, () => [[path, 12.8 + 0.02 * rand()]]);
+    }
+    for (let index = 0; index < 4; index += 1) engine.giveFeedback(path, false, t);
+    // Past the cycle's limit (2 x its longest outage), but not twice it.
+    t = run(engine, t, t + 15 * MINUTE, 5 * SECOND, () => []);
+    assert.ok(!detectors(engine).includes(`dropout:${path}`), 'dismissed: a longer silence is needed');
+  });
+});
+

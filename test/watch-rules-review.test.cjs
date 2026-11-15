@@ -658,3 +658,45 @@ describe('review of 659cde9: numbered and named instances, states, empty quotes'
   });
 });
 
+describe('review of cc73c01: unanswered words, switch words, names and flags', () => {
+  const at = (paths) => paths.map((item) => (typeof item === 'string' ? { path: item, role: 'watching' } : { role: 'watching', ...item }));
+
+  it('leaves only a qualifying word to the qualifier, never one that names a thing', () => {
+    const cabin = at([{ path: 'environment.inside.temperature', units: 'K' }, { path: 'electrical.batteries.house.voltage', units: 'V' }]);
+    for (const text of ['freezer temperature above -10 °C in the cabin', 'fridge temperature above 8 °C in the cabin', 'starter battery below 12 V on the house bank']) {
+      const result = parseRule(text, cabin);
+      assert.equal(result.ok, false, `${text} -> ${result.rule && result.rule.path}`);
+      assert.match(result.reason, /No path on this vessel matches/);
+    }
+    assert.equal(parseRule('main battery below 12 V on the house bank', cabin).rule.path, 'electrical.batteries.house.voltage');
+    // A room within the boat is not its cabin.
+    const room = at([{ path: 'environment.inside.engineRoom.temperature', units: 'K' }, { path: 'environment.outside.temperature', units: 'K' }]);
+    assert.equal(parseRule('cabin temperature above 30 °C in the saloon', room).ok, false);
+  });
+
+  it('answers "switch", "breaker" and "relay" with any path that has states', () => {
+    const boat = at([{ path: 'electrical.ac.shorePower.voltage', units: 'V' }, { path: 'electrical.shorePower.state', valueType: 'boolean' }, { path: 'electrical.batteries.house.voltage', units: 'V' }]);
+    assert.equal(parseRule('the shore power switch is on', boat).rule.path, 'electrical.shorePower.state');
+    assert.equal(parseRule('the shore power breaker is off', boat).rule.path, 'electrical.shorePower.state');
+    assert.equal(parseRule('house battery below 12 V while the shore power switch is on', boat).rule.when.path, 'electrical.shorePower.state');
+  });
+
+  it('does not let a display name that repeats the class settle a numbered tie', () => {
+    const boat = at([{ path: 'electrical.batteries.0.voltage', displayName: 'House battery' }, 'electrical.batteries.starter.voltage']);
+    const result = parseRule('battery below 12 V', boat);
+    assert.equal(result.ok, false, `not ${result.rule && result.rule.path}`);
+    const engines = at([{ path: 'propulsion.0.temperature', displayName: 'Port engine' }, 'propulsion.starboard.temperature']);
+    assert.equal(parseRule('engine temperature above 95 °C', engines).ok, false);
+  });
+
+  it('takes on/off on a .state leaf whatever its units, and refuses a word on a flag', () => {
+    const units = at([{ path: 'electrical.switches.bilgePump.state', units: 'ratio' }, { path: 'electrical.switches.bilgePump.current', units: 'A' }]);
+    assert.equal(parseRule('the bilge pump is on', units).rule.path, 'electrical.switches.bilgePump.state');
+    const flag = at([{ path: 'propulsion.main.overTemperature', valueType: 'boolean' }, { path: 'propulsion.main.temperature', units: 'K' }]);
+    const high = parseRule('the engine temperature is "high"', flag);
+    assert.equal(high.ok, false);
+    assert.match(high.reason, /is on or off/);
+    assert.equal(parseRule('the overtemperature is on', flag).rule.value, true);
+  });
+});
+

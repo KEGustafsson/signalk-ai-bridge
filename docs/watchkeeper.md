@@ -151,7 +151,7 @@ Each watched path keeps a small, serialisable state object
 
 | Learned | How |
 | --- | --- |
-| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, a silence twice its longest outage is still a dropout, even when the cycle's mean gap is too long for the path to count as regular, so a sensor that fails in a rhythm and then dies is reported |
+| Update interval | Moving average of the time between accepted samples. A gap long enough to be a dropout (`max(30 s, 10 × usual interval)`) is an outage. One that follows regular samples is left out of the interval, so one hour of silence does not stretch a 30 s sensor's interval past the regularity limit and hide its next outage, and a sensor that fails again and again has every outage reported. Long gaps one right after another - a sender that reports on change, or goes quiet at night - are its rhythm and count, each up to that limit, so it is not reported at every gap of the night. Eight long gaps in a row, each within half of the run's mean, are taken as the new interval at once. So is a repeating cycle: eight outages of about one size, each after a burst of at most 30 samples - a pair of readings every five minutes - make the cycle's mean gap the interval. A path that has settled (more than 30 regular gaps in a row) needs 24 such outages: until then they are a sensor failing, however regular, and each is reported. Once a cycle is learned, a silence twice its longest outage is still a dropout while the cycle's mean gap is too long for the path to count as regular, so a sensor that fails in a rhythm and then dies is reported (a dismissal lengthens that limit too). A settled regular stretch clears the learned cycle, and such a path does not count toward the data feed's regular paths |
 | Baseline mean and spread | Exponentially weighted, half-life **30 min**, time-based so "30 minutes" means 30 minutes at any update rate. While a path is learning, the weight is at least `1/n`, so the first minutes are a plain average |
 | Fast average | Exponentially weighted, half-life **8 s**, used to compare against the baseline. A one-sample spike barely moves it |
 | Sensor resolution | The smallest non-zero step seen three times (within 10 %) among the last 8 steps, where a step that goes straight back the way the one before it came counts once with it. The noise floor is at least twice it, but no more than the coarsest real senders of the unit allow (16 kPa for pressure, ten times the unit's floor otherwise, so 0.05 for a tank: one eighth step stays quiet and full to empty is still reported; 5 % of the value without a unit, but never less than two counts on a whole-number path). A single step, or a glitch out and straight back followed by a real drop of the same size, is not evidence of resolution: a tank that sat at 80 % and dropped to 20 % would otherwise have learned a 60-point resolution and hidden its own drop |
@@ -477,9 +477,15 @@ A rule is stored data, checked deterministically on every tick:
   of the subject's paths offers none to pick, so picking one cannot drop
   it either. A subject word that no path answers to (other than those
   words, or *boat* and *vessel*) is named in the refusal, not narrowed
-  away. A state ("is on", "is fault") is first looked for among paths with
+  away; only a word that says which without naming a thing (*main, new,
+  second, spare, backup*...) is left to the qualifier when the subject is
+  clear without it ("main battery ... on the house bank"). *Switch,
+  breaker, relay, fuse* are answered by any path with states. A room
+  within the boat (`environment.inside.engineRoom`) is not its *cabin* or
+  *saloon*. A state ("is on", "is fault") is first looked for among paths with
   states (not measurements by name or units, or a `.state`/`.mode`/
-  `.status` leaf or data seen as a flag or word), so "the shore power is
+  `.status` leaf, whatever its units, or data seen as a flag or word; on a
+  flag, only on/off words are values), so "the shore power is
   on" is the shore-power switch beside an `electrical.ac.shore.power`
   reading. Such a path is taken only if it answers every word of the
   subject and is the thing itself, not something named after it (the
@@ -490,8 +496,10 @@ A rule is stored data, checked deterministically on every tick:
   "engine 2"). Without a number in the request, a numbered instance counts
   as unexplained beside a named one ("battery" on a boat with
   `batteries.0` and `batteries.house` asks which) unless its display name
-  says something its path does not; with one, a path's number does not
-  settle a tie its display name contradicts. Two words that a path writes as one
+  answers a word its path does not; a display name only scores for such
+  words, so "House battery" on `batteries.0` makes it no better a battery
+  than its neighbour. With a number, a path's number does not settle a tie
+  its display name contradicts. Two words that a path writes as one
   ("engine room", `engineRoom`) match it, and an engine room is not an
   engine. A single quote is a quote only at a word's edge, so
   "isn't" and "the pump's" are words, and empty or blank quotes are refused
