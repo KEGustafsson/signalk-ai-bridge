@@ -928,6 +928,8 @@ describe('which ports are this server', () => {
     assert.match(history.message, /not called: this Signal K server's port is not known \(its configured port \(70000\)/);
   });
 
+  // With TLS on, the https port is the main listener; the http port carries
+  // only the server's redirect, and is not where the plugin calls.
   it('calls the https port under TLS', async () => {
     const app = { config: { settings: { ssl: true, port: 3000 } } };
     assert.equal(resolveHistoryBaseUrl(app, historyConfig()), 'https://localhost:3443');
@@ -1049,7 +1051,6 @@ describe('a History API that cannot be reached', () => {
     );
     assert.match(result.message, /unreachable \(fetch failed: ERR_TLS_CERT_ALTNAME_INVALID, the server's TLS certificate is not trusted/);
   });
-
 });
 
 describe('a configured History API key that is rejected', () => {
@@ -1104,7 +1105,6 @@ describe('a configured History API key that is rejected', () => {
     );
     assert.match(unkeyed.message, /needs its own credential in "History API key"/);
   });
-
 });
 
 describe('listHistoryPaths', () => {

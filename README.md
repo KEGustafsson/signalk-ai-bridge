@@ -99,8 +99,8 @@ OLLAMA_BIND=127.0.0.1 docker compose -f docker-compose.xavier.yml up -d      # t
 - **AI Response** and **Ask AI History**: the answer, earlier questions, and the
   exact request sent for each.
 
-On a server with security enabled, saving selections needs a
-login with write access.
+On a server with security enabled, saving selections needs a login with write
+access.
 
 ## Key settings
 

@@ -36,21 +36,18 @@ this project uses [semantic versioning](https://semver.org/).
   are re-ticked from the stored selection, so Save cannot put back a path
   another browser removed; a late status read keeps only the newer order, and
   one that lands after a later read is ignored, so it cannot bring back an
-  older model or history counters; a stale full-list answer uses code
-  `conflict`, like a stale move; a save still in flight when the
-  plugin restarts no longer puts the older options back in memory.
-  And from the review of those: a save in flight across a restart is made
-  again on the restart's options, so disk matches memory, and a save queued
-  while the plugin stops writes nothing instead of storing only its own
-  change; and the
-  pickers take only what another browser changed (on every move reply, the
-  default live selection included), keeping unsaved ticks. Then: a redone
+  older model or history counters; a save still in flight when the plugin
+  restarts no longer puts the older options back in memory. And from the
+  review of those: a save in flight across a restart is made again on the
+  restart's options, so disk matches memory, and a save queued while the
+  plugin stops writes nothing instead of storing only its own change; and
+  the pickers take only what another browser changed (on every move reply,
+  the default live selection included), keeping unsaved ticks. Then: a redone
   change with nothing left to do puts the restart's options back on disk; a
   save the plugin stopped after says it was saved; and after a picker save
   the picker compares with what the server uses (the defaults, for an empty
   list), not with what was ticked. A re-save after a second restart starts
-  over on the newest options, and a numbered copy is numbered afresh when
-  its save is redone.
+  over on the newest options.
 - **History API fixes** (from the reviews of the pull request):
   - Overlapping saves of the live and history path selections no longer
     undo each other: every write to the plugin's options goes through one
@@ -116,7 +113,7 @@ this project uses [semantic versioning](https://semver.org/).
 ### Changed
 
 - **Watchkeeper is its own plugin.** The background watch of every path,
-  developed on this branch, moved to
+  developed for this release, moved to
   [signalk-watchkeeper](https://github.com/KEGustafsson/signalk-watchkeeper)
   before release: Ask AI and the watch have different needs, and the watch
   needs no model at all.

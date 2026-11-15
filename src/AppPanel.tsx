@@ -844,7 +844,6 @@ export default function AppPanel(props: AppPanelProps) {
     }
   }, [applySavedStatus, backendStatus, historyPathsState, pickedPaths, props]);
 
-
   // Reordering is a save on the server, one move at a time, applied to the
   // selection as stored - never a whole list from this panel, which another
   // save, another browser or a quick second click may have made stale. The

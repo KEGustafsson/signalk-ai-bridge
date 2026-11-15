@@ -11,8 +11,6 @@ const { MAX_HISTORY_PATHS } = require('../lib/history-service.cjs');
 function createHost() {
   return {
     selfId: 'vessels.urn:mrn:signalk:uuid:test',
-    subscriptionmanager: { subscribe() {} },
-    handleMessage() {},
     getSelfPath() {
       return undefined;
     },
@@ -299,6 +297,97 @@ describe('path priority order', () => {
       assert.equal(derived.body.error.code, 'conflict');
       assert.deepEqual(derived.body.aiDataPaths, ['a.one', 'b.two']);
       assert.equal(derived.body.history.derived, true);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('keeps every change when saves overlap against a slow store', async () => {
+    const host = createHost();
+    const saves = [];
+    let inFlight = 0;
+    host.savePluginOptions = (options, done) => {
+      inFlight += 1;
+      assert.equal(inFlight, 1, 'one save at a time');
+      saves.push(options);
+      setTimeout(() => {
+        inFlight -= 1;
+        done();
+      }, 5);
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, model: 'kept', aiDataPaths: ['a.one', 'b.two'], historyPaths: ['h.one', 'h.two'] });
+    try {
+      const replies = [recorder(), recorder(), recorder()];
+      await Promise.all([
+        routes['POST /paths/selection']({ body: { aiDataPaths: ['a.one', 'b.two', 'c.three'] } }, replies[0]),
+        routes['POST /paths/selection']({ body: { historyPaths: ['h.one', 'h.two', 'h.three'] } }, replies[1]),
+        routes['POST /paths/move']({ body: { kind: 'history', path: 'h.two', delta: -1 } }, replies[2])
+      ]);
+      assert.deepEqual(
+        replies.map((reply) => reply.statusCode),
+        [200, 200, 200]
+      );
+      assert.equal(saves.length, 3);
+      const last = saves[saves.length - 1];
+      assert.deepEqual(last.aiDataPaths, ['a.one', 'b.two', 'c.three']);
+      assert.deepEqual(last.historyPaths, ['h.two', 'h.one', 'h.three']);
+      assert.equal(last.model, 'kept');
+      const status = recorder();
+      await routes['GET /ai/status']({}, status);
+      assert.deepEqual(status.body.history.paths, ['h.two', 'h.one', 'h.three']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('runs the next save after one that failed, on the options as they still are', async () => {
+    const host = createHost();
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      setTimeout(() => done(saves.length === 1 ? new Error('disk full') : null), 5);
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] });
+    try {
+      const failed = recorder();
+      const next = recorder();
+      await Promise.all([
+        routes['POST /paths/selection']({ body: { aiDataPaths: ['z.lost'] } }, failed),
+        routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, next)
+      ]);
+      assert.equal(failed.statusCode, 500);
+      assert.match(failed.body.error.message, /disk full/);
+      assert.equal(next.statusCode, 200, 'a failed save does not wedge the queue');
+      assert.deepEqual(saves[1].aiDataPaths, ['b.two', 'a.one']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('answers 409 when the plugin restarts during every attempt of a save', async () => {
+    const host = createHost();
+    const options = { warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] };
+    let saves = 0;
+    let plugin;
+    host.savePluginOptions = (stored, done) => {
+      saves += 1;
+      // The server restarts the plugin while each write is on its way.
+      plugin.stop();
+      plugin.start({ ...options });
+      done();
+    };
+    const created = routesFor(host);
+    plugin = created.plugin;
+    plugin.start({ ...options });
+    try {
+      const reply = recorder();
+      await created.routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
+      assert.equal(saves, 3);
+      assert.equal(reply.statusCode, 409);
+      assert.equal(reply.body.error.code, 'conflict');
+      assert.match(reply.body.error.message, /kept restarting/);
     } finally {
       plugin.stop();
     }

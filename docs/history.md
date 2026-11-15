@@ -206,5 +206,5 @@ rejected certificate comes with this advice.
 A History API response is read at most 16 MB far (a declared larger
 `Content-Length` is refused without reading). The plugin runs in the Signal
 K server's own process, so a provider that ignores the requested resolution
-cannot exhaust its memory; the history context, path listing or replay says
-the response was too large instead.
+cannot exhaust its memory; the history context or path listing says the
+response was too large instead.
