@@ -617,6 +617,34 @@ describe('path priority order', () => {
     }
   });
 
+  it('answers 503 without lists when the plugin is left stopped after its last attempt', async () => {
+    const host = createHost();
+    const options = { warmupOnStart: false, aiDataPaths: ['a.one', 'b.two'] };
+    let saves = 0;
+    let plugin;
+    host.savePluginOptions = (stored, done) => {
+      saves += 1;
+      // Restarted during the first two writes, then disabled during the third.
+      plugin.stop();
+      if (saves < 3) plugin.start({ ...options });
+      done();
+    };
+    const created = routesFor(host);
+    plugin = created.plugin;
+    plugin.start({ ...options });
+    try {
+      const reply = recorder();
+      await created.routes['POST /paths/move']({ body: { kind: 'live', path: 'b.two', delta: -1 } }, reply);
+      assert.equal(saves, 3);
+      assert.equal(reply.statusCode, 503);
+      assert.equal(reply.body.error.code, 'disabled');
+      assert.match(reply.body.error.message, /plugin stopped/);
+      assert.equal(reply.body.aiDataPaths, undefined, 'no empty lists for the panel to take as stored');
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('takes delta only as the number 1 or -1', async () => {
     const host = createHost();
     let writes = 0;

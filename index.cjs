@@ -568,6 +568,16 @@ module.exports = function createPlugin(app, dependencies = {}) {
           return updated;
         }
       }
+      if (!running) {
+        // Stopped after the last attempt's write: say so, as the loop does
+        // when it finds the plugin stopped, not that it kept restarting.
+        const error = new Error(
+          'The change was written, but the plugin stopped before it took effect; if the settings were saved meanwhile (from the admin page, say), they may have replaced it.'
+        );
+        error.code = 'disabled';
+        error.statusCode = 503;
+        throw error;
+      }
       const error = new Error('The plugin kept restarting while saving; the stored settings may hold this change. Check them and try again.');
       error.code = 'conflict';
       error.statusCode = 409;
@@ -795,7 +805,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
       }
       res.status(200).json(lists);
     } catch (error) {
-      if (errorCode(error) === 'conflict') {
+      if (errorCode(error) === 'conflict' && running) {
         // "Kept restarting while saving": the lists as they now are, like
         // every other conflict, so the panel can refresh.
         res.status(statusForCode('conflict')).json({
