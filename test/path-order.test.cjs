@@ -425,6 +425,71 @@ describe('path priority order', () => {
     }
   });
 
+  it('does not move a path twice when the restart has the moved list tidied', async () => {
+    const host = createHost();
+    let finish;
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      if (saves.length === 1) finish = done;
+      else done();
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: [' a.one', 'b.two', 'c.three'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(saves[0].aiDataPaths, [' a.one', 'c.three', 'b.two']);
+      // The same order, trimmed by a hand edit before the restart.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'c.three', 'b.two'] });
+      finish();
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
+  it('does not move a path twice when two restarts arrive out of order', async () => {
+    const host = createHost();
+    const pending = [];
+    const saves = [];
+    host.savePluginOptions = (options, done) => {
+      saves.push(options);
+      pending.push(done);
+    };
+    const { plugin, routes } = routesFor(host);
+    plugin.start({ warmupOnStart: false, aiDataPaths: ['a.one', 'b.two', 'c.three'] });
+    try {
+      const reply = recorder();
+      const moving = routes['POST /paths/move']({ body: { kind: 'live', path: 'c.three', delta: -1 } }, reply);
+      await new Promise((resolve) => setImmediate(resolve));
+      const first = saves[0];
+      assert.deepEqual(first.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+      // Restart 1 from a list reordered elsewhere: the redo moves c.three there.
+      plugin.stop();
+      plugin.start({ warmupOnStart: false, aiDataPaths: ['b.two', 'a.one', 'c.three'] });
+      pending.shift()();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(saves[1].aiDataPaths, ['b.two', 'c.three', 'a.one']);
+      // Restart 2 from the first write, which already has the move.
+      plugin.stop();
+      plugin.start({ ...first });
+      while (pending.length > 0) {
+        pending.shift()();
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      await moving;
+      assert.equal(reply.statusCode, 200);
+      assert.deepEqual(reply.body.aiDataPaths, ['a.one', 'c.three', 'b.two']);
+    } finally {
+      plugin.stop();
+    }
+  });
+
   it('takes delta only as the number 1 or -1', async () => {
     const host = createHost();
     let writes = 0;

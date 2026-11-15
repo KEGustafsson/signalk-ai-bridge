@@ -1649,10 +1649,14 @@ describe('reading a History API response', () => {
       headers: new Map([['content-length', String(64 * 1024 * 1024)]]),
       body: { cancel: () => new Promise(() => {}) }
     };
+    let timer;
     const outcome = await Promise.race([
       readJsonBounded(declared).then(() => 'read', (error) => error.code || error.message),
-      new Promise((resolve) => setTimeout(() => resolve('hung'), 1000))
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve('hung'), 1000);
+      })
     ]);
+    clearTimeout(timer);
     assert.equal(outcome, 'too-large');
   });
 

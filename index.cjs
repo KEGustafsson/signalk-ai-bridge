@@ -659,6 +659,21 @@ module.exports = function createPlugin(app, dependencies = {}) {
    *
    * Returns { outcome: 'no-stored-list' | 'not-found' | 'unchanged' | 'moved', list }.
    */
+  /** A stored list as the panel shows it: normalized keys, first occurrences, at most `limit`. */
+  const shownKeys = (raw, normalizeOne, limit) => {
+    const keys = [];
+    const seen = new Set();
+    for (const item of Array.isArray(raw) ? raw : []) {
+      if (keys.length >= limit) break;
+      const key = normalizeOne(item);
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        keys.push(key);
+      }
+    }
+    return keys;
+  };
+
   const moveInStoredList = (raw, normalizeOne, limit, path, delta) => {
     const stored = Array.isArray(raw) ? raw : [];
     const shown = [];
@@ -725,18 +740,17 @@ module.exports = function createPlugin(app, dependencies = {}) {
         return;
       }
       let outcome = 'unchanged';
-      // The list this move stored. A restart from the options just written
-      // already has it: redoing the move there would move the path twice.
-      let produced;
+      // The lists this move stored, as the panel shows them. A restart from
+      // options one of its attempts wrote already has the move: redoing it
+      // there would move the path twice. Compared as shown (trimmed, first
+      // occurrences, capped), so a rewrite that only tidied the list counts.
+      const produced = [];
+      const normalizeOne = kind === 'live' ? normalizeLiveEntry : normalizeHistoryEntry;
+      const limit = kind === 'live' ? Number.POSITIVE_INFINITY : MAX_HISTORY_PATHS;
       await updatePluginOptions((current) => {
         const key = kind === 'live' ? 'aiDataPaths' : 'historyPaths';
-        const stored = current[key];
-        if (
-          produced &&
-          Array.isArray(stored) &&
-          stored.length === produced.length &&
-          stored.every((item, index) => item === produced[index])
-        ) {
+        const shown = shownKeys(current[key], normalizeOne, limit);
+        if (shown.length > 0 && produced.some((list) => list.length === shown.length && list.every((item, index) => item === shown[index]))) {
           outcome = 'moved';
           return current;
         }
@@ -751,7 +765,7 @@ module.exports = function createPlugin(app, dependencies = {}) {
           // The same object back when nothing moves, so nothing is written.
           return current;
         }
-        produced = result.list;
+        produced.push(shownKeys(result.list, normalizeOne, limit));
         return { ...current, [key]: result.list };
       });
       const config = getConfig();
